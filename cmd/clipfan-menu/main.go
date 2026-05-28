@@ -1,3 +1,5 @@
+//go:build darwin
+
 // Command clipfan-menu is the macOS menubar app for clipfan. It polls the
 // local daemon for peer status and offers a one-click "install on remote..."
 // action that scp's the right binary + unit file + shared config to a

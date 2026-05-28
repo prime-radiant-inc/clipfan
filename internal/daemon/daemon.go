@@ -103,6 +103,12 @@ func (d *Daemon) Snapshot(ctx context.Context) []PeerState {
 
 	d.peersMu.RLock()
 	for h, s := range d.peerStatus {
+		// `clipfan copy` injects with origin=self; the recv path then
+		// records a peerStatus entry for our own short name. Filter it
+		// out of the snapshot so the menubar doesn't list us as a peer.
+		if hostsMatch(h, d.origin) {
+			continue
+		}
 		target := h
 		// If this origin maps to a discovered peer (same short name, or one is
 		// a "<user>-<short>" tailnet variant of the other), fold stats into
@@ -217,9 +223,10 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 }
 
 func (d *Daemon) onReceive(c clipboard.Content, origin string) {
-	if origin == d.origin {
-		return
-	}
+	// We intentionally do NOT short-circuit when origin == d.origin. That
+	// path is reached by `clipfan copy` injecting into us as ourselves; we
+	// want to treat it like any other clipboard change. Relay loops are
+	// prevented by the hash dedup below, not by origin filtering.
 	d.mu.Lock()
 	if bytes.Equal(c.Hash[:], d.lastHash[:]) {
 		d.mu.Unlock()
@@ -278,7 +285,10 @@ func (d *Daemon) fanout(ctx context.Context, c clipboard.Content, skipOrigin str
 		originStamp = skipOrigin
 	}
 	for _, p := range peers {
-		if p.Self || p.Hostname == skipOrigin {
+		if p.Self {
+			continue
+		}
+		if skipOrigin != "" && hostsMatch(p.Hostname, skipOrigin) {
 			continue
 		}
 		p := p

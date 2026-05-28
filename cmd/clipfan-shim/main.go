@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/prime-radiant-inc/clipfan/internal/cli"
 	"github.com/prime-radiant-inc/clipfan/internal/store"
 )
 
@@ -57,7 +58,13 @@ func xclipMode(args []string) int {
 		}
 	}
 	if op == "in" {
-		_, _ = io.Copy(io.Discard, os.Stdin)
+		// xclip -i writes to the OS clipboard; we re-route to clipfan's
+		// daemon so callers like `tmux ... copy-pipe 'xclip ... -i'` keep
+		// working as a "make this text the fleet clipboard" path.
+		if err := cli.RunCopy(nil); err != nil {
+			fmt.Fprintf(os.Stderr, "clipfan-shim: copy failed: %v\n", err)
+			return 1
+		}
 		return 0
 	}
 	return serveTarget(target)
