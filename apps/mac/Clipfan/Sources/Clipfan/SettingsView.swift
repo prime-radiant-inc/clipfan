@@ -1,3 +1,4 @@
+import ServiceManagement
 import SwiftUI
 
 struct SettingsView: View {
@@ -84,6 +85,7 @@ struct PeersTab: View {
 
 struct GeneralTab: View {
     @EnvironmentObject var daemon: DaemonClient
+    @StateObject private var loginItem = LoginItemManager.shared
 
     var body: some View {
         Form {
@@ -91,6 +93,24 @@ struct GeneralTab: View {
             LabeledContent("Daemon", value: daemon.connected ? "running" : "down")
             LabeledContent("Config") { Text(configPath).font(.system(.body, design: .monospaced)) }
             LabeledContent("Share dir") { Text(shareDirPath).font(.system(.body, design: .monospaced)) }
+
+            Section("Startup") {
+                Toggle("Launch Clipfan at login", isOn: Binding(
+                    get: { loginItem.isEnabled },
+                    set: { loginItem.setEnabled($0) }
+                ))
+                LabeledContent("Status", value: loginItem.statusText)
+                if let err = loginItem.lastError {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                if loginItem.status == .requiresApproval {
+                    Button("Open Login Items settings…") {
+                        SMAppService.openSystemSettingsLoginItems()
+                    }
+                }
+            }
 
             Section("Actions") {
                 HStack {

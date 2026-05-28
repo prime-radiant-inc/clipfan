@@ -45,4 +45,25 @@ final class DaemonClient: ObservableObject {
         try? kick.run()
         kick.waitUntilExit()
     }
+
+    /// Shell-launch the daemon if it isn't already answering on the local port.
+    /// Spawning it as a child of this GUI app makes it inherit the app's Local
+    /// Network grant, sidestepping the Sequoia gate that silently breaks
+    /// launchd-spawned daemons. Mirrors the `nohup ~/.local/bin/clipfan` hack
+    /// in dist/install.sh.
+    func ensureDaemonRunning() async {
+        await refresh()
+        if connected { return }
+
+        let bin = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/bin/clipfan")
+        guard FileManager.default.fileExists(atPath: bin.path) else { return }
+
+        let log = "/tmp/clipfan-shell.log"
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        proc.arguments = ["-c", "nohup \(bin.path) >\(log) 2>&1 &"]
+        try? proc.run()
+        proc.waitUntilExit()
+    }
 }

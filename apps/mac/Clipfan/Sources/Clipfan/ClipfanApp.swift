@@ -6,6 +6,7 @@ struct ClipfanApp: App {
 
     init() {
         DaemonClient.shared.start()
+        Task { await DaemonClient.shared.ensureDaemonRunning() }
     }
 
     var body: some Scene {
