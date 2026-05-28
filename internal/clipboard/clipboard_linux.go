@@ -11,13 +11,10 @@ import (
 )
 
 type linuxBackend struct {
-	// readText / writeText run the OS clipboard tool for text payloads.
-	readText  []string
-	writeText []string
-	// readTargets returns the MIME types available on the clipboard.
+	readText    []string
+	writeText   []string
 	readTargets []string
-	// readImage reads PNG bytes from the clipboard.
-	readImage []string
+	readImage   []string
 }
 
 func NewBackend() Backend {
@@ -43,7 +40,6 @@ func NewBackend() Backend {
 }
 
 func (b *linuxBackend) Read() (Content, error) {
-	// Look at TARGETS first: if image/png is advertised, prefer it.
 	if out, err := exec.Command(b.readTargets[0], b.readTargets[1:]...).Output(); err == nil {
 		if strings.Contains(string(out), "image/png") {
 			if png, err := exec.Command(b.readImage[0], b.readImage[1:]...).Output(); err == nil && len(png) > 0 {
@@ -58,20 +54,25 @@ func (b *linuxBackend) Read() (Content, error) {
 	return New(KindText, out, time.Now().UTC()), nil
 }
 
-func (b *linuxBackend) Write(c Content) error {
-	if c.Kind != KindText {
-		return nil
-	}
+func (b *linuxBackend) WriteText(text []byte) error {
 	cmd := exec.Command(b.writeText[0], b.writeText[1:]...)
-	cmd.Stdin = bytes.NewReader(c.Bytes)
+	cmd.Stdin = bytes.NewReader(text)
 	return cmd.Run()
 }
 
-// headlessBackend is the no-op fallback for hosts with neither xclip nor
-// wl-clipboard installed (typical headless Linux). Receiving daemons still
-// run; only the OS-clipboard write step is skipped. The daemon's
-// path-on-text + tmux load-buffer steps still fire.
+// WriteImage on Linux falls back to text-only (the file path) because xclip
+// can't easily set multiple targets on the same selection. The xclip/wl-paste
+// shim covers Ctrl-V image paste in Claude Code by serving the image from
+// the file on disk; GUI image-paste on a Linux remote isn't a target.
+func (b *linuxBackend) WriteImage(body []byte, path string) error {
+	if path == "" {
+		return nil
+	}
+	return b.WriteText([]byte(path))
+}
+
 type headlessBackend struct{}
 
-func (headlessBackend) Read() (Content, error) { return Content{}, nil }
-func (headlessBackend) Write(c Content) error  { return nil }
+func (headlessBackend) Read() (Content, error)             { return Content{}, nil }
+func (headlessBackend) WriteText(text []byte) error        { return nil }
+func (headlessBackend) WriteImage([]byte, string) error    { return nil }

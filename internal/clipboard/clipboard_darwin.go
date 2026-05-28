@@ -4,7 +4,10 @@ package clipboard
 
 import (
 	"bytes"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 )
 
@@ -13,8 +16,6 @@ type macBackend struct{}
 func NewBackend() Backend { return &macBackend{} }
 
 func (macBackend) Read() (Content, error) {
-	// Prefer image: NSPasteboard often holds both text and image
-	// representations of the same item; an image is the richer signal.
 	if png, ok := readPNG(); ok {
 		return New(KindImage, png, time.Now().UTC()), nil
 	}
@@ -25,17 +26,48 @@ func (macBackend) Read() (Content, error) {
 	return New(KindText, out, time.Now().UTC()), nil
 }
 
-func (macBackend) Write(c Content) error {
-	// Image bytes are not written to the OS clipboard here — the daemon's
-	// image path is "save file + put path on text clipboard". This keeps the
-	// pasteboard text-only, which is what tmux load-buffer and Claude Code /
-	// Codex bracketed paste want.
-	if c.Kind != KindText {
+func (macBackend) WriteText(text []byte) error {
+	cmd := exec.Command("pbcopy")
+	cmd.Stdin = bytes.NewReader(text)
+	return cmd.Run()
+}
+
+// WriteImage shells out to the bundled clipfan-pasteboard-helper Swift
+// binary to write a single NSPasteboardItem containing BOTH the PNG bytes
+// (public.png) and the file path as text (public.utf8-plain-text).
+// JXA failed (the bridge interpreted NSPasteboard.generalPasteboard as a
+// number); writing a 3-line Swift CLI was the path of less surprise.
+// Falls back to text-only if the helper isn't installed.
+func (macBackend) WriteImage(body []byte, path string) error {
+	if path == "" {
 		return nil
 	}
-	cmd := exec.Command("pbcopy")
-	cmd.Stdin = bytes.NewReader(c.Bytes)
-	return cmd.Run()
+	helper, err := findHelper()
+	if err != nil {
+		return (macBackend{}).WriteText([]byte(path))
+	}
+	out, err := exec.Command(helper, path).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("clipfan-pasteboard-helper %s: %w (output: %s)", path, err, string(out))
+	}
+	return nil
+}
+
+// findHelper resolves the Swift pasteboard helper across the launchd plist's
+// stripped PATH. We check LookPath first (covers the case where the helper
+// is in /usr/local/bin), then $HOME/.local/bin where install.sh drops it.
+func findHelper() (string, error) {
+	if p, err := exec.LookPath("clipfan-pasteboard-helper"); err == nil {
+		return p, nil
+	}
+	home, err := os.UserHomeDir()
+	if err == nil {
+		candidate := filepath.Join(home, ".local", "bin", "clipfan-pasteboard-helper")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("clipfan-pasteboard-helper not found in PATH or ~/.local/bin")
 }
 
 func readPNG() ([]byte, bool) {

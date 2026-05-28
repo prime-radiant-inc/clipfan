@@ -38,6 +38,16 @@ fi
 echo "Installing $bin_src -> $DEST/clipfan"
 install -m 0755 "$bin_src" "$DEST/clipfan"
 
+# Swift pasteboard helper (Darwin only) — writes a multi-type
+# NSPasteboardItem so Cmd-V image paste works in GUI apps too.
+if [[ "$goos" == "darwin" ]]; then
+    helper_src="$here/clipfan-pasteboard-helper-$goos-$arch"
+    if [[ -x "$helper_src" ]]; then
+        echo "Installing $helper_src -> $DEST/clipfan-pasteboard-helper"
+        install -m 0755 "$helper_src" "$DEST/clipfan-pasteboard-helper"
+    fi
+fi
+
 if [[ "$goos" == "linux" ]]; then
     shim_src="$here/clipfan-shim-$goos-$arch"
     if [[ -x "$shim_src" ]]; then

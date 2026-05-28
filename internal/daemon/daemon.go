@@ -242,26 +242,34 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 
 	d.recordRecv(origin)
 
-	textPayload := c
+	var imagePath string
+	textPayload := c.Bytes
 	state := store.State{Kind: "text", TS: c.TS}
 	if c.Kind == clipboard.KindImage {
-		path, err := store.SaveImage(c.Bytes)
+		p, err := store.SaveImage(c.Bytes)
 		if err != nil {
 			slog.Error("save image", "err", err)
 			return
 		}
-		slog.Debug("saved image", "path", path, "bytes", len(c.Bytes))
-		textPayload = clipboard.New(clipboard.KindText, []byte(path), c.TS)
-		state = store.State{Kind: "image", TS: c.TS, ImagePath: path}
+		slog.Debug("saved image", "path", p, "bytes", len(c.Bytes))
+		imagePath = p
+		textPayload = []byte(p)
+		state = store.State{Kind: "image", TS: c.TS, ImagePath: p}
 	}
 
-	if err := store.SaveState(state, textPayload.Bytes); err != nil {
+	if err := store.SaveState(state, textPayload); err != nil {
 		slog.Warn("save state", "err", err)
 	}
-	if err := d.cb.Write(textPayload); err != nil {
-		slog.Warn("local clip write", "err", err)
+	if c.Kind == clipboard.KindImage {
+		if err := d.cb.WriteImage(c.Bytes, imagePath); err != nil {
+			slog.Warn("local clip write (image)", "err", err)
+		}
+	} else {
+		if err := d.cb.WriteText(textPayload); err != nil {
+			slog.Warn("local clip write (text)", "err", err)
+		}
 	}
-	if err := tmux.LoadBufferAll(textPayload.Bytes); err != nil {
+	if err := tmux.LoadBufferAll(textPayload); err != nil {
 		slog.Debug("tmux load-buffer", "err", err)
 	}
 
