@@ -24,3 +24,6 @@ coverage.html
 # Local config / state
 *.local.toml
 clipfan.config.toml
+
+# SwiftPM build output
+apps/mac/Clipfan/.build/
