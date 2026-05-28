@@ -132,6 +132,7 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 	// makes Codex and Claude Code attach the image via bracketed paste
 	// without any X server or xclip dependency.
 	textPayload := c
+	state := store.State{Kind: "text", TS: c.TS}
 	if c.Kind == clipboard.KindImage {
 		path, err := store.SaveImage(c.Bytes)
 		if err != nil {
@@ -140,6 +141,13 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 		}
 		slog.Debug("saved image", "path", path, "bytes", len(c.Bytes))
 		textPayload = clipboard.New(clipboard.KindText, []byte(path), c.TS)
+		state = store.State{Kind: "image", TS: c.TS, ImagePath: path}
+	}
+
+	// Persist for the xclip/wl-paste shim before touching the OS clipboard
+	// so the shim never sees a stale image_path for the current state.
+	if err := store.SaveState(state, textPayload.Bytes); err != nil {
+		slog.Warn("save state", "err", err)
 	}
 
 	if err := d.cb.Write(textPayload); err != nil {
