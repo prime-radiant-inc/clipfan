@@ -1,7 +1,8 @@
-# Binaries
+# Binaries (cross-compiled outputs under dist/ stay out of git)
 /clipfan
 /clipfan-shim
-/dist/
+/dist/clipfan-*
+/dist/clipfan-shim-*
 *.exe
 *.dll
 *.so

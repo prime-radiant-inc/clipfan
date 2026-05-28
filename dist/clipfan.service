@@ -1,0 +1,13 @@
+[Unit]
+Description=clipfan clipboard sync daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/clipfan
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
