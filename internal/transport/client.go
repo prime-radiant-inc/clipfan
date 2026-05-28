@@ -29,8 +29,15 @@ func NewClient(auth *Auth, origin string) *Client {
 }
 
 func (c *Client) Push(ctx context.Context, host string, port int, content clipboard.Content) error {
+	return c.PushAs(ctx, host, port, content, c.origin)
+}
+
+// PushAs sends content but stamps the envelope with `origin` instead of the
+// client's own origin. Used by the relay path so the original copy source is
+// preserved end-to-end and receivers can short-circuit if they're the origin.
+func (c *Client) PushAs(ctx context.Context, host string, port int, content clipboard.Content, origin string) error {
 	env := Envelope{
-		Origin: c.origin,
+		Origin: origin,
 		TS:     content.TS,
 		Kind:   string(content.Kind),
 		SHA256: hex.EncodeToString(content.Hash[:]),

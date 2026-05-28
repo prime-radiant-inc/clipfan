@@ -13,19 +13,25 @@ import (
 
 type ReceiveFunc func(c clipboard.Content, origin string)
 
+// PeersFunc returns a JSON-encodable snapshot of the daemon's peer state.
+// Returning `any` keeps daemon types out of the transport package.
+type PeersFunc func() any
+
 type Server struct {
-	auth   *Auth
-	listen string
-	onRecv ReceiveFunc
+	auth    *Auth
+	listen  string
+	onRecv  ReceiveFunc
+	peersFn PeersFunc
 }
 
-func NewServer(listen string, auth *Auth, onRecv ReceiveFunc) *Server {
-	return &Server{auth: auth, listen: listen, onRecv: onRecv}
+func NewServer(listen string, auth *Auth, onRecv ReceiveFunc, peersFn PeersFunc) *Server {
+	return &Server{auth: auth, listen: listen, onRecv: onRecv, peersFn: peersFn}
 }
 
 func (s *Server) Serve(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/clip", s.postClip)
+	mux.HandleFunc("GET /v1/peers", s.getPeers)
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
@@ -79,4 +85,13 @@ func (s *Server) postClip(w http.ResponseWriter, r *http.Request) {
 	slog.Debug("clip received", "origin", env.Origin, "kind", env.Kind, "bytes", len(raw))
 	s.onRecv(c, env.Origin)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) getPeers(w http.ResponseWriter, _ *http.Request) {
+	if s.peersFn == nil {
+		http.Error(w, "peers endpoint not wired", http.StatusNotImplemented)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.peersFn())
 }
