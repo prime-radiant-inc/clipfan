@@ -1,0 +1,25 @@
+# Binaries
+/clipfan
+/clipfan-shim
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test/coverage
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Editor cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local config / state
+*.local.toml
+clipfan.config.toml
