@@ -12,6 +12,7 @@ import (
 	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
 	"github.com/prime-radiant-inc/clipfan/internal/config"
 	"github.com/prime-radiant-inc/clipfan/internal/discovery"
+	"github.com/prime-radiant-inc/clipfan/internal/store"
 	"github.com/prime-radiant-inc/clipfan/internal/tmux"
 	"github.com/prime-radiant-inc/clipfan/internal/transport"
 )
@@ -125,13 +126,27 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 	d.lastHash = c.Hash
 	d.lastTS = c.TS
 	d.mu.Unlock()
-	if err := d.cb.Write(c); err != nil {
+
+	// For images, materialize to a file under XDG_STATE_HOME and put the
+	// path on the (text) clipboard. This is the load-bearing trick that
+	// makes Codex and Claude Code attach the image via bracketed paste
+	// without any X server or xclip dependency.
+	textPayload := c
+	if c.Kind == clipboard.KindImage {
+		path, err := store.SaveImage(c.Bytes)
+		if err != nil {
+			slog.Error("save image", "err", err)
+			return
+		}
+		slog.Debug("saved image", "path", path, "bytes", len(c.Bytes))
+		textPayload = clipboard.New(clipboard.KindText, []byte(path), c.TS)
+	}
+
+	if err := d.cb.Write(textPayload); err != nil {
 		slog.Warn("local clip write", "err", err)
 	}
-	if c.Kind == clipboard.KindText {
-		if err := tmux.LoadBufferAll(c.Bytes); err != nil {
-			slog.Debug("tmux load-buffer", "err", err)
-		}
+	if err := tmux.LoadBufferAll(textPayload.Bytes); err != nil {
+		slog.Debug("tmux load-buffer", "err", err)
 	}
 }
 
