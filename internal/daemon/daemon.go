@@ -12,6 +12,7 @@ import (
 	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
 	"github.com/prime-radiant-inc/clipfan/internal/config"
 	"github.com/prime-radiant-inc/clipfan/internal/discovery"
+	"github.com/prime-radiant-inc/clipfan/internal/tmux"
 	"github.com/prime-radiant-inc/clipfan/internal/transport"
 )
 
@@ -126,6 +127,11 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 	d.mu.Unlock()
 	if err := d.cb.Write(c); err != nil {
 		slog.Warn("local clip write", "err", err)
+	}
+	if c.Kind == clipboard.KindText {
+		if err := tmux.LoadBufferAll(c.Bytes); err != nil {
+			slog.Debug("tmux load-buffer", "err", err)
+		}
 	}
 }
 
