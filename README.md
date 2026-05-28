@@ -93,6 +93,27 @@ at A won't reach B. Mac-originated updates reach both. For Jesse's hub-and-
 spoke setup (Mac is the primary source) this is the right shape; a relay
 hop would invite echo-loop bugs.
 
+### Menubar app (macOS)
+
+`cmd/clipfan-menu` is a separate Go binary that runs alongside the daemon
+and renders a NSStatusItem menu showing:
+
+- the daemon's origin (short hostname)
+- one line per peer, with `●` if last push succeeded, `✗` if it failed,
+  `(rx)` if we've received from them recently
+- "Install on remote…" — opens an osascript dialog asking for a hostname,
+  then scp's the right-arch binary, shim (linux only), unit file, and a
+  config sharing this Mac's `shared_key`, runs install.sh, and adds the
+  new host to the local `static_peers`. The install payload lives in
+  `~/.local/share/clipfan/` (staged by `dist/install.sh`).
+- "Open config", "Open daemon log", "Restart daemon", "Quit menubar app"
+
+The menubar app polls `localhost:7853/v1/peers` every 3s. It does NOT need
+Local Network privacy (loopback is exempt) so it can run cleanly under its
+own launchd plist (`dist/com.primeradiant.clipfan-menu.plist`). Build it
+with `dist/build-all.sh` on macOS; it uses cgo for NSStatusItem so it's
+mac-arch-only.
+
 ### Linux Ctrl-V image paste
 
 On a headless Linux remote, install the xclip/wl-paste shim symlinks

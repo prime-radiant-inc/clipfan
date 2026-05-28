@@ -84,6 +84,11 @@ func (d *Daemon) Origin() string { return d.origin }
 
 // Snapshot merges discovered peers with per-peer push/receive stats so the
 // menubar app sees both known peers and any seen-but-not-configured origins.
+//
+// Hostnames don't always match across the two sources: the configured peer
+// list has "jesse-paradise-park" (tailnet) while a recv envelope arrives
+// stamped "paradise-park" (the sender's `os.Hostname` short name). We
+// reconcile by short-name matching so each real host shows up once.
 func (d *Daemon) Snapshot(ctx context.Context) []PeerState {
 	known := map[string]*PeerState{}
 
@@ -98,18 +103,28 @@ func (d *Daemon) Snapshot(ctx context.Context) []PeerState {
 
 	d.peersMu.RLock()
 	for h, s := range d.peerStatus {
-		if k, ok := known[h]; ok {
-			// merge stats over the discovered peer
-			k.LastPushTS, k.LastPushOK, k.LastPushErr, k.LastRecvTS = s.LastPushTS, s.LastPushOK, s.LastPushErr, s.LastRecvTS
-		} else {
-			known[h] = &PeerState{
-				Hostname:    s.Hostname,
-				Port:        s.Port,
-				LastPushTS:  s.LastPushTS,
-				LastPushOK:  s.LastPushOK,
-				LastPushErr: s.LastPushErr,
-				LastRecvTS:  s.LastRecvTS,
+		target := h
+		// If this origin maps to a discovered peer (same short name, or one is
+		// a "<user>-<short>" tailnet variant of the other), fold stats into
+		// the discovered entry rather than creating a duplicate row.
+		for kh := range known {
+			if hostsMatch(kh, h) {
+				target = kh
+				break
 			}
+		}
+		k, ok := known[target]
+		if !ok {
+			k = &PeerState{Hostname: s.Hostname, Port: s.Port}
+			known[target] = k
+		}
+		if !s.LastPushTS.IsZero() {
+			k.LastPushTS = s.LastPushTS
+			k.LastPushOK = s.LastPushOK
+			k.LastPushErr = s.LastPushErr
+		}
+		if !s.LastRecvTS.IsZero() {
+			k.LastRecvTS = s.LastRecvTS
 		}
 	}
 	d.peersMu.RUnlock()
@@ -120,6 +135,33 @@ func (d *Daemon) Snapshot(ctx context.Context) []PeerState {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Hostname < out[j].Hostname })
 	return out
+}
+
+func shortName(h string) string {
+	h = strings.TrimSuffix(h, ".local")
+	return strings.SplitN(h, ".", 2)[0]
+}
+
+// hostsMatch returns true if two hostnames almost certainly identify the
+// same physical host. Exact short-name equality is the easy case; we also
+// accept the "<user>-<short>" pattern Tailscale uses so e.g. the configured
+// peer "jesse-paradise-park" gets reconciled with the recv origin
+// "paradise-park". The minMatchLen floor prevents incidental suffix matches
+// (e.g. "park" being treated as the same host as "paradise-park").
+func hostsMatch(a, b string) bool {
+	sa, sb := shortName(a), shortName(b)
+	if sa == sb {
+		return true
+	}
+	const minMatchLen = 6
+	long, short := sb, sa
+	if len(sa) > len(sb) {
+		long, short = sa, sb
+	}
+	if len(short) < minMatchLen {
+		return false
+	}
+	return strings.HasSuffix(long, "-"+short)
 }
 
 func (d *Daemon) peersHandler() any {

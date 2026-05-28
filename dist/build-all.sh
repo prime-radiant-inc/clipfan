@@ -20,6 +20,21 @@ for goos in darwin linux; do
     done
 done
 
+# Menubar app is macOS-only and uses cgo (NSStatusItem). Build only on a Mac,
+# only for the current arch — cross-cgo is more trouble than it's worth here.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    goarch=$(uname -m)
+    [[ $goarch == "x86_64" ]] && goarch=amd64
+    [[ $goarch == "aarch64" ]] && goarch=arm64
+    echo "[build] clipfan-menu darwin/$goarch (cgo)"
+    # Avoid the homebrew ccache shim that breaks if libfmt is mid-upgrade.
+    PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin \
+        CC=/usr/bin/cc \
+        GOOS=darwin GOARCH=$goarch \
+        go build -ldflags "$ldflags" \
+            -o "dist/clipfan-menu-darwin-$goarch" ./cmd/clipfan-menu
+fi
+
 echo
 echo "Staged in dist/:"
 ls -la dist/
