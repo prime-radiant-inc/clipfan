@@ -259,17 +259,20 @@ shell config edited, including hosts that don't use tmux.
 
 **Change:**
 
-- Add a `--with-tmux` flag to `install.sh` (default **off**). Gate the entire
-  tmux block (lines 63–86) on it.
-- The menubar installer (`Installer.swift`) passes `--with-tmux` only when the
-  Add Peer tmux checkbox is checked.
-- Re-running install without the flag never touches `~/.tmux.conf`.
+- The tmux block (lines 63–86) becomes conditional. Default behavior is
+  **auto-detect**: run it only if `tmux` is installed on the host (`command -v
+  tmux`), skip it otherwise.
+- Two explicit overrides bypass detection: `--with-tmux` forces it on,
+  `--no-tmux` forces it off. The menubar installer always passes one of these
+  explicitly based on the Add Peer tmux checkbox (so the GUI is never subject to
+  auto-detect).
+- Re-running install on a host without tmux, or with `--no-tmux`, never touches
+  `~/.tmux.conf`.
 
-**Compatibility note for review:** this changes behavior for anyone running
-`install.sh` directly — they stop getting tmux unless they pass `--with-tmux`.
-This is the intended behavior (forcing the edit was the bug). No interactive
-prompt is added; the flag is the single switch. *(Jesse to confirm the bare CLI
-needs no prompt.)*
+**Compatibility note:** this changes behavior for anyone running `install.sh`
+directly on a tmux host — they still get tmux (auto-detected), matching today,
+but hosts *without* tmux stop getting their config edited (the bug). Hosts with
+tmux where the user doesn't want the edit use `--no-tmux`.
 
 ---
 
@@ -283,9 +286,11 @@ the installer flag. The existing test targets (`HistoryViewModelTests`,
   formatting, code/path detection for monospace. Unit-tested with table cases.
 - **`HistoryViewModel`** keyboard-selection / ordering extensions: unit tests for
   filter + pinned-first + selection-clamping behavior.
-- **Installer flag:** `install.sh` with and without `--with-tmux` — assert the
-  tmux block runs only with the flag (test by pointing `HOME` at a temp dir and
-  checking whether `~/.tmux.conf` was modified and the snippet installed).
+- **Installer tmux gating:** `install.sh` across the matrix — auto-detect with
+  tmux present (runs), auto-detect without tmux (skips), `--with-tmux` (forces
+  on), `--no-tmux` (forces off). Test by pointing `HOME` at a temp dir and
+  checking whether `~/.tmux.conf` was modified and the snippet installed. Stub
+  `tmux` on/off PATH to exercise detection.
 - **Signing** parity test stays as the Swift==Go known-answer guard.
 - UI/AppKit panel behavior (focus, dismiss, hotkey) is validated by Jesse
   running the built app — not unit-tested. Verification is manual and explicit.
@@ -310,12 +315,17 @@ pristine.
   (Fleet cards + General/Developer), `AddPeerSheet.swift` (adaptive sheet),
   `HistoryRow.swift` (comfortable row). Retire `HistoryWindow.swift` /
   `HistoryWindowController.swift` in favor of the panel (confirm before deleting).
-- `Installer.swift` — pass `--with-tmux` conditionally.
-- `dist/install.sh` — `--with-tmux` flag gating the tmux block.
+- `Installer.swift` — always pass `--with-tmux` or `--no-tmux` per the checkbox.
+- `dist/install.sh` — auto-detect tmux; `--with-tmux` / `--no-tmux` overrides.
 
-## Open questions for review
+## Resolved decisions (were open questions)
 
-1. Bare-CLI `install.sh`: flag-only (no prompt) acceptable? (Component 6)
-2. `MenuBarExtra` `.menu` vs `.window` for the fleet dots — defer to impl, or
-   decide now?
-3. Asset-catalog-in-SPM vs `build-app.sh` `actool` path — spike, or pick now?
+1. **Bare-CLI tmux:** auto-detect (on when `tmux` is installed), with
+   `--with-tmux` / `--no-tmux` overrides. The menubar always passes an explicit
+   override. (Component 6)
+2. **Menubar fleet dots:** decide during implementation — try native `.menu`
+   first, fall back to `.menuBarExtraStyle(.window)` with a custom view if the
+   colored dots don't render acceptably. (Component 3)
+3. **App-icon wiring:** spike during implementation — test SwiftPM `.process` of
+   an `.xcassets` on the macOS 13 toolchain; if it doesn't work cleanly, fall
+   back to the `actool` / prebuilt-`.icns` path in `build-app.sh`. (Component 2)
