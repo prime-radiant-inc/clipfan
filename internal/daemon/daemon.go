@@ -83,6 +83,17 @@ func New(cfg *config.Config) (*Daemon, error) {
 	}
 	d.cl = transport.NewClient(auth, origin)
 	d.sv = transport.NewServer(cfg.Listen, auth, d.onReceive, d.peersHandler)
+	d.sv.SetHistory(
+		func(limit int) (any, error) { return store.LoadHistory(limit) },
+		d.Restore,
+		store.SetPinned,
+		func(id string, allUnpinned bool) error {
+			if allUnpinned {
+				return store.ClearUnpinned()
+			}
+			return store.DeleteEntry(id)
+		},
+	)
 	return d, nil
 }
 
