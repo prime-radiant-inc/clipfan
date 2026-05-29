@@ -24,6 +24,10 @@ final class ClipMetadataTests: XCTestCase {
         XCTAssertTrue(isMonospacePreferred("~/.ssh/id_ed25519"))
     }
 
+    func testMonospacePreferredForWindowsPath() {
+        XCTAssertTrue(isMonospacePreferred(#"C:\Users\jesse\Documents"#))
+    }
+
     func testMonospacePreferredForCode() {
         XCTAssertTrue(isMonospacePreferred("func chooseBackend(wayland string) {"))
         XCTAssertTrue(isMonospacePreferred("brew install --cask clipfan"))
