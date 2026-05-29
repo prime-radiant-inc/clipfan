@@ -37,10 +37,10 @@ struct CommandPanelView: View {
         }
         .frame(width: 660, height: 440)
         .background(VisualEffectBackground())
-        .background(hiddenShortcuts)
+        .overlay { hiddenShortcuts.frame(width: 0, height: 0).clipped() }
         .task {
-            await daemon.refreshHistory()
             searchFocused = true
+            await daemon.refreshHistory()
         }
         .onChange(of: items.map(\.id)) { ids in
             selection = clampedSelection(selection, in: items)
@@ -181,17 +181,19 @@ struct CommandPanelView: View {
     /// Hidden buttons carrying ⏎, Esc, and ⌘1–9 so the whole panel is keyboard-driven.
     private var hiddenShortcuts: some View {
         ZStack {
-            Button("") { pasteSelected() }
-                .keyboardShortcut(.return, modifiers: [])
             Button("") { onDismiss() }
                 .keyboardShortcut(.cancelAction)
-            Button("") { selection = movedSelection(from: selection, in: items, delta: 1) }
-                .keyboardShortcut(.downArrow, modifiers: [])
-            Button("") { selection = movedSelection(from: selection, in: items, delta: -1) }
-                .keyboardShortcut(.upArrow, modifiers: [])
-            ForEach(1...9, id: \.self) { n in
-                Button("") { pasteNumber(n) }
-                    .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: .command)
+            if !items.isEmpty {
+                Button("") { pasteSelected() }
+                    .keyboardShortcut(.return, modifiers: [])
+                Button("") { selection = movedSelection(from: selection, in: items, delta: 1) }
+                    .keyboardShortcut(.downArrow, modifiers: [])
+                Button("") { selection = movedSelection(from: selection, in: items, delta: -1) }
+                    .keyboardShortcut(.upArrow, modifiers: [])
+                ForEach(1...9, id: \.self) { n in
+                    Button("") { pasteNumber(n) }
+                        .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: .command)
+                }
             }
         }
         .opacity(0)
