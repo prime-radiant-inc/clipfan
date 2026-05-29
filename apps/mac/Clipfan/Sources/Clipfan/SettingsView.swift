@@ -5,17 +5,17 @@ struct SettingsView: View {
     @EnvironmentObject var daemon: DaemonClient
 
     enum Tab: String, CaseIterable, Hashable {
-        case peers = "Peers"
+        case fleet = "Fleet"
         case general = "General"
     }
 
-    @State private var selection: Tab = .peers
+    @State private var selection: Tab = .fleet
 
     var body: some View {
         TabView(selection: $selection) {
-            PeersTab()
-                .tabItem { Label("Peers", systemImage: "network") }
-                .tag(Tab.peers)
+            FleetTab()
+                .tabItem { Label("Fleet", systemImage: "network") }
+                .tag(Tab.fleet)
             GeneralTab()
                 .tabItem { Label("General", systemImage: "gear") }
                 .tag(Tab.general)
@@ -24,59 +24,88 @@ struct SettingsView: View {
     }
 }
 
-struct PeersTab: View {
+struct FleetTab: View {
     @EnvironmentObject var daemon: DaemonClient
     @State private var showAdd = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Connected peers")
-                    .font(.headline)
+                Text("Fleet").font(.headline)
                 Spacer()
-                Button("Add peer…") { showAdd = true }
-                Button("Refresh") {
-                    Task { await daemon.refresh() }
-                }
+                Button("Refresh") { Task { await daemon.refresh() } }
             }
             if daemon.peers.isEmpty {
-                Text("No peers configured yet.")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 6) {
+                    Image(systemName: "network.slash").font(.system(size: 28)).foregroundStyle(.tertiary)
+                    Text("No peers yet").foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                Table(daemon.peers) {
-                    TableColumn("") { peer in
-                        Circle()
-                            .fill(color(for: peer))
-                            .frame(width: 10, height: 10)
-                    }.width(20)
-                    TableColumn("Host", value: \.hostname)
-                    TableColumn("Port") { peer in Text("\(peer.port)") }.width(50)
-                    TableColumn("Last push") { peer in Text(timeAgo(peer.last_push_ts)) }
-                    TableColumn("Last recv") { peer in Text(timeAgo(peer.last_recv_ts)) }
-                    TableColumn("Status") { peer in
-                        Text(peer.last_push_ok ? "ok" : (peer.last_push_err ?? "—"))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .help(peer.last_push_err ?? "")
+                ScrollView {
+                    VStack(spacing: 10) {
+                        ForEach(daemon.peers) { peer in PeerCard(peer: peer) }
                     }
                 }
-                .frame(minHeight: 200)
+            }
+            Button {
+                showAdd = true
+            } label: {
+                Label("Add peer…", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .sheet(isPresented: $showAdd) { AddPeerSheet() }
+    }
+}
+
+struct PeerCard: View {
+    let peer: Peer
+
+    var body: some View {
+        HStack(spacing: 13) {
+            Circle().fill(dotColor).frame(width: 9, height: 9)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(peer.hostname).font(.system(size: 13.5, weight: .semibold))
+                }
+                Text(stateLine).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 3) {
+                Text("↑ \(timeAgo(peer.last_push_ts))   ↓ \(timeAgo(peer.last_recv_ts))")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                Text(healthWord).font(.system(size: 10)).foregroundStyle(healthColor)
             }
         }
-        .sheet(isPresented: $showAdd) {
-            AddPeerSheet()
-        }
+        .padding(12)
+        .background(Color.secondary.opacity(0.06))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.12)))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    func color(for peer: Peer) -> Color {
+    private var dotColor: Color { healthColor }
+
+    private var healthColor: Color {
         if peer.last_push_ok { return .green }
-        if let ts = peer.last_push_ts, ts > Date.distantPast { return .red }
+        if let ts = peer.last_push_ts, ts > Date.distantPast { return .orange }
         return .gray
     }
 
-    func timeAgo(_ date: Date?) -> String {
-        guard let date, date > Date.distantPast else { return "—" }
+    private var healthWord: String {
+        if peer.last_push_ok { return "healthy" }
+        if let ts = peer.last_push_ts, ts > Date.distantPast { return "offline" }
+        return "idle"
+    }
+
+    private var stateLine: String {
+        if peer.last_push_ok { return "port \(peer.port) · synced" }
+        if let err = peer.last_push_err, !err.isEmpty { return "last error: \(err)" }
+        return "port \(peer.port)"
+    }
+
+    private func timeAgo(_ date: Date?) -> String {
+        guard let date, date > Date.distantPast else { return "never" }
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .short
         return f.localizedString(for: date, relativeTo: Date())
@@ -86,24 +115,20 @@ struct PeersTab: View {
 struct GeneralTab: View {
     @EnvironmentObject var daemon: DaemonClient
     @StateObject private var loginItem = LoginItemManager.shared
+    @State private var showDeveloper = false
 
     var body: some View {
         Form {
-            LabeledContent("Origin", value: daemon.origin)
-            LabeledContent("Daemon", value: daemon.connected ? "running" : "down")
-            LabeledContent("Config") { Text(configPath).font(.system(.body, design: .monospaced)) }
-            LabeledContent("Share dir") { Text(shareDirPath).font(.system(.body, design: .monospaced)) }
-
             Section("Startup") {
-                Toggle("Launch Clipfan at login", isOn: Binding(
-                    get: { loginItem.isEnabled },
-                    set: { loginItem.setEnabled($0) }
-                ))
-                LabeledContent("Status", value: loginItem.statusText)
+                Toggle(isOn: Binding(get: { loginItem.isEnabled },
+                                     set: { loginItem.setEnabled($0) })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Launch clipfan at login")
+                        Text("Start syncing automatically").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 if let err = loginItem.lastError {
-                    Text(err)
-                        .font(.caption)
-                        .foregroundStyle(.red)
+                    Text(err).font(.caption).foregroundStyle(.red)
                 }
                 if loginItem.status == .requiresApproval {
                     Button("Open Login Items settings…") {
@@ -112,8 +137,19 @@ struct GeneralTab: View {
                 }
             }
 
-            Section("Actions") {
-                HStack {
+            Section("Clipboard") {
+                LabeledContent("History limit", value: "200 items")
+                LabeledContent("Global shortcut", value: "⇧⌘V")
+            }
+
+            Section("Status") {
+                LabeledContent("Daemon", value: daemon.connected ? "running" : "down")
+            }
+
+            Section {
+                DisclosureGroup("Developer", isExpanded: $showDeveloper) {
+                    LabeledContent("Config") { Text(configPath).font(.system(.caption, design: .monospaced)) }
+                    LabeledContent("Share dir") { Text(shareDirPath).font(.system(.caption, design: .monospaced)) }
                     Button("Reveal config in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: configPath)])
                     }
