@@ -1,5 +1,10 @@
 # clipfan implementation plan
 
+> Historical build log. This records the phased order in which the daemon was
+> originally built (each phase ending in a working binary). It is kept for
+> reference; for how the system works today see ARCHITECTURE.md, and for planned
+> work see ROADMAP.md.
+
 PRI-1873. Phased, each phase ends in a working binary.
 
 ## Phase 1 — text-only MVP (Mac ⇄ paradise-park)

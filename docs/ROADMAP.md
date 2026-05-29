@@ -1,162 +1,121 @@
 # clipfan 1.0 roadmap
 
-The 0.x daemon proves the architecture: HTTP+HMAC mesh, image-as-path,
-tmux load-buffer, xclip shim, launchd workaround. To call it 1.0 we
-need (a) origin to actually work from any host, (b) a real macOS app
-instead of the systray hack, (c) frictionless onboarding of new peers
-including a Tailscale picker, and (d) a clean install/distribution
-story without the shell-launched workaround.
-
-Estimated calendar: ~3 weeks of focused work for Phases 1–9. Phase 10
-is polish on either side of release.
+The daemon proves the architecture: HTTP+HMAC mesh, image-as-path, tmux
+load-buffer, xclip shim, the launchd Local-Network workaround. The path to 1.0
+covers (a) origin working from any host, (b) a real macOS app, (c) frictionless
+onboarding of new peers including a Tailscale picker, and (d) a clean
+install/distribution story.
 
 ---
 
-## Phase 1 — Fix origination across the fleet  (P0, ~1 day)
+## Done
 
-Today every clipboard change has to first land on an OS pasteboard
-before clipfan notices it. That breaks on headless Linux and on tmux
-configs that emit OSC 52 instead of shelling to `pbcopy`. Bypass it.
+These are shipped and are the current behavior. See ARCHITECTURE.md and the
+READMEs for how they work.
 
-- `clipfan copy` subcommand — reads stdin, POSTs to the local daemon
-  as a fresh broadcast. Detects text vs image (`--image` for force).
-- `clipfan paste` subcommand — symmetric: reads from the local daemon
-  and writes to stdout. Useful in scripts and in remote tmux copy-pipe.
-- Fix `clipfan-shim -i`/`--in` mode to push into the daemon instead of
-  the current `io.Copy(io.Discard, os.Stdin)`. Today it silently drops.
-- Ship `dist/tmux.conf.snippet` wiring `copy-mode-vi y` /
-  `MouseDragEnd1Pane` to `clipfan copy`. Install path adds it as
-  `~/.tmux.conf.clipfan` and prints a `source-file` hint.
-- **Acceptance:** yank in tmux on flower-garden → Mac pbpaste updates
-  within a second; vice versa.
+- **CLI origination.** `clipfan copy` reads stdin and POSTs to the local daemon
+  as a fresh broadcast (text/image auto-detect, `--image` to force);
+  `clipfan paste` reads the daemon's current state to stdout. `clipfan copy` can
+  also emit an OSC 52 sequence to a tty, so a terminal connected from a
+  non-clipfan host still gets the bytes. `dist/tmux.conf.snippet` wires tmux
+  copy-mode to `clipfan copy`.
+- **SwiftUI menubar app.** `Clipfan.app` (`apps/mac/Clipfan`) is a background-only
+  (`LSUIElement`) menubar app. It shows this host's origin and a live peer list
+  (`●` push ok / `✗` push failed / `(rx)` recent receive), and offers Add Peer…,
+  Settings, Restart Daemon, and Open Config / Open Log.
+- **Install sheet.** "Add Peer…" installs clipfan on a remote over SSH (scp the
+  right-arch binary + shim + unit + a config sharing this Mac's `shared_key`, run
+  install.sh), with a Tailscale picker (multi-select from `tailscale status
+  --json`) and a manual `user@host:port` mode.
+- **Multi-type pasteboard write.** When an image arrives at a Mac host, the
+  bundled `clipfan-pasteboard-helper` writes a single `NSPasteboardItem` carrying
+  both the PNG bytes (`public.png`) and the file path as text
+  (`public.utf8-plain-text`) — Cmd-V pastes the image in GUI apps and the path in
+  TUI apps.
+- **OSC 52 fallback.** `clipfan copy --osc52 <tty>` emits the standard OSC 52
+  clipboard sequence for terminals connected from hosts that don't run clipfan.
+- **Login item.** The app registers itself (not the daemon) at login via
+  `SMAppService.mainApp`, and shell-launches the daemon as a child so the daemon
+  inherits the app's Local Network grant.
+- **Image echo prevention.** A received image becomes a path-on-text on
+  text-only backends; the daemon records the readback hash so that path is never
+  re-broadcast, closing the image echo loop.
+- **launchd Local-Network workaround.** The GUI app holds the Local Network
+  grant and shell-launches the daemon, sidestepping the Sequoia gate that
+  silently breaks launchd-spawned daemons on RFC1918 peers.
 
-## Phase 2 — Real SwiftUI menubar app  (P0, ~1 week)  [done]
+---
 
-A proper SwiftUI macOS app bundle, `Clipfan.app` (`apps/mac/Clipfan`),
-replaced the old Go + getlantern/systray menubar.
+## Planned — clipboard history browser
 
-- New layout: `apps/mac/` as a SwiftPM package, separate from the Go
-  module. Go daemon lives in the bundle at `Contents/MacOS/clipfand`.
-- `LSUIElement = true` — background-only, no Dock icon.
-- NSStatusItem hosting a SwiftUI `Menu`:
-  - Origin row (this host's name)
-  - Peer list — live status (`●` push ok, `✗` last push failed,
-    `(rx)` recent receive), latency badge, last sync timestamp
-  - Recent clipboard history (last 10) with click-to-restore
-  - Quick actions: Add Peer…, Open Settings, Show Logs, Restart Daemon
-- Settings window (Cmd-,) — tabbed:
-  - **General** — shared key reveal/regen, polling rate, log level
-  - **Peers** — table with add/remove/edit, online status, manual
-    "send test ping"
-  - **Tailscale** — picker UI for Phase 3
-  - **Advanced** — XDG paths, version, "Check for updates"
-- Daemon supervisor: app spawns `clipfand` if missing, restarts on
-  crash, surfaces stderr to the Logs viewer.
+A clipboard history browser in the menubar app: a two-pane window that lists
+recently-copied items (text, links, images) with a large preview pane, full
+keyboard navigation, search, type filters, pinning, and an origin-host badge on
+every row. Picking an item re-copies it and syncs it to the fleet.
 
-## Phase 3 — Install wizard: user@host:port + Tailscale picker  (P0, ~3 days)
+Scope:
 
-The "Add Peer…" sheet has two modes.
+- **Backend.** Each daemon records the clips that pass through its own clipboard
+  into a `history.json` ring (newest-first, count-capped, default 200). Entries
+  are content-hash identified (re-copy moves to top), reuse the existing
+  `images/<sha>.png` files as thumbnails, and carry an origin-host tag. Image GC
+  becomes history-aware so it never deletes a PNG a retained or pinned entry
+  still references. New endpoints: `GET /v1/history`, `POST /v1/restore`,
+  `POST /v1/history/pin`, `DELETE /v1/history` — all HMAC-signed.
+- **Privacy.** Clips marked `org.nspasteboard.ConcealedType` (password managers)
+  are never written to history.
+- **Frontend.** A SwiftUI two-pane window opened from the menubar and a
+  configurable global hotkey (default ⇧⌘V); type-to-filter, ↑/↓ + Enter to
+  restore, filter chips (All / Text / Image / Link), pin/delete/clear.
 
-- **Type address** — fields: user, host, port (default 22), SSH key
-  path (optional), label. Validates by running `ssh -o BatchMode=yes`
-  to probe before install. Shows the parsed-back form so the user can
-  catch typos.
-- **Pick from Tailnet** — calls `tailscale status --json`, renders a
-  table of online peers with hostname, tailnet name, OS, IP, owner.
-  Multi-select. Filters out tagged-devices unless "show all" toggle.
-  Adding multiple peers is one click.
-- Install runs the existing scp + install.sh playbook, with a live
-  progress sheet (`Probing arch… → Copying binary… → Running
-  install.sh… → Verifying health`) and a cancellable per-step view.
-- On success: adds peer to local config, restarts the daemon, shows a
-  "ready to sync" toast.
+Explicitly deferred (not in this version):
 
-## Phase 4 — Multi-type NSPasteboard write  (Mac remote GUI paste, ~1 day)
+- Cross-fleet **merged** history (a union of all hosts). History is local per-host.
+- Auto-paste into the frontmost app via Accessibility — we re-copy; the user
+  presses ⌘V.
+- Rich link cards with fetched favicons / social images.
+- Paste-stack (sequential multi-item paste).
+- OCR / text recognition on images.
 
-When an image arrives at a Mac host, write a single pasteboard item
-with both `public.png` (the image bytes) AND `public.utf8-plain-text`
-(the path string) types.
+---
 
-- Cmd-V in Preview, Keynote, Slack etc. pastes the image.
-- Cmd-V in Claude Code / Codex / a tmux pane pastes the path string
-  (TUI apps read text from the clipboard, never image types).
-- Replaces the current "text-path only" compromise on receive.
+## Planned — toward 1.0
 
-## Phase 5 — Real launchd story (kill the shell-launched workaround, ~2 days)
+### Push-based sync via SSE
 
-The 0.x doc says "run clipfan from your shell because launchd gets
-EHOSTUNREACH to LAN peers." That's not a 1.0 state. Two paths;
-build whichever turns out cleaner:
+Replace the 250ms poll loop with a push model: a `GET /v1/watch` SSE endpoint
+peers connect to once and receive events on. The Mac keeps a fast change-count
+poll (macOS has no pasteboard-change event); Linux switches to `wl-paste -w` /
+`xsel --watch` triggers where available. Goal: sub-100ms peer-to-peer latency,
+~0% idle CPU.
 
-- **App-bundle path** — `Clipfan.app`'s bundled `clipfand` triggers the
-  Local Network privacy prompt on first launch (foreground apps get
-  the dialog properly). Once granted, the launchd-spawned daemon
-  works for LAN peers.
-- **Login-item path** — register `clipfand` via SMAppService.loginItem
-  under the app's bundle ID. Login Items inherit user-session
-  network privileges.
+### Reliability + observability
 
-Verify by revoking Local Network in System Settings, restarting,
-re-granting, and confirming launchd reaches flower-garden again.
+- Richer `GET /v1/health`: uptime, build version, last successful push per peer,
+  current state hash, image count.
+- Structured logs to dated files, rotated and kept for 14 days.
+- Integration-test harness: N daemons in one process running round-trip, image,
+  relay, conflict, and peer-churn scenarios in CI.
+- "Test origination" diagnostic in the menubar: send a canary and report each hop.
 
-## Phase 6 — Push-based sync via SSE (drop polling, ~2 days)
+### Distribution
 
-The 250ms `pbpaste`/`pngpaste` polling loop is wasteful and adds
-latency. Replace with a push model.
+- Codesign + notarize `Clipfan.app`; DMG installer.
+- Linux `.deb` / `.rpm` via nfpm; Homebrew tap.
+- GitHub Releases pipeline: build all targets on tag, sign, notarize, upload.
+- Sparkle auto-update on the Mac app.
 
-- Daemon exposes `GET /v1/watch` (SSE) — peers connect once, receive
-  events as they happen.
-- The Mac's NSPasteboard change-count poll stays (no OS event for
-  pasteboard change on macOS), but we can drop to 50ms and only emit
-  on change-count delta — virtually free.
-- Linux daemon switches from `xclip -o` polling to `wl-paste -w`
-  (Wayland) or `xsel --watch` style triggers when available.
-- Sub-100ms peer-to-peer latency, ~0% idle CPU.
+### Onboarding + first-launch UX
 
-## Phase 7 — Reliability + observability  (~2 days)
+- First-launch onboarding: generate or paste a shared key → add the first peer
+  (Tailscale picker or manual) → done. Shared key is QR-shareable.
 
-- `GET /v1/health` returns daemon uptime, build version, last
-  successful push per peer, current state hash, image count.
-- Structured slog → `~/Library/Logs/clipfan/clipfan-YYYY-MM-DD.log`
-  on Mac, `~/.local/state/clipfan/logs/` on Linux, rotated daily,
-  kept for 14 days.
-- Integration test harness: spin up N daemons in goroutines in one
-  process and run scenarios (text round-trip, image, relay, origin
-  conflict, peer churn). Runs in CI.
-- "Test origination" diagnostic in the menubar: click a peer →
-  daemon sends a canary text → returns within 2s with each hop and
-  the resulting recv stamp from the target.
+### Polish
 
-## Phase 8 — Distribution  (~3 days)
-
-- Codesign + notarize `Clipfan.app` with the Prime Radiant Developer
-  ID; DMG installer with the drag-to-Applications background.
-- Linux packages: `nfpm` builds `.deb` + `.rpm` from the binaries.
-- Homebrew tap: `brew install clipfan` on Mac, `brew install
-  clipfan-cli` on Linux (CLI-only without the .app).
-- GitHub Releases pipeline: on tag push, build all targets, sign,
-  notarize, upload artifacts, update the Homebrew tap, draft release
-  notes from commit messages.
-- Sparkle auto-update on the Mac app (in-app "Check for updates"
-  hits a feed.xml on a static site).
-
-## Phase 9 — Onboarding + first-launch UX  (~1 day)
-
-- First launch of `Clipfan.app`: full-window onboarding (not just the
-  menubar). "Welcome → Generate a shared key OR paste one from another
-  host → Add your first peer (Tailscale picker or manual) → Done."
-- Skip on subsequent launches.
-- The shared key is QR-code-shareable for easy copy to a phone /
-  another Mac.
-
-## Phase 10 — Polish  (rolling)
-
-- Designed app icon (the current 22x22 is hand-pixeled placeholder).
-- Notification preferences (per-event opt-in: install success/failure,
-  daemon down, large clipboard payload received).
-- Telemetry opt-in (anonymized: peer count, daily sync count, build
-  version). Sentry for crash reports.
-- README → mkdocs/docusaurus site on github.io with screenshots.
+- Designed app icon.
+- Notification preferences (per-event opt-in).
+- Optional anonymized telemetry; crash reporting.
+- Docs site with screenshots.
 
 ---
 
@@ -165,10 +124,10 @@ latency. Replace with a push model.
 - **Selection clipboard on Linux** (the X11 PRIMARY one).
 - **Rich types** beyond text + PNG: RTF, HTML, file lists.
 - **iOS / iPadOS companion** via a share extension.
-- **Per-app privacy filter** — "don't broadcast clipboard from 1Password,
-  Bitwarden, Mail." Mac-side allow/deny by NSRunningApplication ownership.
+- **Per-app privacy filter** — don't broadcast clipboard from 1Password,
+  Bitwarden, Mail; allow/deny by owning application.
 - **Browser extension** — push web selection straight into clipfan.
-- **Public clipboard mode** — opt-in peer that exposes its clipboard via
+- **Public clipboard mode** — an opt-in peer that exposes its clipboard over
   HTTP for one-shot share with a non-clipfan host.
 
 ---
@@ -176,14 +135,11 @@ latency. Replace with a push model.
 ## What 1.0 looks like from the outside
 
 - Download `Clipfan.dmg`, drag to Applications, launch.
-- Onboarding wizard: "Generate or paste shared key" → "Add peers"
-  → either Tailscale picker (one-click multi-select) or
-  `user@host:port` form.
+- Onboarding wizard: generate or paste a shared key → add peers (Tailscale picker
+  or `user@host:port`).
 - Each added peer gets clipfan installed over SSH, automatically.
-- Menubar icon → live peer list → recent clipboard history.
-- prefix-] in any tmux on any host mirrors the Mac clipboard. Yank
-  anywhere → propagates everywhere within ~200ms. Cmd-V into Claude
-  Code / Codex / Preview / anything — Just Works.
-- No `nohup ~/.local/bin/clipfan &` line in your shell rc. No "you
-  have to run from a terminal." Login-time autostart, signed binary,
-  notarized DMG, optional auto-update.
+- Menubar icon → live peer list → clipboard history browser.
+- `prefix-]` in any tmux on any host mirrors the Mac clipboard. Yank anywhere →
+  propagates everywhere within ~200ms. Cmd-V into Claude Code / Codex / Preview —
+  Just Works.
+- Login-time autostart, signed binary, notarized DMG, optional auto-update.

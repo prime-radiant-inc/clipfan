@@ -107,6 +107,10 @@ and renders a NSStatusItem menu showing:
   install payload lives in `~/.local/share/clipfan/` (staged by
   `dist/install.sh`).
 - "Open config", "Open daemon log", "Restart daemon"
+- a clipboard history browser (two-pane window with search, keyboard
+  navigation, image thumbnails, origin-host badges, and pinning), opened from
+  the menubar or the ⇧⌘V global hotkey; picking an item re-copies it and syncs
+  it to the fleet
 
 The app polls `localhost:7853/v1/peers`. It does NOT need Local Network
 privacy (loopback is exempt). Build it from `apps/mac/Clipfan` with SwiftPM /
