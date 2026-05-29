@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -17,13 +18,35 @@ func NewBackend() Backend { return &macBackend{} }
 
 func (macBackend) Read() (Content, error) {
 	if png, ok := readPNG(); ok {
-		return New(KindImage, png, time.Now().UTC()), nil
+		c := New(KindImage, png, time.Now().UTC())
+		c.Concealed = concealed()
+		return c, nil
 	}
 	out, err := exec.Command("pbpaste").Output()
 	if err != nil {
 		return Content{}, err
 	}
-	return New(KindText, out, time.Now().UTC()), nil
+	c := New(KindText, out, time.Now().UTC())
+	c.Concealed = concealed()
+	return c, nil
+}
+
+// concealed reports whether the current pasteboard item is marked as
+// concealed or transient (e.g. by a password manager). Password managers
+// declare org.nspasteboard.ConcealedType so the clip is excluded from
+// clipboard history. Detection requires inspecting the raw pasteboard types,
+// which pbpaste and osascript cannot surface; the bundled Swift helper exposes
+// them via --check-concealed. Returns false when the helper is unavailable.
+func concealed() bool {
+	helper, err := findHelper()
+	if err != nil {
+		return false
+	}
+	out, err := exec.Command(helper, "--check-concealed").Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "concealed")
 }
 
 func (macBackend) WriteText(text []byte) error {

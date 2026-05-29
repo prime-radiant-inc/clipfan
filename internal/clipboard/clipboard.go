@@ -13,10 +13,11 @@ const (
 )
 
 type Content struct {
-	Kind  Kind
-	Bytes []byte
-	Hash  [32]byte
-	TS    time.Time
+	Kind      Kind
+	Bytes     []byte
+	Hash      [32]byte
+	TS        time.Time
+	Concealed bool // true if the source marked the clip as transient/secret
 }
 
 func New(kind Kind, body []byte, ts time.Time) Content {
