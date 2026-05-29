@@ -3,7 +3,11 @@
 # a launchd / systemd-user unit so the daemon runs in the background.
 #
 # Usage from a freshly-extracted dist tarball:
-#     ./install.sh
+#     ./install.sh [--with-tmux | --no-tmux]
+#
+# Flags:
+#     --with-tmux  — always install tmux integration (even if tmux not found)
+#     --no-tmux    — skip tmux integration (default: auto — install iff tmux present)
 #
 # Environment overrides:
 #     DEST       — install dir for binaries (default: $HOME/.local/bin)
@@ -23,6 +27,7 @@ done
 set -- "${_args[@]+"${_args[@]}"}"
 
 # want_tmux decides whether to install the tmux copy integration.
+# Unrecognised TMUX_MODE values behave like "auto".
 want_tmux() {
     case "$TMUX_MODE" in
         on)  return 0 ;;

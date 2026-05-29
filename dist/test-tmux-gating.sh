@@ -2,6 +2,7 @@
 # Tests the tmux-gating decision in install.sh by sourcing it (the source guard
 # stops the imperative installer body from running) and exercising want_tmux
 # under each mode with tmux present/absent on PATH.
+# -e is intentionally omitted: want_tmux returns 1 on "skip" and must not abort the script.
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -13,6 +14,10 @@ check() { # desc expected actual
 # Source install.sh; the source guard must prevent the installer from running.
 # shellcheck disable=SC1090
 source "$here/install.sh"
+
+# The source guard must have stopped install.sh before its imperative body,
+# which is what sets $goos. If goos is set, the guard regressed.
+check "source guard suppressed installer body" "" "${goos:-}"
 
 # Fake PATH with a tmux binary present.
 fake_with=$(mktemp -d); : > "$fake_with/tmux"; chmod +x "$fake_with/tmux"
