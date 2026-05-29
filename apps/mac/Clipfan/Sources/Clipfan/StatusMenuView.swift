@@ -5,21 +5,7 @@ struct StatusMenuView: View {
     @Environment(\.openWindow) var openWindow
 
     var body: some View {
-        if daemon.connected {
-            Text("origin: \(daemon.origin)")
-        } else {
-            Text("(daemon not running)")
-        }
-
-        Divider()
-
-        if daemon.peers.isEmpty {
-            Text("no peers configured")
-        } else {
-            ForEach(daemon.peers) { peer in
-                Text(label(for: peer))
-            }
-        }
+        Text(daemon.connected ? "clipfan · \(daemon.origin)" : "clipfan · daemon not running")
 
         Divider()
 
@@ -27,39 +13,62 @@ struct StatusMenuView: View {
             CommandPanelController.shared.show()
         }
         .keyboardShortcut("v", modifiers: [.command, .shift])
-        Button("Add peer…") {
-            NSApp.activate(ignoringOtherApps: true)
-            openWindow(id: "settings")
-        }
-        Button("Settings…") {
-            NSApp.activate(ignoringOtherApps: true)
-            openWindow(id: "settings")
-        }
-        Button("Restart daemon") {
-            daemon.restartDaemon()
-            Task { await daemon.refresh() }
+
+        Divider()
+
+        if daemon.peers.isEmpty {
+            Text("No peers yet — add one in Settings")
+        } else {
+            Section("Fleet") {
+                ForEach(daemon.peers) { peer in
+                    Button {
+                        NSApp.activate(ignoringOtherApps: true)
+                        openWindow(id: "settings")
+                    } label: {
+                        Label("\(peer.hostname) — \(lastSync(peer))", systemImage: dotSymbol(peer))
+                    }
+                }
+            }
         }
 
         Divider()
 
-        Button("Quit clipfan menubar") {
+        Button("Settings…") {
+            NSApp.activate(ignoringOtherApps: true)
+            openWindow(id: "settings")
+        }
+        .keyboardShortcut(",", modifiers: .command)
+
+        Button("Quit") {
             NSApp.terminate(nil)
         }
+        .keyboardShortcut("q", modifiers: .command)
     }
 
-    func label(for peer: Peer) -> String {
-        let indicator: String
-        if peer.last_push_ok {
-            indicator = "●"
-        } else if let ts = peer.last_push_ts, ts > Date.distantPast {
-            indicator = "✗"
-        } else {
-            indicator = "○"
+    /// Health dot as an SF Symbol name. Green when the last push succeeded,
+    /// amber when it failed/stale, hollow when never contacted.
+    private func dotSymbol(_ peer: Peer) -> String {
+        if peer.last_push_ok { return "circle.fill" }
+        if let ts = peer.last_push_ts, ts > Date.distantPast { return "exclamationmark.circle.fill" }
+        return "circle"
+    }
+
+    /// Human last-sync summary for the menu row.
+    private func lastSync(_ peer: Peer) -> String {
+        if !peer.last_push_ok, let ts = peer.last_push_ts, ts > Date.distantPast {
+            return "offline"
         }
-        var suffix = ""
-        if let rx = peer.last_recv_ts, rx > Date.distantPast, Date().timeIntervalSince(rx) < 300 {
-            suffix = "  (rx)"
-        }
-        return "\(indicator)  \(peer.hostname)\(suffix)"
+        let latest = [peer.last_push_ts, peer.last_recv_ts]
+            .compactMap { $0 }
+            .filter { $0 > Date.distantPast }
+            .max()
+        guard let latest else { return "never" }
+        return relativeShort(latest)
+    }
+
+    private func relativeShort(_ date: Date) -> String {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f.localizedString(for: date, relativeTo: Date())
     }
 }
