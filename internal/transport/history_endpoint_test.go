@@ -18,21 +18,35 @@ func testAuth(t *testing.T) *Auth {
 	return a
 }
 
-func TestHistoryGETNoSignature(t *testing.T) {
+// TestHistoryGETRequiresSignature verifies that GET /v1/history is gated behind
+// the shared-key signature: a signed request succeeds, an unsigned one is denied.
+func TestHistoryGETRequiresSignature(t *testing.T) {
+	auth := testAuth(t)
+	srv := NewServer(":0", auth, nil, func() any { return nil })
 	called := false
-	srv := NewServer(":0", testAuth(t), nil, func() any { return nil })
 	srv.SetHistory(
 		func(limit int) (any, error) { called = true; return []string{"x"}, nil },
 		nil, nil, nil,
 	)
+
+	// Signed GET → 200
 	req := httptest.NewRequest(http.MethodGet, "/v1/history?limit=10", nil)
+	req.Header.Set("X-Clipfan-Sig", auth.Sign(nil))
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+		t.Fatalf("signed GET status = %d, want 200", rec.Code)
 	}
 	if !called {
-		t.Fatal("history func not invoked")
+		t.Fatal("history func not invoked on signed GET")
+	}
+
+	// Unsigned GET → 401
+	req2 := httptest.NewRequest(http.MethodGet, "/v1/history", nil)
+	rec2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusUnauthorized {
+		t.Fatalf("unsigned GET status = %d, want 401", rec2.Code)
 	}
 }
 

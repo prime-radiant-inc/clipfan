@@ -127,6 +127,9 @@ func (s *Server) getPeers(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) getHistory(w http.ResponseWriter, r *http.Request) {
+	if s.readSigned(w, r) == nil {
+		return // readSigned already wrote 401/400
+	}
 	if s.historyFn == nil {
 		http.Error(w, "history disabled", http.StatusServiceUnavailable)
 		return
