@@ -22,27 +22,27 @@ struct CommandPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             searchRow
-            Divider()
+            Divider().opacity(0.5)
             if items.isEmpty {
                 emptyState
             } else {
                 HStack(spacing: 0) {
-                    listPane.frame(width: 300)
-                    Divider()
+                    listPane.frame(width: 320)
+                    Divider().opacity(0.5)
                     previewPane.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            Divider()
+            Divider().opacity(0.5)
             footer
         }
-        .frame(width: 660, height: 440)
+        .frame(width: 680, height: 460)
         .background(VisualEffectBackground())
         .overlay { hiddenShortcuts.frame(width: 0, height: 0).clipped() }
         .task {
             searchFocused = true
             await daemon.refreshHistory()
         }
-        .onChange(of: items.map(\.id)) { ids in
+        .onChange(of: items.map(\.id)) { _ in
             selection = clampedSelection(selection, in: items)
         }
     }
@@ -51,10 +51,12 @@ struct CommandPanelView: View {
 
     private var searchRow: some View {
         HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
             TextField("Type to search clipboard…", text: $search)
                 .textFieldStyle(.plain)
-                .font(.system(size: 15))
+                .font(.system(size: 16))
                 .focused($searchFocused)
                 .onSubmit { pasteSelected() }
             Picker("", selection: $filter) {
@@ -62,30 +64,44 @@ struct CommandPanelView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 240)
+            .fixedSize()
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.vertical, 13)
     }
 
     // MARK: list
 
     private var listPane: some View {
-        List(selection: $selection) {
-            ForEach(Array(items.enumerated()), id: \.element.id) { idx, e in
-                CommandRow(entry: e, number: idx < 9 ? idx + 1 : nil)
-                    .tag(e.id)
-                    .contextMenu {
-                        Button(e.pinned ? "Unpin" : "Pin") {
-                            Task { await daemon.setPinned(e.id, !e.pinned) }
-                        }
-                        Button("Delete", role: .destructive) {
-                            Task { await daemon.deleteEntry(e.id) }
-                        }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { idx, e in
+                        CommandRow(entry: e,
+                                   number: idx < 9 ? idx + 1 : nil,
+                                   isSelected: e.id == selection)
+                            .id(e.id)
+                            .contentShape(Rectangle())
+                            .onTapGesture { selection = e.id }
+                            .contextMenu {
+                                Button(e.pinned ? "Unpin" : "Pin") {
+                                    Task { await daemon.setPinned(e.id, !e.pinned) }
+                                }
+                                Button("Delete", role: .destructive) {
+                                    Task { await daemon.deleteEntry(e.id) }
+                                }
+                            }
                     }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 8)
+            }
+            .scrollContentBackground(.hidden)
+            .onChange(of: selection) { id in
+                guard let id else { return }
+                withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(id, anchor: .center) }
             }
         }
-        .listStyle(.plain)
     }
 
     // MARK: preview
@@ -95,7 +111,7 @@ struct CommandPanelView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Group {
                     if e.kind == .image, let p = e.imagePath, let img = NSImage(contentsOfFile: p) {
-                        Image(nsImage: img).resizable().scaledToFit().padding(16)
+                        Image(nsImage: img).resizable().scaledToFit().padding(18)
                     } else {
                         ScrollView {
                             Text(e.text ?? e.preview)
@@ -103,13 +119,13 @@ struct CommandPanelView: View {
                                                design: isMonospacePreferred(e.text ?? e.preview) ? .monospaced : .default))
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(16)
+                                .padding(18)
                         }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                Divider()
-                previewBadge(e).padding(.horizontal, 16).padding(.vertical, 10)
+                Divider().opacity(0.5)
+                previewBadge(e).padding(.horizontal, 16).padding(.vertical, 11)
             }
         } else {
             Color.clear
@@ -119,7 +135,10 @@ struct CommandPanelView: View {
     private func previewBadge(_ e: HistoryEntry) -> some View {
         HStack(spacing: 8) {
             Text(metaLine(e))
-            if e.pinned { Image(systemName: "pin.fill") }
+            if e.pinned {
+                Image(systemName: "pin.fill")
+                Text("pinned")
+            }
             Spacer()
         }
         .font(.system(size: 11))
@@ -139,23 +158,26 @@ struct CommandPanelView: View {
     // MARK: footer + empty
 
     private var footer: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 14) {
             Text("\(items.count) of \(daemon.history.count)")
             Spacer()
             keyHint("return", "Paste")
-            keyHint("command", "1–9 quick")
+            keyHint("number", "⌘1–9")
             keyHint("escape", "Close")
         }
         .font(.system(size: 11))
         .foregroundStyle(.secondary)
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.vertical, 9)
     }
 
     private func keyHint(_ symbol: String, _ label: String) -> some View {
         HStack(spacing: 4) {
-            Image(systemName: symbol == "return" ? "return" :
-                              symbol == "escape" ? "escape" : "command")
+            switch symbol {
+            case "return": Image(systemName: "return")
+            case "escape": Image(systemName: "escape")
+            default:       Image(systemName: "command")
+            }
             Text(label)
         }
     }
@@ -215,42 +237,59 @@ struct CommandPanelView: View {
 struct CommandRow: View {
     let entry: HistoryEntry
     let number: Int?
+    let isSelected: Bool
 
     var body: some View {
         HStack(spacing: 11) {
             thumbnail
-                .frame(width: 32, height: 32)
+                .frame(width: 34, height: 34)
                 .clipShape(RoundedRectangle(cornerRadius: 7))
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.preview)
                     .lineLimit(1)
                     .font(.system(size: 13,
                                   design: isMonospacePreferred(entry.preview) ? .monospaced : .default))
+                    .foregroundStyle(isSelected ? Color.white : Color.primary)
                 HStack(spacing: 6) {
                     Text(entry.kind.rawValue)
                     Text(entry.origin)
+                        .lineLimit(1)
+                        .fixedSize()
                         .padding(.horizontal, 6)
-                        .background(Color.secondary.opacity(0.18))
+                        .padding(.vertical, 1)
+                        .background(badgeBackground)
                         .clipShape(Capsule())
                     Text(entry.ts, style: .relative)
+                        .lineLimit(1)
                 }
                 .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(isSelected ? Color.white.opacity(0.85) : Color.secondary)
             }
-            Spacer()
+            Spacer(minLength: 6)
             if entry.pinned {
-                Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(.secondary)
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(isSelected ? Color.white.opacity(0.85) : Color.secondary)
             }
             if let number {
                 Text("⌘\(number)")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(isSelected ? Color.white.opacity(0.9) : Color.secondary)
                     .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(Color.secondary.opacity(0.12))
+                    .background((isSelected ? Color.white.opacity(0.2) : Color.secondary.opacity(0.12)))
                     .clipShape(RoundedRectangle(cornerRadius: 4))
             }
         }
-        .padding(.vertical, 5)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isSelected ? Color.accentColor : Color.clear)
+        )
+    }
+
+    private var badgeBackground: Color {
+        isSelected ? Color.white.opacity(0.22) : Color.secondary.opacity(0.18)
     }
 
     @ViewBuilder private var thumbnail: some View {
@@ -261,7 +300,7 @@ struct CommandRow: View {
             ZStack {
                 Color.secondary.opacity(0.15)
                 Image(systemName: entry.kind == .link ? "link" : "doc.text")
-                    .font(.system(size: 13))
+                    .font(.system(size: 14))
                     .foregroundStyle(.secondary)
             }
         }

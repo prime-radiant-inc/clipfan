@@ -23,7 +23,7 @@ struct ClipfanApp: App {
             StatusMenuView()
                 .environmentObject(daemon)
         }
-        .menuBarExtraStyle(.menu)
+        .menuBarExtraStyle(.window)
 
         Window("clipfan", id: "settings") {
             SettingsView()

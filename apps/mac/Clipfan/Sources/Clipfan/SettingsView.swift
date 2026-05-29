@@ -73,9 +73,9 @@ struct PeerCard: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 3) {
-                Text("↑ \(timeAgo(peer.last_push_ts))   ↓ \(timeAgo(peer.last_recv_ts))")
+                Text("↑ \(peerTimeAgo(peer.last_push_ts))   ↓ \(peerTimeAgo(peer.last_recv_ts))")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
-                Text(healthWord).font(.system(size: 10)).foregroundStyle(healthColor)
+                Text(peer.healthWord).font(.system(size: 10)).foregroundStyle(peer.healthColor)
             }
         }
         .padding(12)
@@ -84,31 +84,12 @@ struct PeerCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    private var dotColor: Color { healthColor }
-
-    private var healthColor: Color {
-        if peer.last_push_ok { return .green }
-        if let ts = peer.last_push_ts, ts > Date.distantPast { return .orange }
-        return .gray
-    }
-
-    private var healthWord: String {
-        if peer.last_push_ok { return "healthy" }
-        if let ts = peer.last_push_ts, ts > Date.distantPast { return "offline" }
-        return "idle"
-    }
+    private var dotColor: Color { peer.healthColor }
 
     private var stateLine: String {
         if peer.last_push_ok { return "port \(peer.port) · synced" }
         if let err = peer.last_push_err, !err.isEmpty { return "last error: \(err)" }
         return "port \(peer.port)"
-    }
-
-    private func timeAgo(_ date: Date?) -> String {
-        guard let date, date > Date.distantPast else { return "never" }
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .short
-        return f.localizedString(for: date, relativeTo: Date())
     }
 }
 
