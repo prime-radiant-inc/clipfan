@@ -103,7 +103,7 @@ struct AddPeerSheet: View {
             TextField("Host", text: $host, prompt: Text("host.local or 192.168.1.42"))
             TextField("User", text: $user)
             TextField("SSH port", value: $port, format: .number)
-            if !tailnetAvailable {
+            if !tailnetAvailable || !host.isEmpty {
                 TextField("SSH key (optional)", text: $sshKey, prompt: Text("~/.ssh/id_ed25519"))
             }
         }
