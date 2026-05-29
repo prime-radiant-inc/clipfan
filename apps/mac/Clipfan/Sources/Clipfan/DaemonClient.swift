@@ -8,6 +8,7 @@ final class DaemonClient: ObservableObject {
     @Published var origin: String = "—"
     @Published var peers: [Peer] = []
     @Published var connected: Bool = false
+    @Published var history: [HistoryEntry] = []
 
     private let base = URL(string: "http://127.0.0.1:7853")!
     private var timer: Timer?
@@ -65,5 +66,52 @@ final class DaemonClient: ObservableObject {
         proc.arguments = ["-c", "nohup \(bin.path) >\(log) 2>&1 &"]
         try? proc.run()
         proc.waitUntilExit()
+    }
+
+    func refreshHistory() async {
+        guard let key = loadSharedKey(),
+              let url = URL(string: "\(base.absoluteString)/v1/history?limit=200") else { return }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 2
+        req.setValue(clipfanSign(body: Data(), key: key), forHTTPHeaderField: "X-Clipfan-Sig")
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            let resp = try JSONDecoder.clipfan.decode(HistoryResponse.self, from: data)
+            self.history = resp.entries
+        } catch {
+            // leave history unchanged on transient failure
+        }
+    }
+
+    func restore(_ id: String) async {
+        await signedRequest(method: "POST", path: "/v1/restore", body: ["id": id])
+        await refreshHistory()
+    }
+
+    func setPinned(_ id: String, _ pinned: Bool) async {
+        await signedRequest(method: "POST", path: "/v1/history/pin", body: ["id": id, "pinned": pinned])
+        await refreshHistory()
+    }
+
+    func deleteEntry(_ id: String) async {
+        await signedRequest(method: "DELETE", path: "/v1/history", body: ["id": id])
+        await refreshHistory()
+    }
+
+    func clearUnpinned() async {
+        await signedRequest(method: "DELETE", path: "/v1/history", body: ["all_unpinned": true])
+        await refreshHistory()
+    }
+
+    private func signedRequest(method: String, path: String, body: [String: Any]) async {
+        guard let key = loadSharedKey(),
+              let url = URL(string: "\(base.absoluteString)\(path)"),
+              let payload = try? JSONSerialization.data(withJSONObject: body) else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        req.httpBody = payload
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(clipfanSign(body: payload, key: key), forHTTPHeaderField: "X-Clipfan-Sig")
+        _ = try? await URLSession.shared.data(for: req)
     }
 }
