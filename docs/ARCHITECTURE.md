@@ -21,11 +21,13 @@ internal/
     clipboard.go       Content { Kind=text|image, Bytes, Hash, TS } + Backend interface
     clipboard_darwin.go  pbpaste/pngpaste read; pbcopy + pasteboard helper write
     clipboard_linux.go   wraps xclip / wl-clipboard binaries; headless fallback
+    selection.go         chooseBackend: wayland/xclip/headless from $DISPLAY, $WAYLAND_DISPLAY, PATH
   config/              JSON config under $XDG_CONFIG_HOME/clipfan/config.json
   discovery/           interface { Peers() []Peer }; impls: tailscale, static
   store/               XDG state dir
-    store.go           images/<sha>.png write + image GC
+    store.go           images/<sha>.png write + history-aware image GC
     state.go           state.json + current.txt (the shim's view of the clipboard)
+    history.go         history.json: append/load, pin/delete, retention GC
   transport/           HTTP server + client; HMAC-signed JSON envelopes
     server.go          POST /v1/clip, GET /v1/peers, GET /v1/health, history endpoints
     client.go          push (PushAs stamps a chosen origin for relay)
@@ -133,9 +135,10 @@ When an image arrives at a host:
      file path as text (`public.utf8-plain-text`). Cmd-V in Preview/Keynote/Slack
      pastes the image; Cmd-V in a TUI app pastes the path. Falls back to
      text-only (the path) if the helper isn't installed.
-   - Linux: text-only — write the file's absolute path to the clipboard. `xclip`
-     has no clean multi-target write, and on a headless host there's no display
-     server at all.
+   - Linux with a display: text-only — write the file's absolute path to the
+     clipboard (`xclip` has no clean multi-target write). On a headless host the
+     backend is the no-op headless fallback (no `$DISPLAY`/`$WAYLAND_DISPLAY`), so
+     this step does nothing — but the path still reaches tmux and the shim.
 4. Set `current.txt` to the text representation (the file's absolute path for an
    image), which is what the shim serves.
 5. Call `tmux load-buffer <path>` on every tmux socket.
@@ -145,6 +148,48 @@ Codex/Claude Code sees a file path and attaches it) or `prefix-]` (tmux pastes
 the path string). On Linux, Claude Code's `Ctrl-V` image paste is served by the
 xclip/wl-paste shim, which answers `image/png` queries out of the `images/`
 directory — no display server required.
+
+## tmux copy capture
+
+The daemon keeps the OS clipboard in sync on its own. Capturing a copy made
+*inside tmux on a remote* and getting it onto the fleet is the job of the tmux
+snippet (`dist/tmux.conf.snippet`), installed by `dist/install.sh` to
+`~/.config/clipfan/tmux.conf` and sourced from `~/.tmux.conf`. It pipes tmux
+copies through `clipfan copy`, which posts them to the local daemon (and emits
+OSC 52 to the client tty as a fallback).
+
+tmux exposes a copy through more than one path, so the snippet covers all of
+them:
+
+- **Copy-mode yanks** — `y`, `Enter`, and `MouseDragEnd1Pane`, bound in *both*
+  the `copy-mode-vi` and `copy-mode` (emacs) tables, because the active table
+  depends on the resolved `mode-keys` and a default binding in the other table
+  would otherwise copy only to the tmux buffer.
+- **Paste-buffer writes** — full-screen TUIs that capture the mouse (e.g. Claude
+  Code) run their own selection and write it straight into the tmux paste buffer,
+  bypassing copy-mode. The `after-set-buffer` and `after-load-buffer` hooks fire
+  on those writes and pipe the buffer through `clipfan copy`.
+
+### Why both buffer hooks, and why it doesn't loop
+
+Different tools use different commands to set the buffer — Claude Code uses
+`load-buffer`, others use `set-buffer` — so the snippet hooks both. tmux's own
+docs describe `load-buffer` and `set-buffer` as the same operation differing only
+in data source (a file/stdin vs an inline argument), so the *verb* is not a
+reliable signal for "who wrote this."
+
+That matters because the daemon itself writes every received clip into the tmux
+buffer (via `tmux.LoadBufferAll`, which uses `load-buffer`) so `prefix-]` mirrors
+the OS clipboard. Naively, the `after-load-buffer` hook would then fire on the
+daemon's own writeback and re-broadcast it — an echo loop. The guard is content
+identity, not the verb: right where the daemon loads a received clip into the
+buffer, it records that payload's SHA-256 in the seen set (`daemon/seen.go`).
+When the hook re-submits the same bytes through `clipfan copy`, the daemon
+recognizes the hash and drops it. For an image the buffer holds the on-disk path
+(whose hash differs from the image bytes), so that path hash is registered
+explicitly; on a headless host the OS-clipboard readback is empty, so this
+explicit registration is the only thing standing between the hook and a loop.
+`daemon/hookloop_test.go` covers the image-path case.
 
 ## Persistence
 
