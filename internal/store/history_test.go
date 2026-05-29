@@ -1,6 +1,9 @@
 package store
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strconv"
 	"testing"
 	"time"
 
@@ -61,5 +64,90 @@ func TestImageEntryUsesPath(t *testing.T) {
 	}
 	if got[0].Text != "" {
 		t.Fatalf("image entry should not inline bytes as text")
+	}
+}
+
+func idOf(s string) string { sum := sha256.Sum256([]byte(s)); return hex.EncodeToString(sum[:]) }
+func itoa(i int) string    { return strconv.Itoa(i) }
+
+func TestPinExemptFromTrim(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	AppendHistory(clipboard.New(clipboard.KindText, []byte("keepme"), ts(1)), "m4", "")
+	if err := SetPinned(idOf("keepme"), true); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 300; i++ {
+		AppendHistory(clipboard.New(clipboard.KindText, []byte(itoa(i)+"-x"), ts(100+i)), "m4", "")
+	}
+	got, _ := LoadHistory(1000)
+	found := false
+	for _, e := range got {
+		if e.Preview == "keepme" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("pinned entry was trimmed away")
+	}
+}
+
+func TestDeleteEntry(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	AppendHistory(clipboard.New(clipboard.KindText, []byte("a"), ts(1)), "m4", "")
+	AppendHistory(clipboard.New(clipboard.KindText, []byte("b"), ts(2)), "m4", "")
+	if err := DeleteEntry(idOf("a")); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := LoadHistory(10)
+	if len(got) != 1 || got[0].Preview != "b" {
+		t.Fatalf("delete failed: %+v", got)
+	}
+}
+
+func TestClearUnpinnedKeepsPinned(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	AppendHistory(clipboard.New(clipboard.KindText, []byte("pin"), ts(1)), "m4", "")
+	AppendHistory(clipboard.New(clipboard.KindText, []byte("drop"), ts(2)), "m4", "")
+	_ = SetPinned(idOf("pin"), true)
+	if err := ClearUnpinned(); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := LoadHistory(10)
+	if len(got) != 1 || got[0].Preview != "pin" {
+		t.Fatalf("clear-unpinned failed: %+v", got)
+	}
+}
+
+func TestEntryByID(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	AppendHistory(clipboard.New(clipboard.KindText, []byte("findme"), ts(1)), "m4", "")
+	e, ok, err := EntryByID(idOf("findme"))
+	if err != nil || !ok {
+		t.Fatalf("EntryByID ok=%v err=%v", ok, err)
+	}
+	if e.Preview != "findme" {
+		t.Fatalf("wrong entry: %+v", e)
+	}
+	_, ok2, _ := EntryByID("nonexistent")
+	if ok2 {
+		t.Fatal("EntryByID returned ok for missing id")
+	}
+}
+
+func TestReferencedImages(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	png := []byte("\x89PNG\r\n\x1a\nx")
+	AppendHistory(clipboard.New(clipboard.KindImage, png, ts(1)), "m4", "/some/dir/abc.png")
+	AppendHistory(clipboard.New(clipboard.KindText, []byte("txt"), ts(2)), "m4", "")
+	set, err := ReferencedImages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := set["abc.png"]; !ok {
+		t.Fatalf("referenced set missing abc.png: %v", set)
+	}
+	if len(set) != 1 {
+		t.Fatalf("referenced set should have 1 entry, got %v", set)
 	}
 }

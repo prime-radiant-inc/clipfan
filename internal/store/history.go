@@ -153,6 +153,90 @@ func capLimit() int {
 	return DefaultMaxHistory
 }
 
+// SetPinned sets the pinned flag on the entry with the given id.
+func SetPinned(id string, pinned bool) error {
+	historyMu.Lock()
+	defer historyMu.Unlock()
+	list, err := readHistory()
+	if err != nil {
+		return err
+	}
+	for i := range list {
+		if list[i].ID == id {
+			list[i].Pinned = pinned
+		}
+	}
+	return writeHistory(list)
+}
+
+// DeleteEntry removes the entry with the given id.
+func DeleteEntry(id string) error {
+	historyMu.Lock()
+	defer historyMu.Unlock()
+	list, err := readHistory()
+	if err != nil {
+		return err
+	}
+	out := make([]HistoryEntry, 0, len(list))
+	for _, e := range list {
+		if e.ID != id {
+			out = append(out, e)
+		}
+	}
+	return writeHistory(out)
+}
+
+// ClearUnpinned removes every entry that is not pinned.
+func ClearUnpinned() error {
+	historyMu.Lock()
+	defer historyMu.Unlock()
+	list, err := readHistory()
+	if err != nil {
+		return err
+	}
+	out := make([]HistoryEntry, 0, len(list))
+	for _, e := range list {
+		if e.Pinned {
+			out = append(out, e)
+		}
+	}
+	return writeHistory(out)
+}
+
+// EntryByID returns the entry with the given id, or ok=false if not found.
+func EntryByID(id string) (HistoryEntry, bool, error) {
+	historyMu.Lock()
+	defer historyMu.Unlock()
+	list, err := readHistory()
+	if err != nil {
+		return HistoryEntry{}, false, err
+	}
+	for _, e := range list {
+		if e.ID == id {
+			return e, true, nil
+		}
+	}
+	return HistoryEntry{}, false, nil
+}
+
+// ReferencedImages returns the set of image filenames (<sha>.png) still
+// referenced by any history entry, so image GC can avoid deleting them.
+func ReferencedImages() (map[string]struct{}, error) {
+	historyMu.Lock()
+	defer historyMu.Unlock()
+	list, err := readHistory()
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]struct{}, len(list))
+	for _, e := range list {
+		if e.ImagePath != "" {
+			set[filepath.Base(e.ImagePath)] = struct{}{}
+		}
+	}
+	return set, nil
+}
+
 // capTrim keeps all pinned entries plus the newest unpinned up to max total.
 func capTrim(list []HistoryEntry, max int) []HistoryEntry {
 	if len(list) <= max {
