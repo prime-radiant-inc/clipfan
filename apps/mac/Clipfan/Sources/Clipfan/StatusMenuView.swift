@@ -23,9 +23,8 @@ struct StatusMenuView: View {
 
         Divider()
 
-        Button("Clipboard History…") {
-            NSApp.activate(ignoringOtherApps: true)
-            HistoryWindowController.shared.show()
+        Button("Open Clipboard") {
+            CommandPanelController.shared.show()
         }
         .keyboardShortcut("v", modifiers: [.command, .shift])
         Button("Add peer…") {

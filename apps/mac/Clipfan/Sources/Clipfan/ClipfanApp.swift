@@ -14,8 +14,7 @@ struct ClipfanApp: App {
         Task { await DaemonClient.shared.ensureDaemonRunning() }
 
         historyHotkey = GlobalHotkey {
-            NSApp.activate(ignoringOtherApps: true)
-            HistoryWindowController.shared.show()
+            CommandPanelController.shared.toggle()
         }
     }
 
