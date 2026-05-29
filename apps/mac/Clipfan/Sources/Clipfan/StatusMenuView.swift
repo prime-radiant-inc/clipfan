@@ -27,7 +27,7 @@ struct StatusMenuView: View {
             NSApp.activate(ignoringOtherApps: true)
             HistoryWindowController.shared.show()
         }
-        .keyboardShortcut("h")
+        .keyboardShortcut("v", modifiers: [.command, .shift])
         Button("Add peer…") {
             NSApp.activate(ignoringOtherApps: true)
             openWindow(id: "settings")
