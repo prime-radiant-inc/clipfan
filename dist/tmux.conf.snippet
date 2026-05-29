@@ -1,23 +1,20 @@
-# clipfan tmux integration — source this from your ~/.tmux.conf with:
-#     source-file ~/.local/share/clipfan/tmux.conf.snippet
-# (or copy these bindings into your existing config).
+# clipfan tmux integration
 #
-# This replaces any older OSC-52-only copy bindings. The single `clipfan copy
-# --osc52 #{client_tty}` call does two things at once:
-#   1) POSTs the yanked bytes to the local clipfan daemon, which broadcasts
-#      them to every other host in your fleet.
-#   2) Emits an OSC 52 escape to whichever tmux client is currently driving,
-#      so a terminal connected from a non-clipfan host (e.g. Blink on your
-#      phone, or kitty on a laptop without clipfan) still grabs the text.
+# Source this from your ~/.tmux.conf:  source-file ~/.config/clipfan/tmux.conf
+# then reload:                         tmux source-file ~/.tmux.conf
+#
+# It rebinds copy-mode yanks to ALSO pipe the selection through `clipfan copy`,
+# which injects into the local clipfan daemon (and emits OSC 52 as a fallback
+# for terminals/clients that support it). Works for both vi and emacs copy mode.
+#
+# The absolute $HOME/.local/bin/clipfan path is deliberate: tmux runs copy-pipe
+# commands via a non-login shell whose PATH may not include ~/.local/bin.
 
-# Copy-mode (vi) yanks
-bind -T copy-mode-vi y           send-keys -X copy-pipe-and-cancel 'clipfan copy --osc52 #{client_tty}'
-bind -T copy-mode-vi Enter       send-keys -X copy-pipe-and-cancel 'clipfan copy --osc52 #{client_tty}'
-bind -T copy-mode-vi MouseDragEnd1Pane \
-                                 send-keys -X copy-pipe-and-cancel 'clipfan copy --osc52 #{client_tty}'
+# vi copy-mode: y and Enter both copy-pipe to clipfan
+bind -T copy-mode-vi y     send-keys -X copy-pipe-and-cancel "$HOME/.local/bin/clipfan copy --osc52 #{client_tty}"
+bind -T copy-mode-vi Enter send-keys -X copy-pipe-and-cancel "$HOME/.local/bin/clipfan copy --osc52 #{client_tty}"
+bind -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$HOME/.local/bin/clipfan copy --osc52 #{client_tty}"
 
-# Optional: drop the now-redundant terminal-features / overrides if they were
-# part of your previous OSC-52-only setup. Uncomment if your config had them:
-# set -us terminal-features
-# set -us set-clipboard
-# set -ug allow-passthrough
+# emacs copy-mode (default): M-w and mouse drag copy-pipe to clipfan
+bind -T copy-mode    M-w   send-keys -X copy-pipe-and-cancel "$HOME/.local/bin/clipfan copy --osc52 #{client_tty}"
+bind -T copy-mode    MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$HOME/.local/bin/clipfan copy --osc52 #{client_tty}"
