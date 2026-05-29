@@ -3,169 +3,178 @@ import SwiftUI
 struct AddPeerSheet: View {
     @Environment(\.dismiss) private var dismiss
 
-    enum Mode: String, CaseIterable, Hashable {
-        case manual = "Type address"
-        case tailscale = "Pick from Tailnet"
-    }
-
-    @State private var mode: Mode = .manual
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Picker("", selection: $mode) {
-                ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-
-            switch mode {
-            case .manual: ManualForm(onFinish: { dismiss() })
-            case .tailscale: TailscalePickerView(onFinish: { dismiss() })
-            }
-        }
-        .padding()
-        .frame(width: 560, height: 440)
-    }
-}
-
-struct ManualForm: View {
     @State private var user: String = NSUserName()
     @State private var host: String = ""
     @State private var port: Int = 22
     @State private var sshKey: String = ""
-    @State private var status: String = ""
+    @State private var withTmux = false
+
+    @State private var tailnet: [TailscalePeer] = []
+    @State private var tailnetSelected: Set<String> = []
+    @State private var tailnetAvailable = false
+
     @State private var installing = false
-    let onFinish: () -> Void
+    @State private var progress: String = ""
+
+    private var installCount: Int {
+        tailnetSelected.count + (host.isEmpty ? 0 : 1)
+    }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add a peer").font(.title3).bold()
+            Text("Install clipfan on another host over SSH")
+                .font(.callout).foregroundStyle(.secondary)
+
+            if tailnetAvailable {
+                tailnetSection
+                dividerLabel("or add manually")
+            }
+
+            manualSection
+
+            Toggle(isOn: $withTmux) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Set up tmux copy integration")
+                    Text("Edits ~/.tmux.conf so copies inside tmux (incl. Claude Code) sync to the fleet.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            if !progress.isEmpty {
+                Text(progress).font(.callout).foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button(installing ? "Installing…" : installLabel) { install() }
+                    .keyboardShortcut(.return)
+                    .disabled(installCount == 0 || installing)
+            }
+        }
+        .padding(20)
+        .frame(width: 560, height: tailnetAvailable ? 560 : 420)
+        .task { await loadTailnet() }
+    }
+
+    private var installLabel: String {
+        installCount <= 1 ? "Install" : "Install on \(installCount) hosts"
+    }
+
+    // MARK: tailnet
+
+    private var tailnetSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Form {
-                TextField("Host", text: $host, prompt: Text("paradise-park or 192.168.1.42"))
-                TextField("User", text: $user)
-                TextField("SSH port", value: $port, format: .number)
+            Label("From your tailnet", systemImage: "network").font(.headline)
+            ForEach(tailnet) { peer in
+                Button {
+                    toggle(peer.id)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: tailnetSelected.contains(peer.id) ? "checkmark.square.fill" : "square")
+                            .foregroundStyle(tailnetSelected.contains(peer.id) ? Color.accentColor : .secondary)
+                        Circle().fill(peer.online ? Color.green : Color.gray).frame(width: 8, height: 8)
+                        Text(peer.hostName)
+                        Text(peer.os).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(peer.ip).font(.caption).foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, 4).padding(.horizontal, 8)
+                .background(tailnetSelected.contains(peer.id) ? Color.accentColor.opacity(0.12) : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+            }
+        }
+    }
+
+    private func toggle(_ id: String) {
+        if tailnetSelected.contains(id) { tailnetSelected.remove(id) } else { tailnetSelected.insert(id) }
+    }
+
+    // MARK: manual
+
+    private var manualSection: some View {
+        Form {
+            TextField("Host", text: $host, prompt: Text("host.local or 192.168.1.42"))
+            TextField("User", text: $user)
+            TextField("SSH port", value: $port, format: .number)
+            if !tailnetAvailable {
                 TextField("SSH key (optional)", text: $sshKey, prompt: Text("~/.ssh/id_ed25519"))
             }
-            .formStyle(.grouped)
+        }
+        .formStyle(.grouped)
+    }
 
-            HStack {
-                Spacer()
-                Button("Cancel") { onFinish() }
-                Button(installing ? "Installing…" : "Install on \(host.isEmpty ? "…" : host)") {
-                    install()
-                }
-                .keyboardShortcut(.return)
-                .disabled(host.isEmpty || installing)
-            }
-            if !status.isEmpty {
-                Text(status).foregroundStyle(.secondary).font(.callout)
-            }
+    private func dividerLabel(_ text: String) -> some View {
+        HStack {
+            VStack { Divider() }
+            Text(text).font(.caption).foregroundStyle(.secondary).fixedSize()
+            VStack { Divider() }
         }
     }
 
-    func install() {
+    // MARK: actions
+
+    private func loadTailnet() async {
+        if let peers = try? await TailscaleClient.status(), !peers.isEmpty {
+            tailnet = peers
+            tailnetAvailable = true
+        } else {
+            tailnetAvailable = false
+        }
+    }
+
+    private func install() {
         installing = true
-        status = ""
+        progress = ""
         Task {
-            do {
-                try await Installer.install(
-                    user: user, host: host, port: port, sshKey: sshKey,
-                    withTmux: false,
-                    onProgress: { p in status = "\(p.step): \(p.detail)" }
-                )
-                await MainActor.run {
-                    status = "Installed on \(host). Local daemon restarted."
-                    installing = false
-                    Task { try? await Task.sleep(nanoseconds: 1_200_000_000); onFinish() }
-                }
-            } catch {
-                await MainActor.run {
-                    status = "Failed: \(error.localizedDescription)"
-                    installing = false
-                }
+            var targets: [(user: String, host: String, port: Int, key: String)] = []
+            for peer in tailnet where tailnetSelected.contains(peer.id) {
+                targets.append((NSUserName(), peer.hostName, 22, ""))
             }
-        }
-    }
-}
-
-struct TailscalePickerView: View {
-    @State private var peers: [TailscalePeer] = []
-    @State private var selected: Set<String> = []
-    @State private var loading = true
-    @State private var loadError: String?
-    @State private var installing = false
-    @State private var statusByHost: [String: String] = [:]
-    let onFinish: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if loading {
-                ProgressView("Querying tailnet…").frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let loadError {
-                Text("tailscale status failed:\n\(loadError)")
-                    .foregroundStyle(.red)
-                    .font(.callout)
-                Button("Retry") { Task { await load() } }
-            } else {
-                Table(peers, selection: $selected) {
-                    TableColumn("") { peer in
-                        Circle().fill(peer.online ? Color.green : Color.gray)
-                            .frame(width: 10, height: 10)
-                    }.width(20)
-                    TableColumn("Host", value: \.hostName)
-                    TableColumn("DNS") { Text($0.dnsName).font(.caption).foregroundStyle(.secondary) }
-                    TableColumn("IP") { Text($0.ip).font(.caption).foregroundStyle(.secondary) }.width(120)
-                    TableColumn("OS", value: \.os).width(80)
-                    TableColumn("Status") { peer in
-                        Text(statusByHost[peer.hostName] ?? "")
-                            .font(.caption)
-                            .lineLimit(1)
-                    }
-                }
-                .frame(minHeight: 240)
+            if !host.isEmpty {
+                targets.append((user, host, port, sshKey))
             }
 
-            HStack {
-                Spacer()
-                Button("Cancel") { onFinish() }
-                Button(installing ? "Installing…" : "Install on \(selected.count) host\(selected.count == 1 ? "" : "s")") {
-                    install()
-                }
-                .keyboardShortcut(.return)
-                .disabled(selected.isEmpty || installing)
-            }
-        }
-        .task { await load() }
-    }
-
-    func load() async {
-        loading = true
-        loadError = nil
-        do {
-            peers = try await TailscaleClient.status()
-            loading = false
-        } catch {
-            loadError = error.localizedDescription
-            loading = false
-        }
-    }
-
-    func install() {
-        installing = true
-        Task {
-            let user = NSUserName()
-            for peer in peers where selected.contains(peer.id) {
+            for t in targets {
+                await MainActor.run { progress = "Installing on \(t.host)…" }
                 do {
-                    try await Installer.install(user: user, host: peer.hostName, port: 22, sshKey: "",
-                                                withTmux: false,
-                                                onProgress: { p in
-                        statusByHost[peer.hostName] = "\(p.step): \(p.detail)"
-                    })
-                    statusByHost[peer.hostName] = "ok"
+                    try await Installer.install(
+                        user: t.user, host: t.host, port: t.port, sshKey: t.key,
+                        withTmux: withTmux,
+                        onProgress: { p in let s = friendly(p, host: t.host); Task { @MainActor in progress = s } }
+                    )
+                    await MainActor.run { progress = "Installed on \(t.host)." }
                 } catch {
-                    statusByHost[peer.hostName] = "failed: \(error.localizedDescription)"
+                    await MainActor.run { progress = "Failed on \(t.host): \(error.localizedDescription)" }
+                    await MainActor.run { installing = false }
+                    return
                 }
             }
-            installing = false
+            await MainActor.run {
+                installing = false
+                Task { try? await Task.sleep(nanoseconds: 1_000_000_000); dismiss() }
+            }
         }
+    }
+
+    /// friendly maps Installer's internal step names to user-facing phrases,
+    /// so raw playbook strings never reach the UI.
+    private func friendly(_ p: InstallProgress, host: String) -> String {
+        let phrase: String
+        switch p.step {
+        case "Probe":   phrase = "Connecting"
+        case "Config":  phrase = "Preparing keys"
+        case "Upload":  phrase = "Copying clipfan"
+        case "Install": phrase = "Installing"
+        case "Local", "Restart": phrase = "Finishing up"
+        default:        phrase = "Working"
+        }
+        return "\(host): \(phrase)…"
     }
 }
