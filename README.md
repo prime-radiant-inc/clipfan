@@ -95,24 +95,22 @@ hop would invite echo-loop bugs.
 
 ### Menubar app (macOS)
 
-`cmd/clipfan-menu` is a separate Go binary that runs alongside the daemon
+`Clipfan.app` (`apps/mac/Clipfan`, a SwiftUI app) runs alongside the daemon
 and renders a NSStatusItem menu showing:
 
 - the daemon's origin (short hostname)
 - one line per peer, with `●` if last push succeeded, `✗` if it failed,
   `(rx)` if we've received from them recently
-- "Install on remote…" — opens an osascript dialog asking for a hostname,
-  then scp's the right-arch binary, shim (linux only), unit file, and a
-  config sharing this Mac's `shared_key`, runs install.sh, and adds the
-  new host to the local `static_peers`. The install payload lives in
-  `~/.local/share/clipfan/` (staged by `dist/install.sh`).
-- "Open config", "Open daemon log", "Restart daemon", "Quit menubar app"
+- "Add Peer…" — install on a remote over SSH: scp's the right-arch binary,
+  shim (linux only), unit file, and a config sharing this Mac's `shared_key`,
+  runs install.sh, and adds the new host to the local `static_peers`. The
+  install payload lives in `~/.local/share/clipfan/` (staged by
+  `dist/install.sh`).
+- "Open config", "Open daemon log", "Restart daemon"
 
-The menubar app polls `localhost:7853/v1/peers` every 3s. It does NOT need
-Local Network privacy (loopback is exempt) so it can run cleanly under its
-own launchd plist (`dist/com.primeradiant.clipfan-menu.plist`). Build it
-with `dist/build-all.sh` on macOS; it uses cgo for NSStatusItem so it's
-mac-arch-only.
+The app polls `localhost:7853/v1/peers`. It does NOT need Local Network
+privacy (loopback is exempt). Build it from `apps/mac/Clipfan` with SwiftPM /
+Xcode.
 
 ### Linux Ctrl-V image paste
 

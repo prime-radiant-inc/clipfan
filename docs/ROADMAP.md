@@ -30,10 +30,10 @@ configs that emit OSC 52 instead of shelling to `pbcopy`. Bypass it.
 - **Acceptance:** yank in tmux on flower-garden → Mac pbpaste updates
   within a second; vice versa.
 
-## Phase 2 — Real SwiftUI menubar app  (P0, ~1 week)
+## Phase 2 — Real SwiftUI menubar app  (P0, ~1 week)  [done]
 
-Replace `cmd/clipfan-menu` (Go + getlantern/systray) with a proper
-SwiftUI macOS app bundle: `Clipfan.app`.
+A proper SwiftUI macOS app bundle, `Clipfan.app` (`apps/mac/Clipfan`),
+replaced the old Go + getlantern/systray menubar.
 
 - New layout: `apps/mac/` as a SwiftPM package, separate from the Go
   module. Go daemon lives in the bundle at `Contents/MacOS/clipfand`.

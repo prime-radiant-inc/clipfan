@@ -78,38 +78,20 @@ case "$goos" in
         echo "Loaded launchd job: com.primeradiant.clipfan"
         echo "Logs: $log_dir/clipfan.{out,err}.log"
 
-        # Menubar: install the binary, stage the share dir holding cross-arch
-        # binaries (so the menubar's "Install on remote..." action has payloads
-        # for every supported target), and register the menubar's own launchd
-        # agent so it appears on login.
-        menu_src="$here/clipfan-menu-$goos-$arch"
-        if [[ -x "$menu_src" ]]; then
-            echo "Installing $menu_src -> $DEST/clipfan-menu"
-            install -m 0755 "$menu_src" "$DEST/clipfan-menu"
-
-            share="${XDG_DATA_HOME:-$HOME/.local/share}/clipfan"
-            mkdir -p "$share"
-            for f in clipfan-darwin-amd64 clipfan-darwin-arm64 \
-                     clipfan-linux-amd64 clipfan-linux-arm64 \
-                     clipfan-shim-linux-amd64 clipfan-shim-linux-arm64 \
-                     install.sh clipfan.service com.primeradiant.clipfan.plist; do
-                if [[ -e "$here/$f" ]]; then
-                    install -m 0755 "$here/$f" "$share/$f"
-                fi
-            done
-            echo "Staged menubar share dir: $share"
-
-            menu_plist="$plist_dir/com.primeradiant.clipfan-menu.plist"
-            sed -e "s|__BIN__|$DEST/clipfan-menu|g" \
-                -e "s|__LOG__|$log_dir|g" \
-                -e "s|__PATH__|$run_path|g" \
-                "$here/com.primeradiant.clipfan-menu.plist" > "$menu_plist"
-            launchctl unload "$menu_plist" 2>/dev/null || true
-            launchctl load "$menu_plist"
-            echo "Loaded launchd job: com.primeradiant.clipfan-menu"
-        else
-            echo "(no menubar binary at $menu_src — skipping menu install)"
-        fi
+        # The menubar UI is now Clipfan.app (apps/mac/Clipfan), installed
+        # separately. Stage the share dir holding cross-arch binaries so the
+        # app's "Add Peer…" install action has payloads for every target.
+        share="${XDG_DATA_HOME:-$HOME/.local/share}/clipfan"
+        mkdir -p "$share"
+        for f in clipfan-darwin-amd64 clipfan-darwin-arm64 \
+                 clipfan-linux-amd64 clipfan-linux-arm64 \
+                 clipfan-shim-linux-amd64 clipfan-shim-linux-arm64 \
+                 install.sh clipfan.service com.primeradiant.clipfan.plist; do
+            if [[ -e "$here/$f" ]]; then
+                install -m 0755 "$here/$f" "$share/$f"
+            fi
+        done
+        echo "Staged share dir: $share"
         ;;
     linux)
         unit_dir="$HOME/.config/systemd/user"
