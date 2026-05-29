@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"log/slog"
 	"os"
@@ -29,18 +28,24 @@ type PeerState struct {
 	LastRecvTS  time.Time `json:"last_recv_ts,omitempty"`
 }
 
+// pusher sends clipboard content to a peer host. *transport.Client satisfies
+// it; the interface exists so fanout can be exercised with a fake in tests.
+type pusher interface {
+	PushAs(ctx context.Context, host string, port int, content clipboard.Content, origin string) error
+}
+
 type Daemon struct {
 	cfg    *config.Config
 	cb     clipboard.Backend
 	disc   discovery.Discoverer
 	auth   *transport.Auth
-	cl     *transport.Client
+	cl     pusher
 	sv     *transport.Server
 	origin string
 
-	mu       sync.Mutex
-	lastHash [32]byte
-	lastTS   time.Time
+	mu     sync.Mutex
+	seen   *seenSet
+	lastTS time.Time
 
 	peersMu    sync.RWMutex
 	peerStatus map[string]*PeerState
@@ -73,6 +78,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		auth:       auth,
 		origin:     origin,
 		peerStatus: map[string]*PeerState{},
+		seen:       newSeenSet(),
 	}
 	d.cl = transport.NewClient(auth, origin)
 	d.sv = transport.NewServer(cfg.Listen, auth, d.onReceive, d.peersHandler)
@@ -185,7 +191,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	if c, err := d.cb.Read(); err == nil && len(c.Bytes) > 0 {
 		d.mu.Lock()
-		d.lastHash = c.Hash
+		d.seen.add(c.Hash)
 		d.lastTS = c.TS
 		d.mu.Unlock()
 	}
@@ -211,11 +217,11 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 		return
 	}
 	d.mu.Lock()
-	if bytes.Equal(c.Hash[:], d.lastHash[:]) {
+	if d.seen.has(c.Hash) {
 		d.mu.Unlock()
 		return
 	}
-	d.lastHash = c.Hash
+	d.seen.add(c.Hash)
 	d.lastTS = c.TS
 	d.mu.Unlock()
 	slog.Debug("local clip changed", "kind", c.Kind, "bytes", len(c.Bytes))
@@ -228,7 +234,7 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 	// want to treat it like any other clipboard change. Relay loops are
 	// prevented by the hash dedup below, not by origin filtering.
 	d.mu.Lock()
-	if bytes.Equal(c.Hash[:], d.lastHash[:]) {
+	if d.seen.has(c.Hash) {
 		d.mu.Unlock()
 		return
 	}
@@ -236,7 +242,7 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 		d.mu.Unlock()
 		return
 	}
-	d.lastHash = c.Hash
+	d.seen.add(c.Hash)
 	d.lastTS = c.TS
 	d.mu.Unlock()
 
@@ -271,6 +277,16 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 	}
 	if err := tmux.LoadBufferAll(textPayload); err != nil {
 		slog.Debug("tmux load-buffer", "err", err)
+	}
+
+	// Register what we just wrote so our own poll loop doesn't re-broadcast it.
+	// On text-only backends WriteImage stores the on-disk path as text, so the
+	// readback hash differs from the received image hash; remembering it
+	// suppresses an echo of that path back into the mesh.
+	if readback, err := d.cb.Read(); err == nil && len(readback.Bytes) > 0 {
+		d.mu.Lock()
+		d.seen.add(readback.Hash)
+		d.mu.Unlock()
 	}
 
 	// Relay: re-broadcast to every peer except the origin so disjoint peers
