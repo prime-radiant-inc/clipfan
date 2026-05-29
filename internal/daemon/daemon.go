@@ -225,6 +225,17 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 	d.lastTS = c.TS
 	d.mu.Unlock()
 	slog.Debug("local clip changed", "kind", c.Kind, "bytes", len(c.Bytes))
+	if !c.Concealed {
+		recImg := ""
+		if c.Kind == clipboard.KindImage {
+			if p, err := store.SaveImage(c.Bytes); err == nil {
+				recImg = p
+			}
+		}
+		if err := store.AppendHistory(c, d.origin, recImg); err != nil {
+			slog.Debug("append history", "err", err)
+		}
+	}
 	d.fanout(ctx, c, "" /* skipOrigin = none */)
 }
 
@@ -266,6 +277,17 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 	if err := store.SaveState(state, textPayload); err != nil {
 		slog.Warn("save state", "err", err)
 	}
+
+	if !c.Concealed {
+		recImg := ""
+		if c.Kind == clipboard.KindImage {
+			recImg = imagePath
+		}
+		if err := store.AppendHistory(c, origin, recImg); err != nil {
+			slog.Debug("append history", "err", err)
+		}
+	}
+
 	if c.Kind == clipboard.KindImage {
 		if err := d.cb.WriteImage(c.Bytes, imagePath); err != nil {
 			slog.Warn("local clip write (image)", "err", err)
