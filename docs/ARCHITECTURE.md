@@ -27,7 +27,7 @@ internal/
     store.go           images/<sha>.png write + image GC
     state.go           state.json + current.txt (the shim's view of the clipboard)
   transport/           HTTP server + client; HMAC-signed JSON envelopes
-    server.go          POST /v1/clip, GET /v1/peers, GET /v1/health
+    server.go          POST /v1/clip, GET /v1/peers, GET /v1/health, history endpoints
     client.go          push (PushAs stamps a chosen origin for relay)
     envelope.go        the wire envelope
     auth.go            shared-key HMAC (SHA-256)
@@ -63,13 +63,17 @@ HMAC and rejects any request whose signature doesn't match.
 
 ## HTTP API
 
-The daemon listens on `:7853` by default and serves three endpoints:
+The daemon listens on `:7853` by default and serves these endpoints:
 
-| Method & path   | Auth          | Purpose |
-|-----------------|---------------|---------|
-| `POST /v1/clip` | `X-Clipfan-Sig` | Accept a clipboard envelope from a peer (or from `clipfan copy`) and apply it locally. Returns `204 No Content`. |
-| `GET /v1/peers` | none (loopback) | Return `{ "origin": "<this host>", "peers": [PeerState, ...] }` for the menubar app. |
-| `GET /v1/health`| none          | Liveness check. Returns `200` with body `ok`. |
+| Method & path        | Auth          | Purpose |
+|----------------------|---------------|---------|
+| `POST /v1/clip`      | `X-Clipfan-Sig` | Accept a clipboard envelope from a peer (or from `clipfan copy`) and apply it locally. Returns `204 No Content`. |
+| `GET /v1/peers`      | none (loopback) | Return `{ "origin": "<this host>", "peers": [PeerState, ...] }` for the menubar app. |
+| `GET /v1/health`     | none          | Liveness check. Returns `200` with body `ok`. |
+| `GET /v1/history`    | `X-Clipfan-Sig` | Return `{ "entries": [HistoryEntry, ...] }`; `?limit=<n>` caps the count. |
+| `POST /v1/restore`   | `X-Clipfan-Sig` | Re-copy a history entry as the current clipboard and fan it out to the fleet. |
+| `POST /v1/history/pin` | `X-Clipfan-Sig` | Pin or unpin a history entry. |
+| `DELETE /v1/history` | `X-Clipfan-Sig` | Delete one entry, or all unpinned entries. |
 
 `PeerState` carries the hostname, port, last push timestamp + outcome, last push
 error, and last receive timestamp. The menubar app polls `GET /v1/peers` over
@@ -180,7 +184,6 @@ HistoryEntry {
   text        // full text payload, inline, for text/link (empty for image)
   image_path  // absolute path to images/<sha>.png, for image (empty otherwise)
   size_bytes
-  dims        // e.g. "1440×900", images only
   origin      // host the clip originated on
   ts
   pinned
@@ -216,8 +219,8 @@ These endpoints are HMAC-SHA256 signed with the shared key, exactly like
 `POST /v1/clip`:
 
 - `GET /v1/history?limit=<n>` → `{ "entries": [HistoryEntry, ...] }`.
-  Newest first, pinned floated to the top, capped at `limit` (default = the
-  config cap).
+  Pinned floated to the top, then newest first. `limit` caps the count; without
+  it, the full retained history is returned (itself bounded by the retention cap).
 - `POST /v1/restore` `{ "id": "<sha>" }` → loads that entry, makes it the current
   clipboard (text → pbcopy; image → the pasteboard helper), fans it out to peers
   so the fleet converges, and moves the entry to the top of history.

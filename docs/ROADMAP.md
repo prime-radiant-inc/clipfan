@@ -43,32 +43,20 @@ READMEs for how they work.
 - **launchd Local-Network workaround.** The GUI app holds the Local Network
   grant and shell-launches the daemon, sidestepping the Sequoia gate that
   silently breaks launchd-spawned daemons on RFC1918 peers.
+- **Clipboard history browser.** A two-pane Mac window with search, type
+  filters (All / Text / Image / Link), keyboard navigation, pinning, origin
+  badges, and a ⇧⌘V hotkey; Enter restores an entry to the clipboard and fans
+  it out to the fleet. Each daemon records its clips into `history.json`
+  (newest-first, count-capped at 200, pinned exempt), content-hash identified,
+  with history-aware image GC and concealed-clip exclusion. The model,
+  persistence, and HTTP API are in
+  [ARCHITECTURE.md](ARCHITECTURE.md#clipboard-history).
 
 ---
 
-## Planned — clipboard history browser
+## Planned — clipboard history follow-ups
 
-A clipboard history browser in the menubar app: a two-pane window that lists
-recently-copied items (text, links, images) with a large preview pane, full
-keyboard navigation, search, type filters, pinning, and an origin-host badge on
-every row. Picking an item re-copies it and syncs it to the fleet.
-
-Scope:
-
-- **Backend.** Each daemon records the clips that pass through its own clipboard
-  into a `history.json` ring (newest-first, count-capped, default 200). Entries
-  are content-hash identified (re-copy moves to top), reuse the existing
-  `images/<sha>.png` files as thumbnails, and carry an origin-host tag. Image GC
-  becomes history-aware so it never deletes a PNG a retained or pinned entry
-  still references. New endpoints: `GET /v1/history`, `POST /v1/restore`,
-  `POST /v1/history/pin`, `DELETE /v1/history` — all HMAC-signed.
-- **Privacy.** Clips marked `org.nspasteboard.ConcealedType` (password managers)
-  are never written to history.
-- **Frontend.** A SwiftUI two-pane window opened from the menubar and a
-  configurable global hotkey (default ⇧⌘V); type-to-filter, ↑/↓ + Enter to
-  restore, filter chips (All / Text / Image / Link), pin/delete/clear.
-
-Explicitly deferred (not in this version):
+Deferred sub-features of the history browser:
 
 - Cross-fleet **merged** history (a union of all hosts). History is local per-host.
 - Auto-paste into the frontmost app via Accessibility — we re-copy; the user
