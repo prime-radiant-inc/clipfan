@@ -8,6 +8,12 @@ final class CommandPanelController: NSObject, NSWindowDelegate {
 
     private var panel: NSPanel?
 
+    /// Guards click-away dismissal. Showing the panel and calling NSApp.activate
+    /// can transiently bounce key-window status, firing windowDidResignKey before
+    /// the panel is even on screen — which would make it flash and vanish. We only
+    /// honor resignKey after the run loop settles following a show.
+    private var dismissOnResignKey = false
+
     private override init() { super.init() }
 
     var isVisible: Bool { panel?.isVisible ?? false }
@@ -16,9 +22,7 @@ final class CommandPanelController: NSObject, NSWindowDelegate {
 
     func show() {
         if let panel {
-            position(panel)
-            panel.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            present(panel)
             return
         }
 
@@ -55,12 +59,23 @@ final class CommandPanelController: NSObject, NSWindowDelegate {
         hosting.layer?.masksToBounds = true
 
         self.panel = panel
+        present(panel)
+    }
+
+    /// Order the panel front and arm click-away dismissal one run-loop tick later,
+    /// once the activation-time key-window churn has settled.
+    private func present(_ panel: NSPanel) {
+        dismissOnResignKey = false
         position(panel)
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async { [weak self] in
+            self?.dismissOnResignKey = true
+        }
     }
 
     func hide() {
+        dismissOnResignKey = false
         panel?.orderOut(nil)
     }
 
@@ -74,8 +89,9 @@ final class CommandPanelController: NSObject, NSWindowDelegate {
         panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
-    // Close on click-away.
+    // Close on click-away, but only once a show has fully settled.
     func windowDidResignKey(_ notification: Notification) {
+        guard dismissOnResignKey else { return }
         hide()
     }
 }
