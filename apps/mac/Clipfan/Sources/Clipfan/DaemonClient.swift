@@ -18,9 +18,15 @@ final class DaemonClient: ObservableObject {
     func start() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.refresh() }
+            Task { @MainActor in
+                await self?.refresh()
+                await self?.refreshHistory()
+            }
         }
-        Task { await refresh() }
+        Task {
+            await refresh()
+            await refreshHistory()
+        }
     }
 
     func refresh() async {
@@ -77,7 +83,11 @@ final class DaemonClient: ObservableObject {
         do {
             let (data, _) = try await URLSession.shared.data(for: req)
             let resp = try JSONDecoder.clipfan.decode(HistoryResponse.self, from: data)
-            self.history = resp.entries
+            // Only publish when the list actually changed so the 3s poll doesn't
+            // re-render (and disturb selection/scroll) on every tick.
+            if resp.entries != self.history {
+                self.history = resp.entries
+            }
         } catch {
             // leave history unchanged on transient failure
         }
