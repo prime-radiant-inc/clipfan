@@ -9,6 +9,8 @@ state.
 
 Tracks PRI-1873.
 
+![clipfan command panel](docs/images/command-panel.png)
+
 ## How it works
 
 A daemon runs on every host. Peers discover each other (Tailscale `tailscale
@@ -30,27 +32,76 @@ Conflict policy: last-write-wins by monotonic timestamp. There is no central
 server. The Mac acts as a relay hub, so peers that can't see each other directly
 (one on the LAN, one on the tailnet) still converge through it.
 
-## Quickstart
+## Installation
+
+clipfan has two pieces: a **daemon** that runs on every host (macOS + Linux),
+and a **menubar app** on the Mac that gives you the clipboard history panel and
+a one-click installer for adding more hosts.
+
+### 1. Build the binaries
+
+From a clone of this repo on your Mac:
 
 ```sh
-# 1. Build cross-platform binaries
-bash dist/build-all.sh
-
-# 2. Install on each host (binary + service + tmux integration)
-cd dist && ./install.sh
-
-# 3. Edit ~/.config/clipfan/config.json — copy the shared key to every host,
-#    set static_peers, or leave discovery="tailscale" to auto-fan to the tailnet.
-
-# 4. Restart and verify
-launchctl kickstart -k gui/$UID/com.primeradiant.clipfan      # macOS
-systemctl --user restart clipfan                              # Linux
-curl http://localhost:7853/v1/health                          # → ok
+bash dist/build-all.sh        # cross-compiles the daemon for darwin + linux, amd64 + arm64
 ```
 
-`install.sh` installs the daemon (and, on macOS, the pasteboard helper; on
-Linux, the xclip/wl-paste shim), registers a launchd/systemd-user service, and
-wires the tmux integration (below).
+### 2. Install the daemon on this Mac
+
+```sh
+cd dist && ./install.sh
+```
+
+`install.sh` installs the daemon to `~/.local/bin/clipfan`, installs the macOS
+pasteboard helper (for real image paste), registers a launchd user service, and
+stages the cross-arch binaries in `~/.local/share/clipfan/` so the menubar app
+can install other hosts for you. It generates a `shared_key` in
+`~/.config/clipfan/config.json` on first launch.
+
+**tmux integration is opt-in.** By default `install.sh` sets it up only if `tmux`
+is installed on the host. Force it either way:
+
+```sh
+./install.sh --with-tmux      # always install the tmux copy snippet + source it
+./install.sh --no-tmux        # never touch ~/.tmux.conf
+```
+
+See [Copying from a remote](#copying-from-a-remote-tmux-integration) for what the
+snippet does.
+
+### 3. Build and run the menubar app
+
+```sh
+cd apps/mac/Clipfan && ./build-app.sh
+open .build/Clipfan.app          # or: cp -R .build/Clipfan.app /Applications && open /Applications/Clipfan.app
+```
+
+On first launch, grant **Accessibility / Input Monitoring** when prompted so the
+**⇧⌘V** global hotkey can summon the clipboard panel. Turn on *Launch at login*
+in the app's Settings → General to start it automatically.
+
+### 4. Add the rest of your fleet
+
+Open the menubar icon → **Settings… → Fleet → Add peer…**. If Tailscale is
+running, pick hosts from the tailnet list; otherwise type a host + SSH user. The
+app scp's the right-arch binary and a config carrying this Mac's `shared_key`,
+runs `install.sh` over SSH, and adds the host to your local peer list. Check the
+**tmux copy integration** box for hosts you use inside tmux.
+
+You can also install a host by hand: copy this Mac's `shared_key` into the new
+host's `~/.config/clipfan/config.json` and run `./install.sh` there.
+
+### 5. Verify
+
+```sh
+curl http://localhost:7853/v1/health                          # → ok
+launchctl kickstart -k gui/$UID/com.primeradiant.clipfan      # restart (macOS)
+systemctl --user restart clipfan                              # restart (Linux)
+```
+
+Copy something on one host; it lands on the others. (See the
+[Local Network caveat](#macos-launchd-vs-local-network-privacy) if LAN peers
+don't sync on macOS Sequoia.)
 
 ## Copying from a remote (tmux integration)
 
@@ -109,25 +160,42 @@ every online peer. `discovery: "static"` uses the `static_peers` hostname list.
 
 ## Menubar app (macOS)
 
-`Clipfan.app` (`apps/mac/Clipfan`, a SwiftUI app) runs alongside the daemon and
-shows an `NSStatusItem` menu:
+`Clipfan.app` (`apps/mac/Clipfan`, a SwiftUI app) runs alongside the daemon. It
+follows your system accent color and stays out of the way until you summon it.
 
-- the daemon's origin (short hostname);
-- one line per peer — `●` if the last push succeeded, `✗` if it failed, `(rx)`
-  if we've received from them recently;
-- **Add Peer…** — install on a remote over SSH: scp's the right-arch binary,
-  shim, service unit, and a config sharing this Mac's `shared_key`, runs
-  `install.sh`, and adds the new host to the local `static_peers`. The payload
-  lives in `~/.local/share/clipfan/` (staged by `install.sh`);
-- **Clipboard History…** — a two-pane window: a searchable list on the left, a
-  preview on the right. Filter by type (All / Text / Image / Link), move with
-  the arrow keys. Each row shows a thumbnail or text preview, the host the clip
-  came from, a relative timestamp, and a pin indicator. Press Enter (or the
-  Paste button) to make the selected clip the current clipboard and sync it to
-  the fleet; pin or delete from the row's context menu. Opens from this menu or
-  the **⇧⌘V** global hotkey. History is local to each host, and password-manager
-  pastes (concealed clips) are never recorded;
-- Open config, open daemon log, restart daemon.
+### Clipboard panel — ⇧⌘V
+
+A translucent, keyboard-driven panel (Spotlight/Raycast style) that appears at
+the center of the screen:
+
+- **Type to search** the moment it opens — it filters as you type.
+- **Type chips** (All / Text / Image / Link) narrow by kind.
+- A single list on the left, a live **preview** on the right. Rows show a
+  thumbnail (or a type glyph), the clip, the origin host, and a relative time;
+  images show their dimensions, code and file paths render monospaced.
+- **↑ / ↓** to move, **⏎** to put the selected clip on your clipboard and sync
+  it to the fleet, **⌘1–9** to grab one of the top items directly, **Esc** (or
+  click away) to dismiss. Right-click a row to **pin** or **delete**.
+
+History is local to each host, capped at `max_history` (default 200). Password
+manager pastes (concealed clips) are never recorded.
+
+### Menubar dropdown
+
+Click the menubar icon for **Open Clipboard**, **Settings…**, **Quit**, and a
+**Fleet** section that shows each peer with a colored health dot (green synced /
+orange offline / gray idle) and its last **↑ push / ↓ recv** times — so you can
+see at a glance whether your fleet is in sync. Click a peer to jump to its detail.
+
+### Settings
+
+- **Fleet** — every peer as a card (health, address, sync direction), plus
+  **Add peer…** (see [Installation](#4-add-the-rest-of-your-fleet)).
+- **General** — *Launch at login*, the history limit, the global shortcut, and
+  daemon health. Developer bits (config path, daemon log, restart) live in a
+  collapsed **Developer** section.
+
+![clipfan menubar fleet and settings](docs/images/menubar-fleet.png)
 
 The app polls `localhost:7853/v1/peers` over loopback, so it needs no Local
 Network privacy grant. Build it from `apps/mac/Clipfan` (`./build-app.sh`).
