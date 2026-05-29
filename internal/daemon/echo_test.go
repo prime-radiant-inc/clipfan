@@ -97,6 +97,8 @@ func waitForPushes(t *testing.T, p *fakePusher, n int) {
 // host receives an image and its (Linux-style) backend records the on-disk path
 // as text, the next poll must NOT re-broadcast that path as new text.
 func TestImageReceiveDoesNotEchoPath(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	ctx := context.Background()
 	d, _, push := newTestDaemon(t)
 
@@ -130,6 +132,8 @@ func TestImageReceiveDoesNotEchoPath(t *testing.T) {
 // TestRelayDedup guards against a broadcast storm: receiving the same image hash
 // twice must relay only once.
 func TestRelayDedup(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	d, _, push := newTestDaemon(t)
 
 	img := clipboard.New(clipboard.KindImage, []byte("PNGDATA"), fixedTime)

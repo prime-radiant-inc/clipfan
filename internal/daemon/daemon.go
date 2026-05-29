@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"sort"
@@ -366,6 +367,52 @@ func (d *Daemon) recordPush(p discovery.Peer, err error) {
 		s.LastPushOK = true
 		s.LastPushErr = ""
 	}
+}
+
+// Restore makes the history entry with the given id the current clipboard:
+// it writes the local OS clipboard, re-records it in history (floating it to
+// the top), and fanouts to peers so the fleet converges.
+func (d *Daemon) Restore(id string) error {
+	e, ok, err := store.EntryByID(id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("history entry %s not found", id)
+	}
+
+	var c clipboard.Content
+	if e.Kind == "image" {
+		body, err := os.ReadFile(e.ImagePath)
+		if err != nil {
+			return fmt.Errorf("read image %s: %w", e.ImagePath, err)
+		}
+		c = clipboard.New(clipboard.KindImage, body, time.Now().UTC())
+		if err := d.cb.WriteImage(body, e.ImagePath); err != nil {
+			slog.Error("restore write image", "err", err)
+		}
+	} else {
+		c = clipboard.New(clipboard.KindText, []byte(e.Text), time.Now().UTC())
+		if err := d.cb.WriteText([]byte(e.Text)); err != nil {
+			slog.Error("restore write text", "err", err)
+		}
+	}
+
+	d.mu.Lock()
+	d.seen.add(c.Hash)
+	d.lastTS = c.TS
+	d.mu.Unlock()
+
+	recImg := ""
+	if e.Kind == "image" {
+		recImg = e.ImagePath
+	}
+	if err := store.AppendHistory(c, d.origin, recImg); err != nil {
+		slog.Debug("restore append history", "err", err)
+	}
+
+	d.fanout(context.Background(), c, "")
+	return nil
 }
 
 func (d *Daemon) recordRecv(origin string) {
