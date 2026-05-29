@@ -44,14 +44,18 @@ func SaveImage(body []byte) (string, error) {
 	return path, nil
 }
 
-// gc trims the oldest images beyond maxImages.
+// gc trims the oldest images beyond the retention bound, never deleting an
+// image still referenced by a history entry.
 func gc(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
+	referenced, _ := ReferencedImages() // best-effort; nil set spares nothing
+
 	type stamped struct {
 		path string
+		name string
 		mod  int64
 	}
 	all := make([]stamped, 0, len(entries))
@@ -63,13 +67,27 @@ func gc(dir string) {
 		if err != nil {
 			continue
 		}
-		all = append(all, stamped{filepath.Join(dir, e.Name()), fi.ModTime().UnixNano()})
+		all = append(all, stamped{filepath.Join(dir, e.Name()), e.Name(), fi.ModTime().UnixNano()})
 	}
-	if len(all) <= maxImages {
+
+	bound := maxImages
+	if c := capLimit(); c > bound {
+		bound = c
+	}
+	if len(all) <= bound {
 		return
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].mod < all[j].mod })
-	for _, s := range all[:len(all)-maxImages] {
-		_ = os.Remove(s.path)
+	toRemove := len(all) - bound
+	for _, s := range all {
+		if toRemove == 0 {
+			break
+		}
+		if _, ok := referenced[s.name]; ok {
+			continue // keep referenced images
+		}
+		if err := os.Remove(s.path); err == nil {
+			toRemove--
+		}
 	}
 }

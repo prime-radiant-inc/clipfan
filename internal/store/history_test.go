@@ -3,6 +3,7 @@ package store
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -149,5 +150,31 @@ func TestReferencedImages(t *testing.T) {
 	}
 	if len(set) != 1 {
 		t.Fatalf("referenced set should have 1 entry, got %v", set)
+	}
+}
+
+func TestImageGCSpareReferenced(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	// Save a real image and record it in history.
+	png := []byte("\x89PNG\r\n\x1a\n-referenced-")
+	p, err := SaveImage(png)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := clipboard.New(clipboard.KindImage, png, ts(1))
+	if err := AppendHistory(c, "m4", p); err != nil {
+		t.Fatal(err)
+	}
+	// Flood with more unreferenced images than maxImages to force GC.
+	for i := 0; i < maxImages+10; i++ {
+		if _, err := SaveImage([]byte("filler-" + itoa(i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// gc runs in a goroutine inside SaveImage; call it synchronously to assert.
+	gc(imagesDir())
+	if _, err := os.Stat(p); err != nil {
+		t.Fatalf("referenced image was GC'd: %v", err)
 	}
 }
