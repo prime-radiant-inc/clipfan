@@ -9,5 +9,10 @@ let package = Package(
             name: "Clipfan",
             path: "Sources/Clipfan"
         ),
+        .testTarget(
+            name: "ClipfanTests",
+            dependencies: ["Clipfan"],
+            path: "Tests/ClipfanTests"
+        ),
     ]
 )

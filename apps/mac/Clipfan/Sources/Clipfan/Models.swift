@@ -28,11 +28,13 @@ struct TailscalePeer: Identifiable, Hashable {
 extension JSONDecoder {
     static let clipfan: JSONDecoder = {
         let d = JSONDecoder()
+        let isoFractional = ISO8601DateFormatter()
+        isoFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        iso.formatOptions = [.withInternetDateTime]
         d.dateDecodingStrategy = .custom { dec in
             let s = try dec.singleValueContainer().decode(String.self)
-            if let date = iso.date(from: s) {
+            if let date = isoFractional.date(from: s) ?? iso.date(from: s) {
                 return date
             }
             // Fallback for the zero-value form Go emits when a timestamp
