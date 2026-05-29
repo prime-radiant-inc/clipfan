@@ -35,6 +35,15 @@ final class PanelSelectionTests: XCTestCase {
         XCTAssertNil(movedSelection(from: nil, in: ids([]), delta: 1))
     }
 
+    func testMoveDeltaZeroKeepsSelection() {
+        let list = ids(["a", "b", "c"])
+        XCTAssertEqual(movedSelection(from: "b", in: list, delta: 0), "b")
+    }
+
+    func testMoveStaleIdInEmptyListIsNil() {
+        XCTAssertNil(movedSelection(from: "gone", in: ids([]), delta: 1))
+    }
+
     func testIdForNumber() {
         let list = ids(["a", "b", "c"])
         XCTAssertEqual(idForNumber(1, in: list), "a")
