@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"os"
@@ -312,6 +313,17 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 	if err := tmux.LoadBufferAll(textPayload); err != nil {
 		slog.Debug("tmux load-buffer", "err", err)
 	}
+
+	// Register the hash of exactly what we loaded into the tmux buffer. A
+	// tmux after-set-buffer / after-load-buffer hook re-submits that content
+	// through `clipfan copy`; registering it here dedups that echo regardless
+	// of clipboard backend. This is the loop guard for the hook bridge — note
+	// for an image, textPayload is the on-disk path (not the image bytes), so
+	// its hash differs from c.Hash and must be registered explicitly.
+	loaded := sha256.Sum256(textPayload)
+	d.mu.Lock()
+	d.seen.add(loaded)
+	d.mu.Unlock()
 
 	// Register what we just wrote so our own poll loop doesn't re-broadcast it.
 	// On text-only backends WriteImage stores the on-disk path as text, so the

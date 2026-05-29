@@ -75,6 +75,6 @@ func (b *linuxBackend) WriteImage(body []byte, path string) error {
 
 type headlessBackend struct{}
 
-func (headlessBackend) Read() (Content, error)             { return Content{}, nil }
-func (headlessBackend) WriteText(text []byte) error        { return nil }
-func (headlessBackend) WriteImage([]byte, string) error    { return nil }
+func (headlessBackend) Read() (Content, error)          { return Content{}, nil }
+func (headlessBackend) WriteText(text []byte) error     { return nil }
+func (headlessBackend) WriteImage([]byte, string) error { return nil }

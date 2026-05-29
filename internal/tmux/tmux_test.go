@@ -56,13 +56,14 @@ func uid() string {
 	}()
 }
 
-// TestLoadBufferAllUsesLoadBufferNotSetBuffer locks in the invariant that the
-// daemon writes received clips back with `load-buffer`, NOT `set-buffer`. The
-// dotfiles `after-set-buffer` tmux hook (which pipes Claude-Code-style buffer
-// writes into clipfan) relies on this asymmetry: if the writeback ever used
-// `set-buffer`, it would re-trigger that hook and create a sync loop. A fake
-// `tmux` on PATH records the subcommand actually invoked.
-func TestLoadBufferAllUsesLoadBufferNotSetBuffer(t *testing.T) {
+// TestLoadBufferAllUsesLoadBuffer characterizes how the daemon writes received
+// clips into tmux: via `load-buffer` reading from stdin. (tmux treats
+// load-buffer and set-buffer as the same operation differing only in data
+// source, so this is documentation of the chosen mechanism, not a loop guard.
+// Loop-safety for the tmux hook bridge lives in the daemon's seen-set: see
+// TestImagePathWritebackDedupedHeadless.) A fake `tmux` on PATH records the
+// subcommand actually invoked.
+func TestLoadBufferAllUsesLoadBuffer(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMUX_TMPDIR", tmp)
 
@@ -96,9 +97,6 @@ func TestLoadBufferAllUsesLoadBufferNotSetBuffer(t *testing.T) {
 	}
 	got := string(out)
 	if !strings.Contains(got, "load-buffer") {
-		t.Fatalf("writeback must use load-buffer; got args: %q", got)
-	}
-	if strings.Contains(got, "set-buffer") {
-		t.Fatalf("writeback must NOT use set-buffer (would loop the after-set-buffer hook); got args: %q", got)
+		t.Fatalf("writeback should use load-buffer; got args: %q", got)
 	}
 }
