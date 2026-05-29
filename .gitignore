@@ -3,6 +3,8 @@
 /clipfan-shim
 /dist/clipfan-*
 /dist/clipfan-shim-*
+# ...but keep source files that share the clipfan- prefix
+!/dist/clipfan-pasteboard-helper.swift
 *.exe
 *.dll
 *.so
