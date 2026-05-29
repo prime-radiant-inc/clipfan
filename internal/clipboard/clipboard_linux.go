@@ -18,25 +18,27 @@ type linuxBackend struct {
 }
 
 func NewBackend() Backend {
-	if os.Getenv("WAYLAND_DISPLAY") != "" {
-		if _, err := exec.LookPath("wl-paste"); err == nil {
-			return &linuxBackend{
-				readText:    []string{"wl-paste", "--no-newline"},
-				writeText:   []string{"wl-copy"},
-				readTargets: []string{"wl-paste", "--list-types"},
-				readImage:   []string{"wl-paste", "--type", "image/png"},
-			}
+	have := func(bin string) bool { _, err := exec.LookPath(bin); return err == nil }
+	switch chooseBackend(os.Getenv("WAYLAND_DISPLAY"), os.Getenv("DISPLAY"), have) {
+	case backendWayland:
+		return &linuxBackend{
+			readText:    []string{"wl-paste", "--no-newline"},
+			writeText:   []string{"wl-copy"},
+			readTargets: []string{"wl-paste", "--list-types"},
+			readImage:   []string{"wl-paste", "--type", "image/png"},
 		}
-	}
-	if _, err := exec.LookPath("xclip"); err == nil {
+	case backendXclip:
 		return &linuxBackend{
 			readText:    []string{"xclip", "-selection", "clipboard", "-o"},
 			writeText:   []string{"xclip", "-selection", "clipboard", "-i"},
 			readTargets: []string{"xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"},
 			readImage:   []string{"xclip", "-selection", "clipboard", "-t", "image/png", "-o"},
 		}
+	default:
+		// No usable display server: avoid shelling out to a clipboard tool that
+		// has nothing to talk to (which logged a write failure on every clip).
+		return &headlessBackend{}
 	}
-	return &headlessBackend{}
 }
 
 func (b *linuxBackend) Read() (Content, error) {
