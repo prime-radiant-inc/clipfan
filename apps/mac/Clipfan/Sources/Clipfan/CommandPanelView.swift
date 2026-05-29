@@ -56,6 +56,7 @@ struct CommandPanelView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 15))
                 .focused($searchFocused)
+                .onSubmit { pasteSelected() }
             Picker("", selection: $filter) {
                 ForEach(TypeFilter.allCases) { f in Text(f.label).tag(f) }
             }
@@ -184,6 +185,10 @@ struct CommandPanelView: View {
                 .keyboardShortcut(.return, modifiers: [])
             Button("") { onDismiss() }
                 .keyboardShortcut(.cancelAction)
+            Button("") { selection = movedSelection(from: selection, in: items, delta: 1) }
+                .keyboardShortcut(.downArrow, modifiers: [])
+            Button("") { selection = movedSelection(from: selection, in: items, delta: -1) }
+                .keyboardShortcut(.upArrow, modifiers: [])
             ForEach(1...9, id: \.self) { n in
                 Button("") { pasteNumber(n) }
                     .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: .command)
