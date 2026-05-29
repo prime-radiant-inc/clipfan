@@ -60,6 +60,31 @@ if [[ "$goos" == "linux" ]]; then
     fi
 fi
 
+# tmux integration: install the copy snippet and source it from ~/.tmux.conf.
+# This makes copies made anywhere in tmux (copy-mode yanks, and full-screen TUIs
+# like Claude Code that push selections into the paste buffer) flow into clipfan.
+if [[ -f "$here/tmux.conf.snippet" ]]; then
+    tmux_cfg="${XDG_CONFIG_HOME:-$HOME/.config}/clipfan/tmux.conf"
+    mkdir -p "$(dirname "$tmux_cfg")"
+    install -m 0644 "$here/tmux.conf.snippet" "$tmux_cfg"
+    echo "Installed tmux snippet -> $tmux_cfg"
+
+    source_line="source-file ~/.config/clipfan/tmux.conf"
+    user_tmux_conf="$HOME/.tmux.conf"
+    if [[ -f "$user_tmux_conf" ]] && grep -qF ".config/clipfan/tmux.conf" "$user_tmux_conf"; then
+        echo "~/.tmux.conf already sources the clipfan snippet"
+    else
+        # Append so it sources last and its copy-mode bindings win over earlier ones.
+        printf '\n# clipfan tmux integration\n%s\n' "$source_line" >> "$user_tmux_conf"
+        echo "Appended '$source_line' to ~/.tmux.conf"
+    fi
+
+    # Reload any running tmux server so it takes effect now, not just next start.
+    if command -v tmux >/dev/null 2>&1 && tmux ls >/dev/null 2>&1; then
+        tmux source-file "$user_tmux_conf" 2>/dev/null && echo "Reloaded running tmux server" || true
+    fi
+fi
+
 case "$goos" in
     darwin)
         plist_dir="$HOME/Library/LaunchAgents"
@@ -86,7 +111,8 @@ case "$goos" in
         for f in clipfan-darwin-amd64 clipfan-darwin-arm64 \
                  clipfan-linux-amd64 clipfan-linux-arm64 \
                  clipfan-shim-linux-amd64 clipfan-shim-linux-arm64 \
-                 install.sh clipfan.service com.primeradiant.clipfan.plist; do
+                 clipfan-pasteboard-helper-darwin-amd64 clipfan-pasteboard-helper-darwin-arm64 \
+                 install.sh clipfan.service com.primeradiant.clipfan.plist tmux.conf.snippet; do
             if [[ -e "$here/$f" ]]; then
                 install -m 0755 "$here/$f" "$share/$f"
             fi

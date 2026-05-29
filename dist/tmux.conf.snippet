@@ -1,20 +1,42 @@
 # clipfan tmux integration
 #
-# Source this from your ~/.tmux.conf:  source-file ~/.config/clipfan/tmux.conf
-# then reload:                         tmux source-file ~/.tmux.conf
+# Installed by dist/install.sh to ~/.config/clipfan/tmux.conf and sourced from
+# ~/.tmux.conf. To wire it up by hand instead:
+#     echo 'source-file ~/.config/clipfan/tmux.conf' >> ~/.tmux.conf
+#     tmux source-file ~/.tmux.conf      # or restart tmux
 #
-# It rebinds copy-mode yanks to ALSO pipe the selection through `clipfan copy`,
-# which injects into the local clipfan daemon (and emits OSC 52 as a fallback
-# for terminals/clients that support it). Works for both vi and emacs copy mode.
+# This makes copies made anywhere in tmux flow into the clipfan daemon, which
+# syncs them to the whole fleet. It covers three copy paths:
 #
-# The absolute $HOME/.local/bin/clipfan path is deliberate: tmux runs copy-pipe
-# commands via a non-login shell whose PATH may not include ~/.local/bin.
+#   1. Copy-mode yanks (y / Enter / mouse drag), bound in BOTH the vi and emacs
+#      copy-mode tables so it works whichever mode-keys resolves to.
+#   2. Full-screen TUIs that capture the mouse (e.g. Claude Code) and push the
+#      selection straight into the tmux paste buffer, bypassing copy-mode. The
+#      after-set-buffer / after-load-buffer hooks catch those.
+#
+# Each binding also emits OSC 52 to the client tty as a fallback for terminals
+# that consume it (Blink/iTerm/Kitty/Ghostty; Apple Terminal ignores it).
+#
+# Absolute $HOME/.local/bin/clipfan is deliberate: tmux runs hook and copy-pipe
+# commands in a non-login shell whose PATH usually omits ~/.local/bin.
+#
+# No secrets live here. The shared key is host-local in ~/.config/clipfan/config.json.
 
-# vi copy-mode: y and Enter both copy-pipe to clipfan
+# --- copy-mode yanks ---------------------------------------------------------
+# vi copy-mode
 bind -T copy-mode-vi y     send-keys -X copy-pipe-and-cancel "$HOME/.local/bin/clipfan copy --osc52 #{client_tty}"
 bind -T copy-mode-vi Enter send-keys -X copy-pipe-and-cancel "$HOME/.local/bin/clipfan copy --osc52 #{client_tty}"
 bind -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$HOME/.local/bin/clipfan copy --osc52 #{client_tty}"
+# emacs copy-mode
+bind -T copy-mode M-w   send-keys -X copy-pipe-and-cancel "$HOME/.local/bin/clipfan copy --osc52 #{client_tty}"
+bind -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$HOME/.local/bin/clipfan copy --osc52 #{client_tty}"
 
-# emacs copy-mode (default): M-w and mouse drag copy-pipe to clipfan
-bind -T copy-mode    M-w   send-keys -X copy-pipe-and-cancel "$HOME/.local/bin/clipfan copy --osc52 #{client_tty}"
-bind -T copy-mode    MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$HOME/.local/bin/clipfan copy --osc52 #{client_tty}"
+# --- buffer hooks (catch selections that never enter copy-mode) --------------
+# Claude Code uses load-buffer; other tools use set-buffer. Hook both.
+# Loop-safe by content identity: the daemon writes received clips into the buffer
+# too (also load-buffer), but registers each loaded payload's hash in its
+# seen-set, so the echo these hooks produce is deduped at the daemon. (tmux
+# treats load-buffer and set-buffer as the same operation differing only in data
+# source, so the verb itself is not a reliable signal.)
+set-hook -g after-set-buffer  'run-shell "tmux show-buffer | $HOME/.local/bin/clipfan copy"'
+set-hook -g after-load-buffer 'run-shell "tmux show-buffer | $HOME/.local/bin/clipfan copy"'
