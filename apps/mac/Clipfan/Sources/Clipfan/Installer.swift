@@ -35,7 +35,14 @@ actor Installer {
             .appendingPathComponent(".local/share/clipfan")
     }()
 
+    /// tmuxFlag maps the Add-Peer tmux checkbox to the install.sh flag. The GUI
+    /// always passes an explicit flag so installs are never subject to auto-detect.
+    static func tmuxFlag(_ withTmux: Bool) -> String {
+        withTmux ? "--with-tmux" : "--no-tmux"
+    }
+
     static func install(user: String, host: String, port: Int, sshKey: String,
+                        withTmux: Bool,
                         onProgress: @MainActor @escaping (InstallProgress) -> Void) async throws {
         let target = user.isEmpty ? host : "\(user)@\(host)"
         var sshArgs: [String] = ["-o", "ConnectTimeout=5"]
@@ -141,7 +148,7 @@ actor Installer {
         set -e
         mkdir -p ~/.config/clipfan
         install -m 0600 /tmp/clipfan-install/config.json ~/.config/clipfan/config.json
-        cd /tmp/clipfan-install && bash install.sh
+        cd /tmp/clipfan-install && bash install.sh \(tmuxFlag(withTmux))
         """
         _ = try await run("/usr/bin/ssh", sshArgs + [target, cmd])
 

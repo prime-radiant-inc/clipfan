@@ -69,6 +69,7 @@ struct ManualForm: View {
             do {
                 try await Installer.install(
                     user: user, host: host, port: port, sshKey: sshKey,
+                    withTmux: false,
                     onProgress: { p in status = "\(p.step): \(p.detail)" }
                 )
                 await MainActor.run {
@@ -155,6 +156,7 @@ struct TailscalePickerView: View {
             for peer in peers where selected.contains(peer.id) {
                 do {
                     try await Installer.install(user: user, host: peer.hostName, port: 22, sshKey: "",
+                                                withTmux: false,
                                                 onProgress: { p in
                         statusByHost[peer.hostName] = "\(p.step): \(p.detail)"
                     })
