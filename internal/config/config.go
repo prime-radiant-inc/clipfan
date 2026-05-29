@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 )
 
+const defaultMaxHistory = 200
+
 type Config struct {
 	Listen      string   `json:"listen"`
 	SharedKey   string   `json:"shared_key"`
@@ -17,7 +19,8 @@ type Config struct {
 	StaticPeers []string `json:"static_peers,omitempty"`
 	Hostname    string   `json:"hostname,omitempty"`
 	Port        int      `json:"port,omitempty"`
-	MaxHistory  int      `json:"max_history,omitempty"`
+	// MaxHistory caps the number of retained clipboard history entries.
+	MaxHistory int `json:"max_history,omitempty"`
 }
 
 // withDefaults fills zero-valued fields with their defaults.
@@ -32,7 +35,7 @@ func withDefaults(c Config) Config {
 		c.Discovery = "tailscale"
 	}
 	if c.MaxHistory == 0 {
-		c.MaxHistory = 200
+		c.MaxHistory = defaultMaxHistory
 	}
 	return c
 }
