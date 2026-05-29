@@ -12,14 +12,22 @@ import (
 	"time"
 )
 
-type macBackend struct{}
+type macBackend struct {
+	lastTextHash  [32]byte
+	lastConcealed bool
+	haveLast      bool
+}
 
 func NewBackend() Backend { return &macBackend{} }
 
-func (macBackend) Read() (Content, error) {
+// concealedFn is the concealment probe used by Read. It is a package var so
+// tests can substitute a counting stub without spawning the helper subprocess.
+var concealedFn = concealed
+
+func (b *macBackend) Read() (Content, error) {
 	if png, ok := readPNG(); ok {
 		c := New(KindImage, png, time.Now().UTC())
-		c.Concealed = concealed()
+		c.Concealed = concealedFn()
 		return c, nil
 	}
 	out, err := exec.Command("pbpaste").Output()
@@ -27,8 +35,24 @@ func (macBackend) Read() (Content, error) {
 		return Content{}, err
 	}
 	c := New(KindText, out, time.Now().UTC())
-	c.Concealed = concealed()
+	b.applyConcealment(&c)
 	return c, nil
+}
+
+// applyConcealment sets c.Concealed, reusing the cached result when the text
+// hash is unchanged. The concealment check forks the Swift helper, and Read
+// runs on the daemon's 250ms poll loop, so probing every poll would fork
+// ~4x/sec while the clipboard sits idle. Caching by content hash limits the
+// fork to the moments the clipboard text actually changes.
+func (b *macBackend) applyConcealment(c *Content) {
+	if b.haveLast && c.Hash == b.lastTextHash {
+		c.Concealed = b.lastConcealed
+		return
+	}
+	c.Concealed = concealedFn()
+	b.lastTextHash = c.Hash
+	b.lastConcealed = c.Concealed
+	b.haveLast = true
 }
 
 // concealed reports whether the current pasteboard item is marked as
