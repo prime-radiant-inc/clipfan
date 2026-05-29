@@ -18,6 +18,20 @@ func TestNewSharedKeyUnique(t *testing.T) {
 	}
 }
 
+func TestMaxHistoryDefault(t *testing.T) {
+	c := withDefaults(Config{})
+	if c.MaxHistory != 200 {
+		t.Fatalf("MaxHistory default = %d, want 200", c.MaxHistory)
+	}
+}
+
+func TestMaxHistoryRespectsExplicit(t *testing.T) {
+	c := withDefaults(Config{MaxHistory: 50})
+	if c.MaxHistory != 50 {
+		t.Fatalf("MaxHistory = %d, want 50 (explicit kept)", c.MaxHistory)
+	}
+}
+
 func TestLoadCreatesDefaultConfig(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)

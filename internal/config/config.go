@@ -17,6 +17,24 @@ type Config struct {
 	StaticPeers []string `json:"static_peers,omitempty"`
 	Hostname    string   `json:"hostname,omitempty"`
 	Port        int      `json:"port,omitempty"`
+	MaxHistory  int      `json:"max_history,omitempty"`
+}
+
+// withDefaults fills zero-valued fields with their defaults.
+func withDefaults(c Config) Config {
+	if c.Port == 0 {
+		c.Port = 7853
+	}
+	if c.Listen == "" {
+		c.Listen = ":7853"
+	}
+	if c.Discovery == "" {
+		c.Discovery = "tailscale"
+	}
+	if c.MaxHistory == 0 {
+		c.MaxHistory = 200
+	}
+	return c
 }
 
 func Path() string {
@@ -39,12 +57,8 @@ func Load() (*Config, error) {
 	path := Path()
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		c := &Config{
-			Listen:    ":7853",
-			SharedKey: NewSharedKey(),
-			Discovery: "tailscale",
-			Port:      7853,
-		}
+		cfg := withDefaults(Config{SharedKey: NewSharedKey()})
+		c := &cfg
 		if err := Save(c); err != nil {
 			return nil, fmt.Errorf("save initial config: %w", err)
 		}
@@ -57,15 +71,7 @@ func Load() (*Config, error) {
 	if err := json.Unmarshal(data, c); err != nil {
 		return nil, err
 	}
-	if c.Port == 0 {
-		c.Port = 7853
-	}
-	if c.Listen == "" {
-		c.Listen = ":7853"
-	}
-	if c.Discovery == "" {
-		c.Discovery = "tailscale"
-	}
+	*c = withDefaults(*c)
 	return c, nil
 }
 
