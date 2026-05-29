@@ -27,3 +27,6 @@ clipfan.config.toml
 
 # SwiftPM build output
 apps/mac/Clipfan/.build/
+
+# Visual brainstorm companion scratch
+.superpowers/
