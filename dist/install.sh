@@ -9,6 +9,32 @@
 #     DEST       — install dir for binaries (default: $HOME/.local/bin)
 #     UNIT_NAME  — basename of the unit (default: clipfan / com.primeradiant.clipfan)
 
+# tmux integration mode: auto (default; on iff tmux is installed), on, or off.
+TMUX_MODE=auto
+_args=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --with-tmux) TMUX_MODE=on ;;
+        --no-tmux)   TMUX_MODE=off ;;
+        *) _args+=("$1") ;;
+    esac
+    shift
+done
+set -- "${_args[@]+"${_args[@]}"}"
+
+# want_tmux decides whether to install the tmux copy integration.
+want_tmux() {
+    case "$TMUX_MODE" in
+        on)  return 0 ;;
+        off) return 1 ;;
+        *)   command -v tmux >/dev/null 2>&1 ;;
+    esac
+}
+
+# When sourced (e.g. by dist/test-tmux-gating.sh) stop here: expose the
+# functions/vars above but don't run the installer.
+(return 0 2>/dev/null) && return 0
+
 set -euo pipefail
 
 DEST=${DEST:-$HOME/.local/bin}
@@ -63,7 +89,7 @@ fi
 # tmux integration: install the copy snippet and source it from ~/.tmux.conf.
 # This makes copies made anywhere in tmux (copy-mode yanks, and full-screen TUIs
 # like Claude Code that push selections into the paste buffer) flow into clipfan.
-if [[ -f "$here/tmux.conf.snippet" ]]; then
+if [[ -f "$here/tmux.conf.snippet" ]] && want_tmux; then
     tmux_cfg="${XDG_CONFIG_HOME:-$HOME/.config}/clipfan/tmux.conf"
     mkdir -p "$(dirname "$tmux_cfg")"
     install -m 0644 "$here/tmux.conf.snippet" "$tmux_cfg"
