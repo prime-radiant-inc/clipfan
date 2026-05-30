@@ -1,18 +1,15 @@
 import SwiftUI
 import AppKit
+import KeyboardShortcuts
 
 @main
 struct ClipfanApp: App {
     @StateObject private var daemon = DaemonClient.shared
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
-    // Held for the app's lifetime so the global hotkey stays registered.
-    private let historyHotkey: GlobalHotkey
-
     init() {
         DaemonClient.shared.start()
-
-        historyHotkey = GlobalHotkey {
+        KeyboardShortcuts.onKeyDown(for: .toggleClipboard) {
             CommandPanelController.shared.toggle()
         }
     }
