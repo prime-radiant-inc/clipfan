@@ -162,6 +162,14 @@ case "$goos" in
         ;;
 esac
 
+# Per-OS daemon restart command shown in the next-steps message. Computed here
+# rather than inline in the heredoc: an escaped \$goos inside a heredoc command
+# substitution mis-evaluates and always printed the Linux (systemctl) branch.
+case "$goos" in
+    darwin) restart_cmd='launchctl kickstart -k gui/$UID/com.primeradiant.clipfan' ;;
+    *)      restart_cmd='systemctl --user restart clipfan' ;;
+esac
+
 cat <<EOF
 
 clipfan installed.
@@ -171,7 +179,6 @@ Next steps:
      - SharedKey was generated on first launch; copy it to every other host.
      - Discovery is "tailscale" by default; switch to "static" + static_peers if needed.
   2. Restart the daemon after editing:
-       $( [[ \$goos == darwin ]] && echo 'launchctl kickstart -k gui/$UID/com.primeradiant.clipfan' \
-          || echo 'systemctl --user restart clipfan' )
+       $restart_cmd
   3. Verify health: curl http://localhost:7853/v1/health
 EOF
