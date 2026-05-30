@@ -85,7 +85,6 @@ struct FleetTab: View {
 struct GeneralTab: View {
     @EnvironmentObject var daemon: DaemonClient
     @StateObject private var loginItem = LoginItemManager.shared
-    @State private var showDeveloper = false
 
     var body: some View {
         Form {
@@ -111,42 +110,9 @@ struct GeneralTab: View {
                 LabeledContent("History limit", value: "200 items")
                 LabeledContent("Global shortcut", value: "⇧⌘V")
             }
-
-            Section("Status") {
-                LabeledContent("Daemon", value: daemon.connected ? "running" : "down")
-                Button("Re-run setup…") {
-                    WelcomeWindowController.shared.show(startInstall: true)
-                }
-                Text("Reinstalls and restarts the background service.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-
-            Section {
-                DisclosureGroup("Developer", isExpanded: $showDeveloper) {
-                    LabeledContent("Config") { Text(configPath).font(.system(.caption, design: .monospaced)) }
-                    LabeledContent("Share dir") { Text(shareDirPath).font(.system(.caption, design: .monospaced)) }
-                    Button("Reveal config in Finder") {
-                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: configPath)])
-                    }
-                    Button("Open daemon log") {
-                        NSWorkspace.shared.open(URL(fileURLWithPath: logPath))
-                    }
-                    Button("Restart daemon") {
-                        daemon.restartDaemon()
-                        Task { await daemon.refresh() }
-                    }
-                }
-            }
         }
         .formStyle(.grouped)
     }
-
-    var configPath: String {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/clipfan/config.json").path
-    }
-    var shareDirPath: String { Installer.shareDir.path }
-    var logPath: String { "/tmp/clipfan-shell.log" }
 }
 
 /// Shown in the Fleet tab when a peer's pushes are failing — the usual cause on
@@ -186,5 +152,61 @@ func openLocalNetworkSettings() {
 }
 
 struct DiagnosticsTab: View {
-    var body: some View { Text("Diagnostics").padding() }
+    @EnvironmentObject var daemon: DaemonClient
+
+    var body: some View {
+        Form {
+            Section {
+                HStack(spacing: 12) {
+                    HealthDot(health: daemon.connected ? .healthy : .down, size: 11)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(daemon.connected ? "Daemon running" : "Daemon not running")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("this Mac · \(daemon.origin) · \(daemonVersion)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Restart") {
+                        daemon.restartDaemon()
+                        Task { await daemon.refresh() }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
+            Section("Setup") {
+                Button("Re-run setup…") {
+                    WelcomeWindowController.shared.show(startInstall: true)
+                }
+                Text("Reinstalls and restarts the background service.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Developer") {
+                LabeledContent("Config") { Text(configPath).font(.system(.caption, design: .monospaced)) }
+                LabeledContent("Share dir") { Text(shareDirPath).font(.system(.caption, design: .monospaced)) }
+                Button("Reveal config in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: configPath)])
+                }
+                Button("Open daemon log") {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: logPath))
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    /// Daemon-reported version, falling back to the app bundle version.
+    var daemonVersion: String {
+        if let v = daemon.version, !v.isEmpty { return v }
+        return Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+    }
+
+    var configPath: String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/clipfan/config.json").path
+    }
+    var shareDirPath: String { Installer.shareDir.path }
+    var logPath: String { "/tmp/clipfan-shell.log" }
 }
