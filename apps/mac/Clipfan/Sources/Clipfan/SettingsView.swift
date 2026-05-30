@@ -51,16 +51,22 @@ struct FleetTab: View {
             if shouldPromptLocalNetwork(peers: daemon.peers) {
                 LocalNetworkNudge()
             }
-            if daemon.peers.isEmpty {
-                VStack(spacing: 6) {
-                    Image(systemName: "network.slash").font(.system(size: 28)).foregroundStyle(.tertiary)
-                    Text("No peers yet").foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    VStack(spacing: 10) {
-                        ForEach(daemon.peers) { peer in PeerCard(peer: peer) }
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach(fleetRows(origin: daemon.origin,
+                                      connected: daemon.connected,
+                                      peers: daemon.peers)) { row in
+                        FleetRow(model: row)
+                            .padding(12)
+                            .background(Color.secondary.opacity(0.06))
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.12)))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    if daemon.peers.isEmpty {
+                        Text("No peers yet — add one in Settings")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 4)
                     }
                 }
             }
@@ -75,39 +81,6 @@ struct FleetTab: View {
     }
 }
 
-struct PeerCard: View {
-    let peer: Peer
-
-    var body: some View {
-        HStack(spacing: 13) {
-            Circle().fill(dotColor).frame(width: 9, height: 9)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(peer.hostname).font(.system(size: 13.5, weight: .semibold))
-                }
-                Text(stateLine).font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 3) {
-                Text("↑ \(peerTimeAgo(peer.last_push_ts))   ↓ \(peerTimeAgo(peer.last_recv_ts))")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-                Text(peer.healthWord).font(.system(size: 10)).foregroundStyle(peer.healthColor)
-            }
-        }
-        .padding(12)
-        .background(Color.secondary.opacity(0.06))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.12)))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-
-    private var dotColor: Color { peer.healthColor }
-
-    private var stateLine: String {
-        if peer.last_push_ok { return "port \(peer.port) · synced" }
-        if let err = peer.last_push_err, !err.isEmpty { return "last error: \(err)" }
-        return "port \(peer.port)"
-    }
-}
 
 struct GeneralTab: View {
     @EnvironmentObject var daemon: DaemonClient
