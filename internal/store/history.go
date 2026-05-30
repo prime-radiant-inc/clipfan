@@ -153,6 +153,22 @@ func capLimit() int {
 	return DefaultMaxHistory
 }
 
+// CapLimit is the configured history cap (or DefaultMaxHistory). Exported so the
+// daemon can report it.
+func CapLimit() int { return capLimit() }
+
+// Recap re-trims stored history to the current cap, freeing entries that exceed a
+// freshly lowered MaxHistory. Pinned entries are exempt (same rule as AppendHistory).
+func Recap() error {
+	historyMu.Lock()
+	defer historyMu.Unlock()
+	list, err := readHistory()
+	if err != nil {
+		return err
+	}
+	return writeHistory(capTrim(list, capLimit()))
+}
+
 // SetPinned sets the pinned flag on the entry with the given id.
 func SetPinned(id string, pinned bool) error {
 	historyMu.Lock()

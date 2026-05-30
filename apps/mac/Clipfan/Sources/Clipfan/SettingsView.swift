@@ -1,3 +1,4 @@
+import KeyboardShortcuts
 import ServiceManagement
 import SwiftUI
 
@@ -87,6 +88,7 @@ struct FleetTab: View {
 struct GeneralTab: View {
     @EnvironmentObject var daemon: DaemonClient
     @StateObject private var loginItem = LoginItemManager.shared
+    @State private var historyLimit: Int = 200
 
     var body: some View {
         Form {
@@ -109,11 +111,27 @@ struct GeneralTab: View {
             }
 
             Section("Clipboard") {
-                LabeledContent("History limit", value: "200 items")
-                LabeledContent("Global shortcut", value: "⇧⌘V")
+                LabeledContent("History limit") {
+                    HStack(spacing: 4) {
+                        TextField("", value: $historyLimit, format: .number)
+                            .labelsHidden()
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 64)
+                        Stepper("", value: $historyLimit, in: 50...5000, step: 50)
+                            .labelsHidden()
+                    }
+                }
+                .onChange(of: historyLimit) { n in
+                    Task { await daemon.setMaxHistory(n) }
+                }
+                KeyboardShortcuts.Recorder("Global shortcut", name: .toggleClipboard)
             }
         }
         .formStyle(.grouped)
+        .onAppear { historyLimit = daemon.maxHistory }
+        .onChange(of: daemon.maxHistory) { m in
+            if m != historyLimit { historyLimit = m }
+        }
     }
 }
 

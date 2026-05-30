@@ -39,6 +39,7 @@ type Server struct {
 	restoreFn RestoreFunc
 	pinFn     PinFunc
 	deleteFn  DeleteHistoryFunc
+	configFn  func(maxHistory int) error
 }
 
 func NewServer(listen string, auth *Auth, onRecv ReceiveFunc, peersFn PeersFunc) *Server {
@@ -49,6 +50,9 @@ func NewServer(listen string, auth *Auth, onRecv ReceiveFunc, peersFn PeersFunc)
 func (s *Server) SetHistory(h HistoryFunc, r RestoreFunc, p PinFunc, d DeleteHistoryFunc) {
 	s.historyFn, s.restoreFn, s.pinFn, s.deleteFn = h, r, p, d
 }
+
+// SetConfigFunc wires the config-write endpoint. Called by the daemon.
+func (s *Server) SetConfigFunc(fn func(maxHistory int) error) { s.configFn = fn }
 
 // Handler builds the HTTP routes. Exposed so it can be exercised in tests.
 func (s *Server) Handler() http.Handler {
@@ -63,6 +67,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/history", s.deleteHistory)
 	mux.HandleFunc("POST /v1/restore", s.postRestore)
 	mux.HandleFunc("POST /v1/history/pin", s.postPin)
+	mux.HandleFunc("POST /v1/config", s.postConfig)
 	return mux
 }
 
@@ -204,6 +209,29 @@ func (s *Server) postPin(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.pinFn(req.ID, req.Pinned); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) postConfig(w http.ResponseWriter, r *http.Request) {
+	body := s.readSigned(w, r)
+	if body == nil {
+		return
+	}
+	if s.configFn == nil {
+		http.Error(w, "config endpoint not wired", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		MaxHistory int `json:"max_history"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if err := s.configFn(req.MaxHistory); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	w.WriteHeader(http.StatusOK)

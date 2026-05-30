@@ -14,6 +14,7 @@ struct PeersResponse: Codable {
     let origin: String
     let peers: [Peer]
     let version: String?
+    let max_history: Int?
 }
 
 struct TailscalePeer: Identifiable, Hashable {

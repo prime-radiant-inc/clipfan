@@ -22,6 +22,16 @@ final class FleetRowTests: XCTestCase {
 }
 
 extension FleetRowTests {
+    func testDecodePeersResponseMaxHistory() throws {
+        let json = """
+        {"origin":"p","peers":[],"max_history":350}
+        """.data(using: .utf8)!
+        let resp = try JSONDecoder.clipfan.decode(PeersResponse.self, from: json)
+        XCTAssertEqual(resp.max_history, 350)
+    }
+}
+
+extension FleetRowTests {
     private func peer(_ name: String) -> Peer {
         Peer(hostname: name, port: 7853,
              last_push_ts: nil, last_push_ok: true,

@@ -106,6 +106,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 			return store.DeleteEntry(id)
 		},
 	)
+	d.sv.SetConfigFunc(d.setMaxHistory)
 	return d, nil
 }
 
@@ -202,10 +203,34 @@ func hostsMatch(a, b string) bool {
 
 func (d *Daemon) peersHandler() any {
 	return map[string]any{
-		"origin":  d.origin,
-		"peers":   d.Snapshot(context.Background()),
-		"version": version.Version,
+		"origin":      d.origin,
+		"peers":       d.Snapshot(context.Background()),
+		"version":     version.Version,
+		"max_history": store.CapLimit(),
 	}
+}
+
+// setMaxHistory persists a new history cap. Values are clamped to [50, 5000];
+// a non-positive request is rejected. After saving, excess history is trimmed.
+func (d *Daemon) setMaxHistory(n int) error {
+	if n <= 0 {
+		return fmt.Errorf("max_history must be positive, got %d", n)
+	}
+	if n < 50 {
+		n = 50
+	}
+	if n > 5000 {
+		n = 5000
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	cfg.MaxHistory = n
+	if err := config.Save(cfg); err != nil {
+		return err
+	}
+	return store.Recap()
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
