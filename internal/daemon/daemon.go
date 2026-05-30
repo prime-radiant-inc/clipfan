@@ -262,6 +262,15 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 }
 
 func (d *Daemon) onReceive(c clipboard.Content, origin string) {
+	// A text clip that is one of our own image-store paths is an image echoed
+	// as a path string by a host that can't hold images on its clipboard.
+	// Writing it would clobber the real image (which arrived separately as a
+	// kind=image clip) with a useless path, and relaying it would spread the
+	// clobber across the fleet. Drop it.
+	if c.Kind == clipboard.KindText && store.IsImageStorePath(string(c.Bytes)) {
+		return
+	}
+
 	// We intentionally do NOT short-circuit when origin == d.origin. That
 	// path is reached by `clipfan copy` injecting into us as ourselves; we
 	// want to treat it like any other clipboard change. Relay loops are

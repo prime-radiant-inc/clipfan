@@ -38,3 +38,33 @@ func TestPollDoesNotBroadcastImageStorePath(t *testing.T) {
 		t.Fatalf("pollOnce broadcast an image-store path as text; expected 0 pushes, got %d", got)
 	}
 }
+
+// TestReceiveImageStorePathDoesNotClobber covers the other entry point: a peer
+// (or our own tmux/clipfan-copy self-inject) delivers an image as a text path via
+// onReceive. The daemon must not write that path over the clipboard, and must not
+// relay it onward — otherwise it clobbers the real image on every image-capable
+// host the path reaches.
+func TestReceiveImageStorePathDoesNotClobber(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	d, cb, push := newTestDaemon(t)
+
+	// The real image is what's currently on our clipboard.
+	cb.current = clipboard.New(clipboard.KindImage, []byte("REALIMAGE"), fixedTime)
+
+	path, err := store.SaveImage([]byte("PNGDATA"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A peer sends us that image represented as a text path.
+	d.onReceive(clipboard.New(clipboard.KindText, []byte(path), fixedTime), "peer")
+	time.Sleep(50 * time.Millisecond)
+
+	if cb.current.Kind == clipboard.KindText {
+		t.Fatalf("onReceive wrote the image-store path over the clipboard")
+	}
+	if got := len(push.snapshot()); got != 0 {
+		t.Fatalf("onReceive relayed an image-store path; expected 0 pushes, got %d", got)
+	}
+}
