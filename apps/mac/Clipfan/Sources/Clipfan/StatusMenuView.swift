@@ -1,3 +1,4 @@
+import KeyboardShortcuts
 import SwiftUI
 
 /// The menubar popover (MenuBarExtra .window style) — a small custom panel so the
@@ -9,7 +10,7 @@ struct StatusMenuView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            menuButton("Open Clipboard", systemImage: "doc.on.clipboard", shortcut: "⇧⌘V") {
+            menuButton("Open Clipboard", systemImage: "doc.on.clipboard", shortcut: toggleShortcutLabel) {
                 CommandPanelController.shared.show()
             }
             menuButton("Settings…", systemImage: "gearshape", shortcut: "⌘,") {
@@ -26,6 +27,11 @@ struct StatusMenuView: View {
         }
         .padding(8)
         .frame(width: 280)
+    }
+
+    /// The current global toggle shortcut as a display string, or "" if unset.
+    private var toggleShortcutLabel: String {
+        KeyboardShortcuts.getShortcut(for: .toggleClipboard).map { "\($0)" } ?? ""
     }
 
     // MARK: fleet
