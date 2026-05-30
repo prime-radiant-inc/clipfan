@@ -229,6 +229,15 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 	if err != nil || len(c.Bytes) == 0 {
 		return
 	}
+	// A clipboard text that is one of our own image-store paths is the daemon's
+	// representation of an image (written as text on backends that can't hold
+	// images), not new user content. Never broadcast it — doing so demotes an
+	// image to a path string that clobbers the real image on image-capable peers.
+	// This is content-based, not hash-based, so it holds even when a trailing
+	// newline or re-read makes the path's hash miss the echo guard.
+	if c.Kind == clipboard.KindText && store.IsImageStorePath(string(c.Bytes)) {
+		return
+	}
 	d.mu.Lock()
 	if d.seen.has(c.Hash) {
 		d.mu.Unlock()
