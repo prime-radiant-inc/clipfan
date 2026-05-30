@@ -112,7 +112,8 @@ func (s *Server) postClip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := clipboard.New(clipboard.Kind(env.Kind), raw, env.TS)
-	slog.Debug("clip received", "origin", env.Origin, "kind", env.Kind, "bytes", len(raw))
+	c.ID = env.ID
+	slog.Debug("clip received", "id", env.ID, "origin", env.Origin, "kind", env.Kind, "bytes", len(raw))
 	s.onRecv(c, env.Origin)
 	w.WriteHeader(http.StatusNoContent)
 }

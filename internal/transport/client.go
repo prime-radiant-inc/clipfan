@@ -37,6 +37,7 @@ func (c *Client) Push(ctx context.Context, host string, port int, content clipbo
 // preserved end-to-end and receivers can short-circuit if they're the origin.
 func (c *Client) PushAs(ctx context.Context, host string, port int, content clipboard.Content, origin string) error {
 	env := Envelope{
+		ID:     content.ID,
 		Origin: origin,
 		TS:     content.TS,
 		Kind:   string(content.Kind),

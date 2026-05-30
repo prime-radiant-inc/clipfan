@@ -13,6 +13,7 @@ const (
 )
 
 type Content struct {
+	ID        string // clip identity; empty until minted at the origin
 	Kind      Kind
 	Bytes     []byte
 	Hash      [32]byte
