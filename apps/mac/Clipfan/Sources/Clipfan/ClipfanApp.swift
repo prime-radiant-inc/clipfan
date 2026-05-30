@@ -18,9 +18,11 @@ struct ClipfanApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra("clipfan", systemImage: "doc.on.clipboard") {
+        MenuBarExtra {
             StatusMenuView()
                 .environmentObject(daemon)
+        } label: {
+            MenuBarLabel()
         }
         .menuBarExtraStyle(.window)
 
@@ -30,6 +32,16 @@ struct ClipfanApp: App {
                 .frame(minWidth: 720, minHeight: 480)
         }
         .windowResizability(.contentMinSize)
+    }
+}
+
+/// The always-present menubar icon. Rendered at launch, so it's the reliable
+/// place to capture the scene's `openWindow` action for AppKit call sites.
+private struct MenuBarLabel: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Image(systemName: "doc.on.clipboard")
+            .task { WindowOpener.shared.openWindow = openWindow }
     }
 }
 
