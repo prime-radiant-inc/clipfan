@@ -139,9 +139,10 @@ clipfan) still grabs the text. Apple Terminal ignores OSC 52 — the daemon path
 is what makes it work there.
 
 Loop-safety is structural: when the daemon writes a *received* clip into the
-tmux buffer, it records that content's hash, so the hook-fired re-copy is
-deduped at the daemon rather than bouncing around the fleet. See
-`docs/ARCHITECTURE.md` for the detail.
+tmux buffer, it remembers that content as the current clip, so the hook-fired
+re-copy — which arrives under a fresh clip-ID — is recognised as its own write
+and dropped, rather than bouncing around the fleet. See `docs/ARCHITECTURE.md`
+for the detail.
 
 The snippet lives in clipfan (`dist/tmux.conf.snippet`) and is the single source
 of truth; dotfiles should `source-file` the installed path rather than keep a
@@ -259,7 +260,7 @@ x11-bridge, no sudo on the remote.
 
 ## Documentation
 
-- `docs/ARCHITECTURE.md` — module layout, wire format, HTTP API, echo-loop
+- `docs/ARCHITECTURE.md` — module layout, wire format, HTTP API, recirculation
   prevention, the image-on-receive flow, clipboard history, and the tmux
   copy-capture path.
 - `docs/ROADMAP.md` — what's shipped and what's planned.

@@ -35,8 +35,9 @@ internal/
     auth.go            shared-key HMAC (SHA-256)
   tmux/                load-buffer-all: enumerate /tmp/tmux-$UID/* and call tmux -S sock load-buffer -
   daemon/              wires everything together: poll local clipboard, broadcast on change, write on receive
-    daemon.go          poll / onReceive / fanout / relay + peer-status tracking
-    seen.go            bounded content-hash set used for echo-loop prevention
+    daemon.go          poll / onReceive / fanout / relay + peer-status tracking;
+                       currentClip + isEcho for our-own-write echo suppression
+    seen.go            bounded clip-ID set used for mesh dedup
 apps/
   mac/Clipfan/         SwiftUI menubar app (Clipfan.app); supervises the daemon
 ```
@@ -47,6 +48,7 @@ A clipboard event is sent as a JSON envelope:
 
 ```json
 {
+  "id": "9f3a1c7b8e2d4a06b15c0f9e7d2a4b13",
   "origin": "magic-kingdom",
   "ts": "2026-05-28T12:34:56.789Z",
   "kind": "text",
@@ -55,9 +57,12 @@ A clipboard event is sent as a JSON envelope:
 }
 ```
 
-`kind` is `"text"` or `"image"`. `body` is the base64-encoded payload — the UTF-8
-text for text, or the PNG bytes for an image. `sha256` is the hex digest of the
-raw (pre-base64) payload.
+`id` is a random 128-bit hex token (`transport.NewClipID`) minted once at the
+clip's true origin and preserved verbatim through every relay — it is the identity
+the mesh dedups on (see Recirculation prevention). `kind` is `"text"` or
+`"image"`. `body` is the base64-encoded payload — the UTF-8 text for text, or the
+PNG bytes for an image. `sha256` is the hex digest of the raw (pre-base64) payload
+(an integrity field; dedup keys on `id`, not content).
 
 Every request carries `X-Clipfan-Sig: hex(hmac-sha256(shared_key, request_body))`,
 computed over the exact JSON request body. The receiving daemon recomputes the
@@ -101,32 +106,45 @@ online peers in the configured tailnet. `static.Discoverer` reads a hostname
 list from config. The active discoverer is chosen by the config's `discovery`
 field; the default is `tailscale`.
 
-## Echo-loop prevention
+## Recirculation prevention
 
-Both the local poll and the receive path funnel through a bounded set of
-recently-seen content hashes (`daemon/seen.go`). The same hash is never acted on
-twice:
+Every clip carries a random clip-`id` minted once at its origin (a genuine local
+copy seen by the poll loop, a `clipfan copy` injection, or a history restore) and
+preserved through every relay. Two layers keep a clip from being acted on twice or
+looping the mesh, with a third content-based guard beneath them:
 
-- On a local clipboard change, the poll loop checks the seen set before
-  broadcasting; if the hash is already present (e.g. because the daemon just
-  wrote it after a receive) it skips.
-- On receive, the daemon checks the seen set before applying, and ignores
-  envelopes whose timestamp predates the last applied one (last-write-wins).
-- After writing a received clip to the OS clipboard, the daemon reads it back
-  and records the readback hash too. On text-only backends an incoming image
-  becomes a path-on-text, whose hash differs from the image's; remembering the
-  readback hash stops that path from being re-broadcast.
+- **Clip-ID dedup (mesh identity).** `daemon/seen.go` is a bounded set of
+  recently-seen clip-IDs. On receive, a clip whose `id` is already in the set is
+  dropped before it is applied or relayed; a clip with no `id` is dropped outright
+  (the fleet runs a single version — there is no ID-less fallback). The `lastTS`
+  check additionally ignores envelopes older than the last applied one
+  (last-write-wins).
 
-The Mac is the hub: a received clip is also relayed to every peer except its
-origin, so peers that can't see each other directly (e.g. one on the LAN, one on
-the tailnet) still converge through the Mac. The hash dedup — not origin
-filtering — is what keeps relay from looping.
+- **Current-clip echo suppression (content identity).** A clip-ID names a logical
+  clip, but the OS clipboard stores no ID — so a clip read back off the clipboard,
+  possibly *re-represented*, has no ID to match. The daemon therefore records the
+  `currentClip` (id, kind, content hash, image-store path) every time it writes
+  the clipboard **or** broadcasts a local copy. `isEcho` then recognises a
+  subsequent clipboard read, or an inbound clip, whose content matches the current
+  clip — including an image that comes back as its store-path text — and
+  suppresses it. This catches the re-representations and re-originations that
+  clip-ID dedup structurally cannot see: a path has a fresh hash, and the tmux
+  hook re-submits content under a fresh ID.
+
+- **Image-path guard.** A clip whose bytes are one of our own content-addressed
+  image-store paths (`store.IsImageStorePath`) is never broadcast as text and
+  never written over a real image, on either the poll or the receive path.
+
+The Mac is the hub: a received clip is relayed to every peer except its origin, so
+peers that can't see each other directly (one on the LAN, one on the tailnet) still
+converge through the Mac. Clip-ID dedup — not origin filtering — is what keeps
+relay from looping.
 
 ## Image flow on receive (the load-bearing trick)
 
 When an image arrives at a host:
 
-1. Hash-dedup against the seen set — skip if already applied.
+1. Clip-ID dedup against the seen set — skip if already applied.
 2. Write the PNG bytes to `$XDG_STATE_HOME/clipfan/images/<sha256>.png` and
    record metadata in `state.json` (kind=image, the image path).
 3. Set the OS clipboard:
@@ -182,14 +200,14 @@ That matters because the daemon itself writes every received clip into the tmux
 buffer (via `tmux.LoadBufferAll`, which uses `load-buffer`) so `prefix-]` mirrors
 the OS clipboard. Naively, the `after-load-buffer` hook would then fire on the
 daemon's own writeback and re-broadcast it — an echo loop. The guard is content
-identity, not the verb: right where the daemon loads a received clip into the
-buffer, it records that payload's SHA-256 in the seen set (`daemon/seen.go`).
-When the hook re-submits the same bytes through `clipfan copy`, the daemon
-recognizes the hash and drops it. For an image the buffer holds the on-disk path
-(whose hash differs from the image bytes), so that path hash is registered
-explicitly; on a headless host the OS-clipboard readback is empty, so this
-explicit registration is the only thing standing between the hook and a loop.
-`daemon/hookloop_test.go` covers the image-path case.
+identity, not the verb: when the daemon applies a received clip it records it as
+the `currentClip` (see Recirculation prevention). When the hook re-submits the
+same bytes through `clipfan copy` under a *fresh* clip-ID, `onReceive` consults
+`isEcho`, recognises the content as what it just wrote, and drops it — clip-ID
+dedup alone cannot, because the re-submission carries a new ID. For an image the
+buffer holds the on-disk path, which the `IsImageStorePath` guard drops on its
+own. `daemon/hookloop_test.go` and the clip-ID echo tests
+(`daemon/clipid_test.go`) cover these paths.
 
 ## Persistence
 

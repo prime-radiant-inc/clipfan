@@ -156,3 +156,31 @@ tests; real behaviour, no mocks of the logic under test.
   one extra hop, then deduped by ID downstream. The image-path is the known case
   and is covered; other drift degrades to a single redundant broadcast, not a
   loop.
+
+## Addendum — as-built refinements
+
+The whole-implementation review surfaced two recirculation holes this design
+under-specified. Both were fixed; `currentClip` ended up doing more than "set on
+write" above:
+
+1. **`pollOnce` adopts its own broadcast.** The design set `currentClip` only on
+   the *write* paths (`onReceive`, `Restore`). But once content-hash dedup was
+   removed, `pollOnce` had nothing to stop it from re-broadcasting the *same local
+   clip* on every 250 ms poll. Fix: after broadcasting a local copy, `pollOnce`
+   records it as the `currentClip`, so the next poll of the unchanged clipboard is
+   an echo and is suppressed.
+
+2. **`onReceive` consults `isEcho`.** The design consulted `isEcho` only in
+   `pollOnce`. But the tmux `after-load-buffer` hook re-submits a received *text*
+   clip through `clipfan copy` under a **fresh** clip-ID, which clip-ID dedup
+   cannot catch. Fix: `onReceive` checks `isEcho` (right after the
+   `IsImageStorePath` guard) and drops an inbound clip whose content matches what
+   we just wrote. Dropping a content-duplicate is safe: applying identical bytes
+   is a no-op and the fleet is already converged on that content.
+
+Net rule: `currentClip` tracks the clipboard's *current logical content* — set on
+every write **and** every local broadcast — and both `pollOnce` and `onReceive`
+suppress anything matching it. Clip-ID dedup is the mesh-identity layer;
+`currentClip`/`isEcho` is the content-echo layer. Covered by
+`daemon/clipid_test.go` (`TestPollDoesNotRebroadcastSameLocalClip`,
+`TestReceiveSuppressesReoriginatedText`).
