@@ -86,3 +86,45 @@ func TestPollBroadcastsGenuineNewCopy(t *testing.T) {
 		t.Fatal("new copy broadcast with empty ID")
 	}
 }
+
+// The same clip-ID arriving twice (e.g. via two relay paths) is applied and
+// relayed only once.
+func TestReceiveDedupsByID(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	d, _, push := newTestDaemon(t)
+
+	mk := func(body string) clipboard.Content {
+		c := clipboard.New(clipboard.KindText, []byte(body), fixedTime)
+		c.ID = "same-id"
+		return c
+	}
+	d.onReceive(mk("first bytes"), "peer-a")
+	waitForPushes(t, push, 1)
+	d.onReceive(mk("different bytes but same id"), "peer-b")
+	time.Sleep(50 * time.Millisecond)
+
+	if got := len(push.snapshot()); got != 1 {
+		t.Fatalf("same clip-ID applied/relayed %d times, want 1", got)
+	}
+}
+
+// An envelope with no clip-ID is dropped, not applied or relayed.
+func TestReceiveDropsEmptyID(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	d, cb, push := newTestDaemon(t)
+	cb.current = clipboard.New(clipboard.KindText, []byte("SENTINEL"), fixedTime)
+
+	c := clipboard.New(clipboard.KindText, []byte("no id here"), fixedTime)
+	// c.ID intentionally empty
+	d.onReceive(c, "peer")
+	time.Sleep(50 * time.Millisecond)
+
+	if got := len(push.snapshot()); got != 0 {
+		t.Fatalf("ID-less envelope relayed %d times, want 0", got)
+	}
+	if cb.current.Kind != clipboard.KindText || string(cb.current.Bytes) != "SENTINEL" {
+		t.Fatal("ID-less envelope was applied to the clipboard")
+	}
+}

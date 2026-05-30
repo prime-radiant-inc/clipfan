@@ -104,6 +104,7 @@ func TestImageReceiveDoesNotEchoPath(t *testing.T) {
 	d, _, push := newTestDaemon(t)
 
 	img := clipboard.New(clipboard.KindImage, []byte("PNGDATA"), fixedTime)
+	img.ID = "img-1"
 	d.onReceive(img, "some-origin")
 	waitForPushes(t, push, 1)
 
@@ -138,6 +139,7 @@ func TestRelayDedup(t *testing.T) {
 	d, _, push := newTestDaemon(t)
 
 	img := clipboard.New(clipboard.KindImage, []byte("PNGDATA"), fixedTime)
+	img.ID = "img-1"
 	d.onReceive(img, "some-origin")
 	waitForPushes(t, push, 1)
 	d.onReceive(img, "some-origin")

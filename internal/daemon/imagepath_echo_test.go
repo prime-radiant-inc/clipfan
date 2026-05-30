@@ -58,7 +58,9 @@ func TestReceiveImageStorePathDoesNotClobber(t *testing.T) {
 	}
 
 	// A peer sends us that image represented as a text path.
-	d.onReceive(clipboard.New(clipboard.KindText, []byte(path), fixedTime), "peer")
+	pathClip := clipboard.New(clipboard.KindText, []byte(path), fixedTime)
+	pathClip.ID = "img-1"
+	d.onReceive(pathClip, "peer")
 	time.Sleep(50 * time.Millisecond)
 
 	if cb.current.Kind == clipboard.KindText {

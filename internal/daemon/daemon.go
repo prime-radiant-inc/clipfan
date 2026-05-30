@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"os"
@@ -215,8 +214,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	if c, err := d.cb.Read(); err == nil && len(c.Bytes) > 0 {
 		d.mu.Lock()
-		d.seen.add(c.Hash)
 		d.lastTS = c.TS
+		if c.Kind == clipboard.KindImage {
+			d.current = currentClip{id: "startup", kind: clipboard.KindImage, hash: c.Hash}
+		} else {
+			d.current = currentClip{id: "startup", kind: clipboard.KindText, hash: c.Hash}
+		}
 		d.mu.Unlock()
 	}
 
@@ -252,15 +255,11 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 	if d.isEcho(c) {
 		return
 	}
+	c.ID = transport.NewClipID()
 	d.mu.Lock()
-	if d.seen.has(c.Hash) {
-		d.mu.Unlock()
-		return
-	}
-	d.seen.add(c.Hash)
+	d.seen.add(c.ID)
 	d.lastTS = c.TS
 	d.mu.Unlock()
-	c.ID = transport.NewClipID()
 	slog.Debug("local clip changed", "id", c.ID, "kind", c.Kind, "bytes", len(c.Bytes))
 	if !c.Concealed {
 		recImg := ""
@@ -310,9 +309,13 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 	// We intentionally do NOT short-circuit when origin == d.origin. That
 	// path is reached by `clipfan copy` injecting into us as ourselves; we
 	// want to treat it like any other clipboard change. Relay loops are
-	// prevented by the hash dedup below, not by origin filtering.
+	// prevented by the clip-ID dedup below, not by origin filtering.
+	if c.ID == "" {
+		slog.Debug("dropping clip with no ID", "origin", origin)
+		return
+	}
 	d.mu.Lock()
-	if d.seen.has(c.Hash) {
+	if d.seen.has(c.ID) {
 		d.mu.Unlock()
 		return
 	}
@@ -320,7 +323,7 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 		d.mu.Unlock()
 		return
 	}
-	d.seen.add(c.Hash)
+	d.seen.add(c.ID)
 	d.lastTS = c.TS
 	d.mu.Unlock()
 
@@ -382,31 +385,9 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 		slog.Debug("tmux load-buffer", "err", err)
 	}
 
-	// Register the hash of exactly what we loaded into the tmux buffer. A
-	// tmux after-set-buffer / after-load-buffer hook re-submits that content
-	// through `clipfan copy`; registering it here dedups that echo regardless
-	// of clipboard backend. This is the loop guard for the hook bridge — note
-	// for an image, textPayload is the on-disk path (not the image bytes), so
-	// its hash differs from c.Hash and must be registered explicitly.
-	loaded := sha256.Sum256(textPayload)
-	d.mu.Lock()
-	d.seen.add(loaded)
-	d.mu.Unlock()
-
-	// Register what we just wrote so our own poll loop doesn't re-broadcast it.
-	// On text-only backends WriteImage stores the on-disk path as text, so the
-	// readback hash differs from the received image hash; remembering it
-	// suppresses an echo of that path back into the mesh. Our-own-write echoes
-	// are additionally suppressed by d.current / isEcho.
-	if readback, err := d.cb.Read(); err == nil && len(readback.Bytes) > 0 {
-		d.mu.Lock()
-		d.seen.add(readback.Hash)
-		d.mu.Unlock()
-	}
-
 	// Relay: re-broadcast to every peer except the origin so disjoint peers
 	// (e.g. flower-garden on LAN, paradise-park on tailnet) still converge
-	// through the Mac hub. Relay-loop prevention uses hash dedup (seen set)
+	// through the Mac hub. Relay-loop prevention uses clip-ID dedup (seen set)
 	// and our-own-write echo suppression (d.current / isEcho).
 	go d.fanout(context.Background(), c, origin)
 }
@@ -499,7 +480,7 @@ func (d *Daemon) Restore(id string) error {
 	c.ID = transport.NewClipID()
 
 	d.mu.Lock()
-	d.seen.add(c.Hash)
+	d.seen.add(c.ID)
 	d.lastTS = c.TS
 	if wrote {
 		if e.Kind == "image" {

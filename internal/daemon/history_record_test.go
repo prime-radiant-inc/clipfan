@@ -14,6 +14,7 @@ func TestOnReceiveRecordsHistory(t *testing.T) {
 	d, _, _ := newTestDaemon(t)
 
 	c := clipboard.New(clipboard.KindText, []byte("hello-history"), fixedTime)
+	c.ID = "hist-1"
 	d.onReceive(c, "flower-garden")
 
 	got, err := store.LoadHistory(10)
@@ -34,6 +35,7 @@ func TestConcealedNotRecorded(t *testing.T) {
 	d, _, _ := newTestDaemon(t)
 
 	c := clipboard.New(clipboard.KindText, []byte("secret"), fixedTime)
+	c.ID = "secret-1"
 	c.Concealed = true
 	d.onReceive(c, "m4")
 
@@ -71,6 +73,7 @@ func TestRestoreWritesClipboardAndFanouts(t *testing.T) {
 
 	// Seed a text entry into history via onReceive.
 	c := clipboard.New(clipboard.KindText, []byte("restore-me"), fixedTime)
+	c.ID = "restore-1"
 	d.onReceive(c, "m4")
 	waitForPushes(t, push, 1) // the relay from onReceive
 

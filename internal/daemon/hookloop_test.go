@@ -42,6 +42,7 @@ func TestImagePathWritebackDedupedHeadless(t *testing.T) {
 	}
 
 	img := clipboard.New(clipboard.KindImage, []byte("\x89PNG\r\n\x1a\nDATA"), fixedTime)
+	img.ID = "img-1"
 	d.onReceive(img, "m4")
 	waitForPushes(t, push, 1) // the image relays to the static peer
 
@@ -52,8 +53,11 @@ func TestImagePathWritebackDedupedHeadless(t *testing.T) {
 	path := entries[0].ImagePath
 
 	before := len(push.snapshot())
-	// Exactly what an after-load-buffer hook would submit: the loaded path text.
+	// Exactly what an after-load-buffer hook would submit: the loaded path text,
+	// stamped with a fresh ID (clipfan copy mints one). The IsImageStorePath
+	// guard — not ID dedup — must drop it.
 	pathClip := clipboard.New(clipboard.KindText, []byte(path), fixedTime.Add(time.Second))
+	pathClip.ID = "hook-resubmit"
 	d.onReceive(pathClip, "self")
 	time.Sleep(50 * time.Millisecond)
 

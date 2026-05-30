@@ -2,50 +2,64 @@ package daemon
 
 import "testing"
 
-func hashOf(b byte) [32]byte {
-	var h [32]byte
-	h[0] = b
-	return h
+func idOf(i int) string {
+	return "id-" + itoa(i)
 }
 
-func TestSeenAddAndHas(t *testing.T) {
-	s := newSeenSet()
-	h := hashOf(1)
-	if s.has(h) {
-		t.Fatalf("empty set should not contain hash")
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
 	}
-	s.add(h)
-	if !s.has(h) {
-		t.Fatalf("set should contain added hash")
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	if neg {
+		b = append([]byte{'-'}, b...)
+	}
+	return string(b)
+}
+
+func TestSeenSetAddAndHas(t *testing.T) {
+	s := newSeenSet()
+	id := idOf(1)
+	if s.has(id) {
+		t.Fatalf("empty set should not contain id")
+	}
+	s.add(id)
+	if !s.has(id) {
+		t.Fatalf("set should contain added id")
 	}
 }
 
-func TestSeenDedup(t *testing.T) {
+func TestSeenSetDedup(t *testing.T) {
 	s := newSeenSet()
-	h := hashOf(1)
-	s.add(h)
-	s.add(h)
+	id := idOf(1)
+	s.add(id)
+	s.add(id)
 	if len(s.order) != 1 {
 		t.Fatalf("duplicate add should not grow order; got %d", len(s.order))
 	}
 }
 
-func TestSeenEviction(t *testing.T) {
+func TestSeenSetEviction(t *testing.T) {
 	s := newSeenSet()
-	// Fill exactly to capacity.
-	for i := 0; i < seenCap; i++ {
-		s.add(hashOf(byte(i)))
+	first := idOf(0)
+	s.add(first)
+	// Add seenCap more distinct ids; the first must be evicted once we exceed
+	// capacity.
+	for i := 1; i <= seenCap; i++ {
+		s.add(idOf(i))
 	}
-	oldest := hashOf(0)
-	if !s.has(oldest) {
-		t.Fatalf("oldest entry should still be present at capacity")
-	}
-	// One more entry evicts the oldest.
-	newest := hashOf(byte(seenCap))
-	s.add(newest)
-	if s.has(oldest) {
+	if s.has(first) {
 		t.Fatalf("oldest entry should have been evicted past capacity")
 	}
+	newest := idOf(seenCap)
 	if !s.has(newest) {
 		t.Fatalf("newest entry should be retained")
 	}
