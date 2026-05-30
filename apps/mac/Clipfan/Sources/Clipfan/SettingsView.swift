@@ -4,23 +4,36 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var daemon: DaemonClient
 
-    enum Tab: String, CaseIterable, Hashable {
+    enum Tab: String, CaseIterable, Hashable, Identifiable {
         case fleet = "Fleet"
         case general = "General"
+        case diagnostics = "Diagnostics"
+        var id: String { rawValue }
+
+        var systemImage: String {
+            switch self {
+            case .fleet:       return "network"
+            case .general:     return "gearshape"
+            case .diagnostics: return "stethoscope"
+            }
+        }
     }
 
     @State private var selection: Tab = .fleet
 
     var body: some View {
-        TabView(selection: $selection) {
-            FleetTab()
-                .tabItem { Label("Fleet", systemImage: "network") }
-                .tag(Tab.fleet)
-            GeneralTab()
-                .tabItem { Label("General", systemImage: "gear") }
-                .tag(Tab.general)
+        NavigationSplitView {
+            List(Tab.allCases, selection: $selection) { tab in
+                Label(tab.rawValue, systemImage: tab.systemImage).tag(tab)
+            }
+            .navigationSplitViewColumnWidth(170)
+        } detail: {
+            switch selection {
+            case .fleet:       FleetTab()
+            case .general:     GeneralTab()
+            case .diagnostics: DiagnosticsTab()
+            }
         }
-        .padding()
     }
 }
 
@@ -197,4 +210,8 @@ func openLocalNetworkSettings() {
     if !NSWorkspace.shared.open(local) {
         NSWorkspace.shared.open(privacy)
     }
+}
+
+struct DiagnosticsTab: View {
+    var body: some View { Text("Diagnostics").padding() }
 }
