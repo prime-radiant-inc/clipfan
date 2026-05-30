@@ -246,7 +246,8 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 	d.seen.add(c.Hash)
 	d.lastTS = c.TS
 	d.mu.Unlock()
-	slog.Debug("local clip changed", "kind", c.Kind, "bytes", len(c.Bytes))
+	c.ID = transport.NewClipID()
+	slog.Debug("local clip changed", "id", c.ID, "kind", c.Kind, "bytes", len(c.Bytes))
 	if !c.Concealed {
 		recImg := ""
 		if c.Kind == clipboard.KindImage {
@@ -438,6 +439,8 @@ func (d *Daemon) Restore(id string) error {
 			slog.Error("restore write text", "err", err)
 		}
 	}
+
+	c.ID = transport.NewClipID()
 
 	d.mu.Lock()
 	d.seen.add(c.Hash)

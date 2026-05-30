@@ -36,6 +36,7 @@ func (b *fakeBackend) WriteImage(body []byte, path string) error {
 // pushCall records a single fanout push.
 type pushCall struct {
 	host string
+	id   string
 	kind clipboard.Kind
 	hash [32]byte
 }
@@ -50,7 +51,7 @@ type fakePusher struct {
 func (p *fakePusher) PushAs(ctx context.Context, host string, port int, content clipboard.Content, origin string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.calls = append(p.calls, pushCall{host: host, kind: content.Kind, hash: content.Hash})
+	p.calls = append(p.calls, pushCall{host: host, id: content.ID, kind: content.Kind, hash: content.Hash})
 	return nil
 }
 

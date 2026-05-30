@@ -126,6 +126,7 @@ func pushToDaemon(kind string, body []byte) error {
 	}
 	sum := sha256.Sum256(body)
 	env := transport.Envelope{
+		ID:     transport.NewClipID(),
 		Origin: origin,
 		TS:     time.Now().UTC(),
 		Kind:   kind,
