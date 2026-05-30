@@ -44,11 +44,11 @@ extension FleetRowTests {
         XCTAssertNil(up[0].pushTS)
         XCTAssertNil(up[0].recvTS)
         XCTAssertEqual(up[0].health, .healthy)
-        XCTAssertTrue(up[0].subtitle.contains("running"))
+        XCTAssertEqual(up[0].subtitle, "this Mac · running")
 
         let down = fleetRows(origin: "me", connected: false, peers: [])
         XCTAssertEqual(down[0].health, .down)
-        XCTAssertTrue(down[0].subtitle.contains("not running"))
+        XCTAssertEqual(down[0].subtitle, "this Mac · daemon not running")
     }
 
     func testPeerRowsCarryPeer() {
