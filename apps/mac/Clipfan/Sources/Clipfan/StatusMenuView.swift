@@ -9,9 +9,6 @@ struct StatusMenuView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider()
-
             menuButton("Open Clipboard", systemImage: "doc.on.clipboard", shortcut: "⇧⌘V") {
                 CommandPanelController.shared.show()
             }
@@ -31,62 +28,27 @@ struct StatusMenuView: View {
         .frame(width: 280)
     }
 
-    // MARK: header
-
-    private var header: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "doc.on.clipboard")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("clipfan").font(.system(size: 13, weight: .semibold))
-                Text(daemon.connected ? "this Mac · \(daemon.origin)" : "daemon not running")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-    }
-
     // MARK: fleet
 
     @ViewBuilder private var fleet: some View {
-        if daemon.peers.isEmpty {
-            Text("No peers yet — add one in Settings")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-        } else {
-            Text("FLEET")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 8)
-                .padding(.top, 6).padding(.bottom, 2)
-            ForEach(daemon.peers) { peer in
-                Button {
-                    NSApp.activate(ignoringOtherApps: true)
-                    openWindow(id: "settings")
-                } label: {
-                    HStack(alignment: .top, spacing: 8) {
-                        Circle().fill(peer.healthColor).frame(width: 8, height: 8)
-                            .padding(.top, 4)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(peer.hostname).font(.system(size: 12))
-                            Text("↑ \(peerTimeAgo(peer.last_push_ts))   ↓ \(peerTimeAgo(peer.last_recv_ts))")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 0)
-                    }
+        Text("FLEET")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 8)
+            .padding(.top, 6).padding(.bottom, 2)
+        ForEach(fleetRows(origin: daemon.origin,
+                          connected: daemon.connected,
+                          peers: daemon.peers)) { row in
+            Button {
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: "settings")
+            } label: {
+                FleetRow(model: row)
                     .contentShape(Rectangle())
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                }
-                .buttonStyle(MenuRowButtonStyle())
             }
+            .buttonStyle(MenuRowButtonStyle())
         }
     }
 
