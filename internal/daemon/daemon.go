@@ -256,6 +256,10 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 		return
 	}
 	c.ID = transport.NewClipID()
+	if c.ID == "" {
+		slog.Warn("could not mint clip ID; skipping broadcast")
+		return
+	}
 	d.mu.Lock()
 	d.seen.add(c.ID)
 	d.lastTS = c.TS
