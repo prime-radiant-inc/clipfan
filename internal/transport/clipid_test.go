@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -67,9 +68,9 @@ func splitHostPort(t *testing.T, rawURL string) (string, int) {
 	if !found {
 		t.Fatalf("no port in %s", rawURL)
 	}
-	port := 0
-	for _, r := range portStr {
-		port = port*10 + int(r-'0')
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("bad port %q: %v", portStr, err)
 	}
 	return host, port
 }

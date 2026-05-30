@@ -22,6 +22,9 @@ type Envelope struct {
 func NewClipID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
+		// An empty ID is treated downstream as "no ID": the receiving node drops
+		// the clip rather than propagating a bad identifier, so a CSPRNG failure
+		// degrades safely to non-propagation instead of a corrupted clip ID.
 		return ""
 	}
 	return hex.EncodeToString(b[:])
