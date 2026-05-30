@@ -1,8 +1,9 @@
 # Menubar app UI overhaul — design
 
 **Date:** 2026-05-30
-**Scope:** Group A of the clipfan UI work. Pure SwiftUI/AppKit presentation changes
-in the Mac menubar app. No daemon, transport, or persistence changes.
+**Scope:** Group A of the clipfan UI work. Mostly SwiftUI/AppKit presentation
+changes in the Mac menubar app, plus one small daemon change: expose the daemon's
+own version over the peers endpoint so the app can display it.
 
 This is the first of three sub-projects. Group B (editable history limit +
 configurable global shortcut) and Group C (GitHub auto-build + Sparkle) are
@@ -19,15 +20,35 @@ Five changes:
 3. Settings moves from top tabs to a left sidebar.
 4. Settings → Fleet includes the local host as the first entry.
 5. The old Status and Developer sections are redesigned into a Diagnostics tab.
+6. The daemon reports its version, shown in the Diagnostics banner.
 
 ## Non-goals
 
 - No editable history limit or configurable shortcut yet (Group B). The General
   pane shows both as read-only values.
-- No daemon-side change. The daemon's peer snapshot still excludes self; the app
-  synthesizes the self entry in the view layer.
+- The daemon's peer snapshot still excludes self; the app synthesizes the self
+  entry in the view layer. The only daemon change is adding a version field to
+  the existing peers response.
 
 ## Changes
+
+### 0. Daemon version over the protocol
+
+Files: new `internal/version/version.go`, `internal/daemon/daemon.go`,
+`dist/build-all.sh`.
+
+The daemon currently has no version constant. Add one:
+
+- `internal/version/version.go` declares `var Version = "dev"`.
+- `peersHandler` (daemon.go) adds `"version": version.Version` to the existing
+  `{"origin", "peers"}` response.
+- `dist/build-all.sh` injects the real version at build time via
+  `-ldflags "-X github.com/prime-radiant-inc/clipfan/internal/version.Version=$(git describe --tags --always --dirty)"`.
+  Default stays `dev` for plain `go build`.
+
+The Swift `PeersResponse` gains `version: String?`; `DaemonClient` publishes
+`daemon.version`. The Diagnostics banner shows the daemon version, falling back
+to the app bundle version when the field is absent (older daemon).
 
 ### 1. Clipboard window title bar
 
@@ -112,8 +133,8 @@ File: `SettingsView.swift`.
 **Diagnostics** (new) collects everything operational:
 
 - A **daemon status banner**: health dot, "this Mac · `origin` · `version`",
-  and a Restart button. Version comes from the app bundle's
-  `CFBundleShortVersionString`.
+  and a Restart button. Version is the daemon's reported version (section 0),
+  falling back to the app bundle's `CFBundleShortVersionString` if absent.
 - **Setup** — Re-run setup (existing button + explanatory caption).
 - **Developer** — config path, share dir, Reveal config in Finder, Open daemon
   log. No longer a collapsed disclosure; it is the body of this tab.
@@ -165,8 +186,13 @@ real logic in Group A and gets unit tests:
 
 ## Files touched
 
+- New `internal/version/version.go` — `Version` var.
+- `internal/daemon/daemon.go` — add `version` to peers response.
+- `dist/build-all.sh` — inject version via ldflags.
 - `CommandPanel.swift` — title bar.
 - `StatusMenuView.swift` — merged fleet list, adopt `FleetRow`.
 - `SettingsView.swift` — sidebar, Fleet self card, General/Diagnostics split.
+- `Models.swift` — `PeersResponse.version`.
+- `DaemonClient.swift` — publish `version`.
 - New `FleetRow.swift` — shared row + health dot + `fleetRows` + `FleetRowModel`.
 - `Tests/ClipfanTests/FleetRowTests.swift` — new.
