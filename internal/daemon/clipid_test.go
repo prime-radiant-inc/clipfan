@@ -86,4 +86,3 @@ func TestPollBroadcastsGenuineNewCopy(t *testing.T) {
 		t.Fatal("new copy broadcast with empty ID")
 	}
 }
-

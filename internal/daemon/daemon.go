@@ -355,22 +355,29 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 		}
 	}
 
+	var wrote bool
 	if c.Kind == clipboard.KindImage {
 		if err := d.cb.WriteImage(c.Bytes, imagePath); err != nil {
 			slog.Warn("local clip write (image)", "err", err)
+		} else {
+			wrote = true
 		}
 	} else {
 		if err := d.cb.WriteText(textPayload); err != nil {
 			slog.Warn("local clip write (text)", "err", err)
+		} else {
+			wrote = true
 		}
 	}
-	d.mu.Lock()
-	if c.Kind == clipboard.KindImage {
-		d.current = currentClip{id: c.ID, kind: clipboard.KindImage, hash: c.Hash, imagePath: imagePath}
-	} else {
-		d.current = currentClip{id: c.ID, kind: clipboard.KindText, hash: c.Hash}
+	if wrote {
+		d.mu.Lock()
+		if c.Kind == clipboard.KindImage {
+			d.current = currentClip{id: c.ID, kind: clipboard.KindImage, hash: c.Hash, imagePath: imagePath}
+		} else {
+			d.current = currentClip{id: c.ID, kind: clipboard.KindText, hash: c.Hash}
+		}
+		d.mu.Unlock()
 	}
-	d.mu.Unlock()
 	if err := tmux.LoadBufferAll(textPayload); err != nil {
 		slog.Debug("tmux load-buffer", "err", err)
 	}
@@ -389,7 +396,8 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 	// Register what we just wrote so our own poll loop doesn't re-broadcast it.
 	// On text-only backends WriteImage stores the on-disk path as text, so the
 	// readback hash differs from the received image hash; remembering it
-	// suppresses an echo of that path back into the mesh.
+	// suppresses an echo of that path back into the mesh. Our-own-write echoes
+	// are additionally suppressed by d.current / isEcho.
 	if readback, err := d.cb.Read(); err == nil && len(readback.Bytes) > 0 {
 		d.mu.Lock()
 		d.seen.add(readback.Hash)
@@ -398,7 +406,8 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 
 	// Relay: re-broadcast to every peer except the origin so disjoint peers
 	// (e.g. flower-garden on LAN, paradise-park on tailnet) still converge
-	// through the Mac hub. Echo-loop prevention is the hash dedup above.
+	// through the Mac hub. Relay-loop prevention uses hash dedup (seen set)
+	// and our-own-write echo suppression (d.current / isEcho).
 	go d.fanout(context.Background(), c, origin)
 }
 
@@ -466,6 +475,7 @@ func (d *Daemon) Restore(id string) error {
 	}
 
 	var c clipboard.Content
+	var wrote bool
 	if e.Kind == "image" {
 		body, err := os.ReadFile(e.ImagePath)
 		if err != nil {
@@ -474,11 +484,15 @@ func (d *Daemon) Restore(id string) error {
 		c = clipboard.New(clipboard.KindImage, body, time.Now().UTC())
 		if err := d.cb.WriteImage(body, e.ImagePath); err != nil {
 			slog.Error("restore write image", "err", err)
+		} else {
+			wrote = true
 		}
 	} else {
 		c = clipboard.New(clipboard.KindText, []byte(e.Text), time.Now().UTC())
 		if err := d.cb.WriteText([]byte(e.Text)); err != nil {
 			slog.Error("restore write text", "err", err)
+		} else {
+			wrote = true
 		}
 	}
 
@@ -487,10 +501,12 @@ func (d *Daemon) Restore(id string) error {
 	d.mu.Lock()
 	d.seen.add(c.Hash)
 	d.lastTS = c.TS
-	if e.Kind == "image" {
-		d.current = currentClip{id: c.ID, kind: clipboard.KindImage, hash: c.Hash, imagePath: e.ImagePath}
-	} else {
-		d.current = currentClip{id: c.ID, kind: clipboard.KindText, hash: c.Hash}
+	if wrote {
+		if e.Kind == "image" {
+			d.current = currentClip{id: c.ID, kind: clipboard.KindImage, hash: c.Hash, imagePath: e.ImagePath}
+		} else {
+			d.current = currentClip{id: c.ID, kind: clipboard.KindText, hash: c.Hash}
+		}
 	}
 	d.mu.Unlock()
 
