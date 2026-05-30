@@ -111,8 +111,15 @@ struct GeneralTab: View {
             }
 
             Section("Clipboard") {
-                Stepper(value: $historyLimit, in: 50...5000, step: 50) {
-                    LabeledContent("History limit", value: "\(historyLimit) items")
+                LabeledContent("History limit") {
+                    HStack(spacing: 4) {
+                        TextField("", value: $historyLimit, format: .number)
+                            .labelsHidden()
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 64)
+                        Stepper("", value: $historyLimit, in: 50...5000, step: 50)
+                            .labelsHidden()
+                    }
                 }
                 .onChange(of: historyLimit) { n in
                     Task { await daemon.setMaxHistory(n) }
