@@ -46,6 +46,12 @@ bash dist/build-all.sh        # cross-compiles the daemon for darwin + linux, am
 
 ### 2. Install the daemon on this Mac
 
+**The menubar app does this for you on first launch** — it bundles the daemon and
+runs `install.sh` itself, showing progress in a Welcome window. If you're going
+straight to the app, skip to step 3.
+
+To install by hand instead (or to see what the app runs):
+
 ```sh
 cd dist && ./install.sh
 ```
@@ -74,9 +80,17 @@ cd apps/mac/Clipfan && ./build-app.sh
 open .build/Clipfan.app          # or: cp -R .build/Clipfan.app /Applications && open /Applications/Clipfan.app
 ```
 
-On first launch, grant **Accessibility / Input Monitoring** when prompted so the
-**⇧⌘V** global hotkey can summon the clipboard panel. Turn on *Launch at login*
-in the app's Settings → General to start it automatically.
+On first launch the app installs and starts the background daemon for you (a
+Welcome window shows the progress), then tells you the two things you need:
+press **⇧⌘V** to open the clipboard panel, and paste = clipfan re-copies the
+item you pick so you press **⌘V** yourself. No Accessibility permission is
+required. Turn on *Launch at login* in Settings → General to start it
+automatically.
+
+The only macOS permission clipfan needs is **Local Network**, and only once you
+add LAN peers in step 4 — if a peer can't be reached, the app points you to the
+right System Settings pane. (See the
+[Local Network caveat](#macos-launchd-vs-local-network-privacy).)
 
 ### 4. Add the rest of your fleet
 
