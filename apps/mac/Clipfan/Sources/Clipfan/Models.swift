@@ -13,6 +13,7 @@ struct Peer: Codable, Identifiable, Hashable {
 struct PeersResponse: Codable {
     let origin: String
     let peers: [Peer]
+    let version: String?
 }
 
 struct TailscalePeer: Identifiable, Hashable {
