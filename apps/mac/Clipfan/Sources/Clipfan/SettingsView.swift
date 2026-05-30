@@ -35,6 +35,9 @@ struct FleetTab: View {
                 Spacer()
                 Button("Refresh") { Task { await daemon.refresh() } }
             }
+            if shouldPromptLocalNetwork(peers: daemon.peers) {
+                LocalNetworkNudge()
+            }
             if daemon.peers.isEmpty {
                 VStack(spacing: 6) {
                     Image(systemName: "network.slash").font(.system(size: 28)).foregroundStyle(.tertiary)
@@ -125,6 +128,11 @@ struct GeneralTab: View {
 
             Section("Status") {
                 LabeledContent("Daemon", value: daemon.connected ? "running" : "down")
+                Button("Re-run setup…") {
+                    WelcomeWindowController.shared.show(startInstall: true)
+                }
+                Text("Reinstalls and restarts the background service.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section {
@@ -153,4 +161,40 @@ struct GeneralTab: View {
     }
     var shareDirPath: String { Installer.shareDir.path }
     var logPath: String { "/tmp/clipfan-shell.log" }
+}
+
+/// Shown in the Fleet tab when a peer's pushes are failing — the usual cause on
+/// macOS Sequoia is the daemon lacking Local Network permission. Heuristic (no
+/// public API reports the grant), so it's worded as a likely cause, not a verdict.
+struct LocalNetworkNudge: View {
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.system(size: 16))
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Sync may be blocked").font(.system(size: 12.5, weight: .semibold))
+                Text("A peer isn't reachable. macOS needs **Local Network** permission for clipfan to sync over your LAN.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                Button("Open Local Network settings…") { openLocalNetworkSettings() }
+                    .font(.system(size: 11))
+                    .padding(.top, 2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.08))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.25)))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+/// Open System Settings to the Local Network privacy pane, falling back to the
+/// general Privacy & Security pane if the deep link can't be resolved.
+func openLocalNetworkSettings() {
+    let local = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!
+    let privacy = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy")!
+    if !NSWorkspace.shared.open(local) {
+        NSWorkspace.shared.open(privacy)
+    }
 }
