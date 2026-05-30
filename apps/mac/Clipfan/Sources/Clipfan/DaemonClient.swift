@@ -7,6 +7,7 @@ final class DaemonClient: ObservableObject {
 
     @Published var origin: String = "—"
     @Published var version: String?
+    @Published var maxHistory: Int = 200
     @Published var peers: [Peer] = []
     @Published var connected: Bool = false
     @Published var history: [HistoryEntry] = []
@@ -38,6 +39,7 @@ final class DaemonClient: ObservableObject {
             let resp = try JSONDecoder.clipfan.decode(PeersResponse.self, from: data)
             self.origin = resp.origin
             self.version = resp.version
+            if let m = resp.max_history { self.maxHistory = m }
             self.peers = resp.peers
             self.connected = true
         } catch {
@@ -78,7 +80,7 @@ final class DaemonClient: ObservableObject {
 
     func refreshHistory() async {
         guard let key = loadSharedKey(),
-              let url = URL(string: "\(base.absoluteString)/v1/history?limit=200") else { return }
+              let url = URL(string: "\(base.absoluteString)/v1/history?limit=\(maxHistory)") else { return }
         var req = URLRequest(url: url)
         req.timeoutInterval = 2
         req.setValue(clipfanSign(body: Data(), key: key), forHTTPHeaderField: "X-Clipfan-Sig")
@@ -112,6 +114,12 @@ final class DaemonClient: ObservableObject {
 
     func clearUnpinned() async {
         await signedRequest(method: "DELETE", path: "/v1/history", body: ["all_unpinned": true])
+        await refreshHistory()
+    }
+
+    func setMaxHistory(_ n: Int) async {
+        await signedRequest(method: "POST", path: "/v1/config", body: ["max_history": n])
+        await refresh()
         await refreshHistory()
     }
 
