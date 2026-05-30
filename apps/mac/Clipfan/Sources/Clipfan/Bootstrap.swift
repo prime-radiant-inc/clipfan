@@ -73,6 +73,9 @@ enum Bootstrap {
 
     /// Run the bundled install.sh, redirecting combined stdout+stderr to `log`.
     /// Returns true on a clean (exit 0) install. Blocking work runs off-main.
+    ///
+    /// No tmux flag is passed, so install.sh runs in its `auto` mode — wiring up
+    /// tmux only if tmux is installed — matching a hand-run terminal install.
     static func runInstaller(script: URL, logTo log: URL) async -> Bool {
         await Task.detached(priority: .userInitiated) {
             FileManager.default.createFile(atPath: log.path, contents: nil)
@@ -108,9 +111,12 @@ final class BootstrapController: ObservableObject {
     var installLogPath: String { Bootstrap.installLog.path }
 
     /// Locate the bundled installer, clear quarantine, run install.sh, then wait
-    /// for the daemon to come online. Idempotent — safe to call again for Retry.
+    /// for the daemon to come online. Reachable from first-run, the Settings
+    /// "Re-run setup" button, and the Welcome "Retry" button, so guard against a
+    /// second run landing on the same log file and `launchctl` reload.
     func install() async {
-        state = .idle
+        if case .installing = state { return }
+        state = .installing(progress: ["Preparing background service…"])
         guard let dist = Bootstrap.bundledPayload else {
             state = .failed(message: "Bundled installer not found in the app.",
                             logPath: installLogPath)
@@ -123,7 +129,6 @@ final class BootstrapController: ObservableObject {
             return
         }
 
-        state = state.appendingProgress("Preparing background service…")
         // Best-effort: clear quarantine so launchd will run the copied binaries
         // even if the app arrived via download or AirDrop.
         _ = try? await Installer.run("/usr/bin/xattr",

@@ -80,8 +80,10 @@ struct WelcomeView: View {
                 .foregroundStyle(.secondary)
                 .font(.system(size: 12))
             HStack(spacing: 12) {
-                Button("View log") {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: logPath))
+                if FileManager.default.fileExists(atPath: logPath) {
+                    Button("View log") {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: logPath))
+                    }
                 }
                 Button("Retry") {
                     Task { await bootstrap.install() }
