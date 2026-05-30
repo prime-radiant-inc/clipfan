@@ -128,3 +128,47 @@ func TestReceiveDropsEmptyID(t *testing.T) {
 		t.Fatal("ID-less envelope was applied to the clipboard")
 	}
 }
+
+// Bug A: the same local clipboard content must be broadcast once, not re-sent on
+// every poll. pollOnce must adopt the clip it broadcast as the current clip.
+func TestPollDoesNotRebroadcastSameLocalClip(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	d, cb, push := newTestDaemon(t)
+	cb.current = clipboard.New(clipboard.KindText, []byte("local copy"), fixedTime)
+
+	d.pollOnce(context.Background())
+	waitForPushes(t, push, 1)
+	// Same content still on the clipboard; a second poll must NOT re-broadcast.
+	d.pollOnce(context.Background())
+	time.Sleep(50 * time.Millisecond)
+
+	if got := len(push.snapshot()); got != 1 {
+		t.Fatalf("re-broadcast the same local clip: %d pushes, want 1", got)
+	}
+}
+
+// Bug B: received text re-submitted with a FRESH id (the tmux after-load-buffer
+// hook bridge) must be recognised as an echo of what we just wrote and dropped —
+// not re-applied or relayed.
+func TestReceiveSuppressesReoriginatedText(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	d, _, push := newTestDaemon(t)
+
+	first := clipboard.New(clipboard.KindText, []byte("hello from tmux"), fixedTime)
+	first.ID = "id-1"
+	d.onReceive(first, "peer")
+	waitForPushes(t, push, 1)
+	relayed := len(push.snapshot())
+
+	// The hook re-POSTs identical bytes with a new id and a slightly later TS.
+	resub := clipboard.New(clipboard.KindText, []byte("hello from tmux"), fixedTime.Add(time.Millisecond))
+	resub.ID = "id-2-fresh"
+	d.onReceive(resub, "self")
+	time.Sleep(50 * time.Millisecond)
+
+	if extra := len(push.snapshot()) - relayed; extra != 0 {
+		t.Fatalf("re-originated text was relayed again: %d extra pushes", extra)
+	}
+}

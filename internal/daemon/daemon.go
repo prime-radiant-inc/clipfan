@@ -265,17 +265,22 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 	d.lastTS = c.TS
 	d.mu.Unlock()
 	slog.Debug("local clip changed", "id", c.ID, "kind", c.Kind, "bytes", len(c.Bytes))
+	imagePath := ""
 	if !c.Concealed {
-		recImg := ""
 		if c.Kind == clipboard.KindImage {
 			if p, err := store.SaveImage(c.Bytes); err == nil {
-				recImg = p
+				imagePath = p
 			}
 		}
-		if err := store.AppendHistory(c, d.origin, recImg); err != nil {
+		if err := store.AppendHistory(c, d.origin, imagePath); err != nil {
 			slog.Debug("append history", "err", err)
 		}
 	}
+	// Adopt the clip we just broadcast as the current clip so the next poll of
+	// the unchanged clipboard is recognised as an echo, not re-broadcast.
+	d.mu.Lock()
+	d.current = currentClip{id: c.ID, kind: c.Kind, hash: c.Hash, imagePath: imagePath}
+	d.mu.Unlock()
 	d.fanout(ctx, c, "" /* skipOrigin = none */)
 }
 
@@ -307,6 +312,14 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 	// kind=image clip) with a useless path, and relaying it would spread the
 	// clobber across the fleet. Drop it.
 	if c.Kind == clipboard.KindText && store.IsImageStorePath(string(c.Bytes)) {
+		return
+	}
+
+	// Content we just wrote to our own clipboard coming back — e.g. the tmux
+	// after-load-buffer hook re-submitting received text via `clipfan copy` under
+	// a fresh clip-ID. Clip-ID dedup can't catch a re-originated ID, so suppress
+	// by content here the same way pollOnce does.
+	if d.isEcho(c) {
 		return
 	}
 

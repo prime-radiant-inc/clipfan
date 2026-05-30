@@ -34,9 +34,10 @@ bind -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$HOME/.lo
 # --- buffer hooks (catch selections that never enter copy-mode) --------------
 # Claude Code uses load-buffer; other tools use set-buffer. Hook both.
 # Loop-safe by content identity: the daemon writes received clips into the buffer
-# too (also load-buffer), but registers each loaded payload's hash in its
-# seen-set, so the echo these hooks produce is deduped at the daemon. (tmux
-# treats load-buffer and set-buffer as the same operation differing only in data
-# source, so the verb itself is not a reliable signal.)
+# too (also load-buffer), so these hooks re-submit that content via `clipfan copy`.
+# The daemon suppresses that echo by recognising it as content it just wrote
+# (its d.current / isEcho mechanism), not by a hash seen-set. (tmux treats
+# load-buffer and set-buffer as the same operation differing only in data source,
+# so the verb itself is not a reliable signal.)
 set-hook -g after-set-buffer  'run-shell "tmux show-buffer | $HOME/.local/bin/clipfan copy"'
 set-hook -g after-load-buffer 'run-shell "tmux show-buffer | $HOME/.local/bin/clipfan copy"'
