@@ -495,6 +495,13 @@ func (d *Daemon) Restore(id string) error {
 	}
 
 	c.ID = transport.NewClipID()
+	if c.ID == "" {
+		// Mint failed (CSPRNG error): the local clipboard write already happened,
+		// so the restore succeeded for the user; just skip the broadcast. The next
+		// pollOnce will pick the content up and propagate it with a fresh ID.
+		slog.Warn("could not mint clip ID; skipping restore broadcast")
+		return nil
+	}
 
 	d.mu.Lock()
 	d.seen.add(c.ID)
