@@ -77,6 +77,8 @@ struct FleetTab: View {
             }
             .buttonStyle(.borderedProminent)
         }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .sheet(isPresented: $showAdd) { AddPeerSheet() }
     }
 }

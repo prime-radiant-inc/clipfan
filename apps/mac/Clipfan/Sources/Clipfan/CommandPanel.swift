@@ -53,11 +53,8 @@ final class CommandPanelController: NSObject, NSWindowDelegate {
         panel.standardWindowButton(.zoomButton)?.isEnabled = false
         panel.contentView = hosting
         panel.delegate = self
-
-        // Rounded corners on the panel content.
-        hosting.wantsLayer = true
-        hosting.layer?.cornerRadius = 12
-        hosting.layer?.masksToBounds = true
+        // The titled window supplies its own frame and corner rounding; the
+        // content fills it edge to edge (no inset rounded card).
 
         self.panel = panel
         present(panel)
