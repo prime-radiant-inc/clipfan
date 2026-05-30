@@ -4,23 +4,36 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var daemon: DaemonClient
 
-    enum Tab: String, CaseIterable, Hashable {
+    enum Tab: String, CaseIterable, Hashable, Identifiable {
         case fleet = "Fleet"
         case general = "General"
+        case diagnostics = "Diagnostics"
+        var id: String { rawValue }
+
+        var systemImage: String {
+            switch self {
+            case .fleet:       return "network"
+            case .general:     return "gearshape"
+            case .diagnostics: return "stethoscope"
+            }
+        }
     }
 
     @State private var selection: Tab = .fleet
 
     var body: some View {
-        TabView(selection: $selection) {
-            FleetTab()
-                .tabItem { Label("Fleet", systemImage: "network") }
-                .tag(Tab.fleet)
-            GeneralTab()
-                .tabItem { Label("General", systemImage: "gear") }
-                .tag(Tab.general)
+        NavigationSplitView {
+            List(Tab.allCases, selection: $selection) { tab in
+                Label(tab.rawValue, systemImage: tab.systemImage).tag(tab)
+            }
+            .navigationSplitViewColumnWidth(170)
+        } detail: {
+            switch selection {
+            case .fleet:       FleetTab()
+            case .general:     GeneralTab()
+            case .diagnostics: DiagnosticsTab()
+            }
         }
-        .padding()
     }
 }
 
@@ -38,16 +51,22 @@ struct FleetTab: View {
             if shouldPromptLocalNetwork(peers: daemon.peers) {
                 LocalNetworkNudge()
             }
-            if daemon.peers.isEmpty {
-                VStack(spacing: 6) {
-                    Image(systemName: "network.slash").font(.system(size: 28)).foregroundStyle(.tertiary)
-                    Text("No peers yet").foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    VStack(spacing: 10) {
-                        ForEach(daemon.peers) { peer in PeerCard(peer: peer) }
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach(fleetRows(origin: daemon.origin,
+                                      connected: daemon.connected,
+                                      peers: daemon.peers)) { row in
+                        FleetRow(model: row)
+                            .padding(12)
+                            .background(Color.secondary.opacity(0.06))
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.12)))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    if daemon.peers.isEmpty {
+                        Text("No peers yet — add one in Settings")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 4)
                     }
                 }
             }
@@ -58,48 +77,16 @@ struct FleetTab: View {
             }
             .buttonStyle(.borderedProminent)
         }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .sheet(isPresented: $showAdd) { AddPeerSheet() }
     }
 }
 
-struct PeerCard: View {
-    let peer: Peer
-
-    var body: some View {
-        HStack(spacing: 13) {
-            Circle().fill(dotColor).frame(width: 9, height: 9)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(peer.hostname).font(.system(size: 13.5, weight: .semibold))
-                }
-                Text(stateLine).font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 3) {
-                Text("↑ \(peerTimeAgo(peer.last_push_ts))   ↓ \(peerTimeAgo(peer.last_recv_ts))")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-                Text(peer.healthWord).font(.system(size: 10)).foregroundStyle(peer.healthColor)
-            }
-        }
-        .padding(12)
-        .background(Color.secondary.opacity(0.06))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.12)))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-
-    private var dotColor: Color { peer.healthColor }
-
-    private var stateLine: String {
-        if peer.last_push_ok { return "port \(peer.port) · synced" }
-        if let err = peer.last_push_err, !err.isEmpty { return "last error: \(err)" }
-        return "port \(peer.port)"
-    }
-}
 
 struct GeneralTab: View {
     @EnvironmentObject var daemon: DaemonClient
     @StateObject private var loginItem = LoginItemManager.shared
-    @State private var showDeveloper = false
 
     var body: some View {
         Form {
@@ -125,42 +112,9 @@ struct GeneralTab: View {
                 LabeledContent("History limit", value: "200 items")
                 LabeledContent("Global shortcut", value: "⇧⌘V")
             }
-
-            Section("Status") {
-                LabeledContent("Daemon", value: daemon.connected ? "running" : "down")
-                Button("Re-run setup…") {
-                    WelcomeWindowController.shared.show(startInstall: true)
-                }
-                Text("Reinstalls and restarts the background service.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-
-            Section {
-                DisclosureGroup("Developer", isExpanded: $showDeveloper) {
-                    LabeledContent("Config") { Text(configPath).font(.system(.caption, design: .monospaced)) }
-                    LabeledContent("Share dir") { Text(shareDirPath).font(.system(.caption, design: .monospaced)) }
-                    Button("Reveal config in Finder") {
-                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: configPath)])
-                    }
-                    Button("Open daemon log") {
-                        NSWorkspace.shared.open(URL(fileURLWithPath: logPath))
-                    }
-                    Button("Restart daemon") {
-                        daemon.restartDaemon()
-                        Task { await daemon.refresh() }
-                    }
-                }
-            }
         }
         .formStyle(.grouped)
     }
-
-    var configPath: String {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/clipfan/config.json").path
-    }
-    var shareDirPath: String { Installer.shareDir.path }
-    var logPath: String { "/tmp/clipfan-shell.log" }
 }
 
 /// Shown in the Fleet tab when a peer's pushes are failing — the usual cause on
@@ -197,4 +151,64 @@ func openLocalNetworkSettings() {
     if !NSWorkspace.shared.open(local) {
         NSWorkspace.shared.open(privacy)
     }
+}
+
+struct DiagnosticsTab: View {
+    @EnvironmentObject var daemon: DaemonClient
+
+    var body: some View {
+        Form {
+            Section {
+                HStack(spacing: 12) {
+                    HealthDot(health: daemon.connected ? .healthy : .down, size: 11)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(daemon.connected ? "Daemon running" : "Daemon not running")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("this Mac · \(daemon.origin) · \(daemonVersion)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Restart") {
+                        daemon.restartDaemon()
+                        Task { await daemon.refresh() }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
+            Section("Setup") {
+                Button("Re-run setup…") {
+                    WelcomeWindowController.shared.show(startInstall: true)
+                }
+                Text("Reinstalls and restarts the background service.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Developer") {
+                LabeledContent("Config") { Text(configPath).font(.system(.caption, design: .monospaced)) }
+                LabeledContent("Share dir") { Text(shareDirPath).font(.system(.caption, design: .monospaced)) }
+                Button("Reveal config in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: configPath)])
+                }
+                Button("Open daemon log") {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: logPath))
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    /// Daemon-reported version, falling back to the app bundle version.
+    var daemonVersion: String {
+        if let v = daemon.version, !v.isEmpty { return v }
+        return Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+    }
+
+    var configPath: String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/clipfan/config.json").path
+    }
+    var shareDirPath: String { Installer.shareDir.path }
+    var logPath: String { "/tmp/clipfan-shell.log" }
 }

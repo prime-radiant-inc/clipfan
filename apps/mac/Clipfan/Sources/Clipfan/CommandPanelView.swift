@@ -36,7 +36,7 @@ struct CommandPanelView: View {
             footer
         }
         .frame(width: 680, height: 460)
-        .background(VisualEffectBackground())
+        .background(VisualEffectBackground(material: .windowBackground))
         .overlay { hiddenShortcuts.frame(width: 0, height: 0).clipped() }
         .task {
             searchFocused = true
@@ -205,6 +205,8 @@ struct CommandPanelView: View {
         ZStack {
             Button("") { onDismiss() }
                 .keyboardShortcut(.cancelAction)
+            Button("") { WindowOpener.shared.openSettings(); onDismiss() }
+                .keyboardShortcut(",", modifiers: .command)
             if !items.isEmpty {
                 Button("") { pasteSelected() }
                     .keyboardShortcut(.return, modifiers: [])

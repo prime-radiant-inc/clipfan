@@ -16,6 +16,7 @@ import (
 	"github.com/prime-radiant-inc/clipfan/internal/store"
 	"github.com/prime-radiant-inc/clipfan/internal/tmux"
 	"github.com/prime-radiant-inc/clipfan/internal/transport"
+	"github.com/prime-radiant-inc/clipfan/internal/version"
 )
 
 // PeerState is the daemon-tracked status of a single peer, exposed via
@@ -201,8 +202,9 @@ func hostsMatch(a, b string) bool {
 
 func (d *Daemon) peersHandler() any {
 	return map[string]any{
-		"origin": d.origin,
-		"peers":  d.Snapshot(context.Background()),
+		"origin":  d.origin,
+		"peers":   d.Snapshot(context.Background()),
+		"version": version.Version,
 	}
 }
 
