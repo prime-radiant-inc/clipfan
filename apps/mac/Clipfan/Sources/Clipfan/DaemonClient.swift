@@ -6,6 +6,7 @@ final class DaemonClient: ObservableObject {
     static let shared = DaemonClient()
 
     @Published var origin: String = "—"
+    @Published var version: String?
     @Published var peers: [Peer] = []
     @Published var connected: Bool = false
     @Published var history: [HistoryEntry] = []
@@ -36,6 +37,7 @@ final class DaemonClient: ObservableObject {
             let (data, _) = try await URLSession.shared.data(for: req)
             let resp = try JSONDecoder.clipfan.decode(PeersResponse.self, from: data)
             self.origin = resp.origin
+            self.version = resp.version
             self.peers = resp.peers
             self.connected = true
         } catch {
