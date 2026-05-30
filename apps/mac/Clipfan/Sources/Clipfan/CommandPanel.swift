@@ -35,23 +35,24 @@ final class CommandPanelController: NSObject, NSWindowDelegate {
 
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 660, height: 440),
-            styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel, .resizable],
+            styleMask: [.titled, .closable, .nonactivatingPanel, .resizable],
             backing: .buffered,
             defer: true
         )
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
+        panel.title = "Clipboard"
+        panel.titleVisibility = .visible
+        panel.titlebarAppearsTransparent = false
         panel.isMovableByWindowBackground = true
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
-        panel.standardWindowButton(.closeButton)?.isHidden = true
-        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        // Close hides the panel (handled in windowShouldClose); minimize and zoom
+        // are meaningless on a transient HUD, so present-but-disabled.
+        panel.standardWindowButton(.miniaturizeButton)?.isEnabled = false
+        panel.standardWindowButton(.zoomButton)?.isEnabled = false
         panel.contentView = hosting
         panel.delegate = self
-        panel.backgroundColor = .clear
 
         // Rounded corners on the panel content.
         hosting.wantsLayer = true
@@ -93,5 +94,12 @@ final class CommandPanelController: NSObject, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         guard dismissOnResignKey else { return }
         hide()
+    }
+
+    // The close button hides the panel (like Esc / click-away) rather than
+    // destroying it, so re-summoning is instant.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        hide()
+        return false
     }
 }
