@@ -9,8 +9,6 @@ state.
 
 Tracks PRI-1873.
 
-![clipfan command panel](docs/images/command-panel.png)
-
 ## How it works
 
 A daemon runs on every host. Peers discover each other (Tailscale `tailscale
@@ -194,8 +192,6 @@ see at a glance whether your fleet is in sync. Click a peer to jump to its detai
 - **General** — *Launch at login*, the history limit, the global shortcut, and
   daemon health. Developer bits (config path, daemon log, restart) live in a
   collapsed **Developer** section.
-
-![clipfan menubar fleet and settings](docs/images/menubar-fleet.png)
 
 The app polls `localhost:7853/v1/peers` over loopback, so it needs no Local
 Network privacy grant. Build it from `apps/mac/Clipfan` (`./build-app.sh`).
