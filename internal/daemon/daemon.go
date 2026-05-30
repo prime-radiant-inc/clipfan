@@ -45,12 +45,23 @@ type Daemon struct {
 	sv     *transport.Server
 	origin string
 
-	mu     sync.Mutex
-	seen   *seenSet
-	lastTS time.Time
+	mu      sync.Mutex
+	seen    *seenSet
+	lastTS  time.Time
+	current currentClip
 
 	peersMu    sync.RWMutex
 	peerStatus map[string]*PeerState
+}
+
+// currentClip is the daemon's record of what it last wrote to the local
+// clipboard, so pollOnce can recognise echoes of our own write — even when the
+// content comes back re-represented (an image read back as its store path).
+type currentClip struct {
+	id        string
+	kind      clipboard.Kind
+	hash      [32]byte // canonical bytes hash (text bytes, or image bytes)
+	imagePath string   // set for image clips
 }
 
 func New(cfg *config.Config) (*Daemon, error) {
@@ -238,6 +249,9 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 	if c.Kind == clipboard.KindText && store.IsImageStorePath(string(c.Bytes)) {
 		return
 	}
+	if d.isEcho(c) {
+		return
+	}
 	d.mu.Lock()
 	if d.seen.has(c.Hash) {
 		d.mu.Unlock()
@@ -260,6 +274,27 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 		}
 	}
 	d.fanout(ctx, c, "" /* skipOrigin = none */)
+}
+
+// isEcho reports whether a freshly read clipboard content `c` is just our own
+// last write coming back — possibly re-represented as the current image's store
+// path — rather than a new user copy.
+func (d *Daemon) isEcho(c clipboard.Content) bool {
+	d.mu.Lock()
+	cur := d.current
+	d.mu.Unlock()
+	if cur.id == "" {
+		return false
+	}
+	if c.Kind == cur.kind && c.Hash == cur.hash {
+		return true
+	}
+	if cur.kind == clipboard.KindImage && c.Kind == clipboard.KindText {
+		if strings.TrimSpace(string(c.Bytes)) == cur.imagePath {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Daemon) onReceive(c clipboard.Content, origin string) {
@@ -329,6 +364,13 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 			slog.Warn("local clip write (text)", "err", err)
 		}
 	}
+	d.mu.Lock()
+	if c.Kind == clipboard.KindImage {
+		d.current = currentClip{id: c.ID, kind: clipboard.KindImage, hash: c.Hash, imagePath: imagePath}
+	} else {
+		d.current = currentClip{id: c.ID, kind: clipboard.KindText, hash: c.Hash}
+	}
+	d.mu.Unlock()
 	if err := tmux.LoadBufferAll(textPayload); err != nil {
 		slog.Debug("tmux load-buffer", "err", err)
 	}
@@ -445,6 +487,11 @@ func (d *Daemon) Restore(id string) error {
 	d.mu.Lock()
 	d.seen.add(c.Hash)
 	d.lastTS = c.TS
+	if e.Kind == "image" {
+		d.current = currentClip{id: c.ID, kind: clipboard.KindImage, hash: c.Hash, imagePath: e.ImagePath}
+	} else {
+		d.current = currentClip{id: c.ID, kind: clipboard.KindText, hash: c.Hash}
+	}
 	d.mu.Unlock()
 
 	recImg := ""
