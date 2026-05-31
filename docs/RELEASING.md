@@ -11,15 +11,20 @@ The workflow needs these secrets on `prime-radiant-inc/clipfan`
 used by `prime-radiant-inc/clearance` (same Apple Developer account and Sparkle
 key), so the values can be copied from there.
 
-| Secret | What it is |
-|--------|-----------|
-| `DEVELOPER_ID_APPLICATION_CERT_BASE64` | base64 of the Developer ID Application `.p12` |
-| `DEVELOPER_ID_APPLICATION_CERT_PASSWORD` | password for that `.p12` |
-| `DEVELOPER_ID_APPLICATION_SIGNING_IDENTITY` | e.g. `Developer ID Application: Your Name (TEAMID)` |
-| `APPLE_ID` | Apple ID email used for notarization |
-| `APPLE_APP_SPECIFIC_PASSWORD` | app-specific password for that Apple ID |
-| `APPLE_TEAM_ID` | 10-char Apple Team ID |
-| `SPARKLE_PRIVATE_ED_KEY` | the Sparkle EdDSA private key (matches the `SUPublicEDKey` in `Info.plist`) |
+| Secret | What it is | Status |
+|--------|-----------|--------|
+| `DEVELOPER_ID_APPLICATION_SIGNING_IDENTITY` | `Developer ID Application: Jesse Vincent (87WJ58S66M)` | ✅ set |
+| `APPLE_TEAM_ID` | `87WJ58S66M` | ✅ set |
+| `DEVELOPER_ID_APPLICATION_CERT_BASE64` | base64 of the Developer ID Application `.p12` | ⬜ todo |
+| `DEVELOPER_ID_APPLICATION_CERT_PASSWORD` | password for that `.p12` | ⬜ todo |
+| `APPLE_ID` | Apple ID email used for notarization | ⬜ todo |
+| `APPLE_APP_SPECIFIC_PASSWORD` | app-specific password for that Apple ID | ⬜ todo |
+| `SPARKLE_PRIVATE_ED_KEY` | the Sparkle EdDSA private key (matches the `SUPublicEDKey` in `Info.plist`) | ⬜ todo |
+
+The two ✅ secrets were read from the local keychain and set already. The five
+⬜ secrets need your input: the cert `.p12` and the Sparkle private key require a
+keychain export (which prompts for your approval), and the app-specific password
+isn't recoverable — all are already configured identically on `clearance`.
 
 No Installer cert and no `SPARKLE_PUBLIC_ED_KEY` secret are needed — clipfan ships
 a `.dmg`/`.zip` (not a `.pkg`) and the Sparkle public key lives in `Info.plist`.
