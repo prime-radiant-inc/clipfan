@@ -75,7 +75,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 	case "static":
 		disc = discovery.NewStatic(cfg.StaticPeers, cfg.Port)
 	default:
-		disc = discovery.NewTailscale(cfg.Port)
+		disc = discovery.NewTailscale(cfg.Port, cfg.StaticPeers)
 	}
 
 	origin := cfg.Hostname
@@ -95,6 +95,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 	}
 	d.cl = transport.NewClient(auth, origin)
 	d.sv = transport.NewServer(cfg.Listen, auth, d.onReceive, d.peersHandler)
+	d.sv.SetRecipientIdentity(origin)
 	d.sv.SetHistory(
 		func(limit int) (any, error) { return store.LoadHistory(limit) },
 		d.Restore,
@@ -175,8 +176,7 @@ func (d *Daemon) Snapshot(ctx context.Context) []PeerState {
 }
 
 func shortName(h string) string {
-	h = strings.TrimSuffix(h, ".local")
-	return strings.SplitN(h, ".", 2)[0]
+	return transport.ShortName(h)
 }
 
 // hostsMatch returns true if two hostnames almost certainly identify the
@@ -186,19 +186,7 @@ func shortName(h string) string {
 // "paradise-park". The minMatchLen floor prevents incidental suffix matches
 // (e.g. "park" being treated as the same host as "paradise-park").
 func hostsMatch(a, b string) bool {
-	sa, sb := shortName(a), shortName(b)
-	if sa == sb {
-		return true
-	}
-	const minMatchLen = 6
-	long, short := sb, sa
-	if len(sa) > len(sb) {
-		long, short = sa, sb
-	}
-	if len(short) < minMatchLen {
-		return false
-	}
-	return strings.HasSuffix(long, "-"+short)
+	return transport.HostsMatch(a, b)
 }
 
 func (d *Daemon) peersHandler() any {
@@ -303,11 +291,15 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 			slog.Debug("append history", "err", err)
 		}
 	}
-	// Adopt the clip we just broadcast as the current clip so the next poll of
-	// the unchanged clipboard is recognised as an echo, not re-broadcast.
+	// Adopt the processed local clip so the next poll of the unchanged
+	// clipboard is recognised as an echo, not processed again.
 	d.mu.Lock()
 	d.current = currentClip{id: c.ID, kind: c.Kind, hash: c.Hash, imagePath: imagePath}
 	d.mu.Unlock()
+	if c.Concealed {
+		slog.Debug("concealed local clip skipped", "id", c.ID, "kind", c.Kind)
+		return
+	}
 	d.fanout(ctx, c, "" /* skipOrigin = none */)
 }
 
@@ -363,6 +355,12 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 		d.mu.Unlock()
 		return
 	}
+	if c.Concealed {
+		d.seen.add(c.ID)
+		d.mu.Unlock()
+		slog.Debug("concealed peer clip dropped", "id", c.ID, "origin", origin)
+		return
+	}
 	if !d.lastTS.IsZero() && c.TS.Before(d.lastTS) {
 		d.mu.Unlock()
 		return
@@ -392,14 +390,12 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 		slog.Warn("save state", "err", err)
 	}
 
-	if !c.Concealed {
-		recImg := ""
-		if c.Kind == clipboard.KindImage {
-			recImg = imagePath
-		}
-		if err := store.AppendHistory(c, origin, recImg); err != nil {
-			slog.Debug("append history", "err", err)
-		}
+	recImg := ""
+	if c.Kind == clipboard.KindImage {
+		recImg = imagePath
+	}
+	if err := store.AppendHistory(c, origin, recImg); err != nil {
+		slog.Debug("append history", "err", err)
 	}
 
 	var wrote bool

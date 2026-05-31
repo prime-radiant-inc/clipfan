@@ -57,3 +57,145 @@ func TestLoadCreatesDefaultConfig(t *testing.T) {
 		t.Fatal("config file missing shared_key field")
 	}
 }
+
+func TestLoadRepairsExistingConfigDirectoryPermissions(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	dir := filepath.Join(root, "clipfan")
+	path := filepath.Join(dir, "config.json")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"shared_key":"`+NewSharedKey()+`","max_history":50}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxHistory != 50 {
+		t.Fatalf("MaxHistory = %d, want 50", cfg.MaxHistory)
+	}
+	assertMode(t, dir, 0o700)
+}
+
+func TestLoadRepairsExistingConfigFilePermissions(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	dir := filepath.Join(root, "clipfan")
+	path := filepath.Join(dir, "config.json")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"shared_key":"`+NewSharedKey()+`","max_history":50}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxHistory != 50 {
+		t.Fatalf("MaxHistory = %d, want 50", cfg.MaxHistory)
+	}
+	assertMode(t, path, 0o600)
+}
+
+func TestLoadRejectsSymlinkedConfigFile(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	dir := filepath.Join(root, "clipfan")
+	path := filepath.Join(dir, "config.json")
+	target := filepath.Join(root, "target.json")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte(`{"shared_key":"`+NewSharedKey()+`","max_history":50}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load returned nil error for symlinked config file")
+	}
+}
+
+func TestSaveUsesPrivatePermissions(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	cfg := &Config{SharedKey: NewSharedKey()}
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	assertMode(t, filepath.Join(root, "clipfan"), 0o700)
+	assertMode(t, filepath.Join(root, "clipfan", "config.json"), 0o600)
+}
+
+func TestSaveDoesNotFollowSymlinkedConfigFile(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	dir := filepath.Join(root, "clipfan")
+	path := filepath.Join(dir, "config.json")
+	target := filepath.Join(root, "target.json")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Save(&Config{SharedKey: NewSharedKey(), MaxHistory: 50}); err != nil {
+		t.Fatal(err)
+	}
+	targetData, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(targetData) != "keep" {
+		t.Fatalf("symlink target was overwritten: %q", targetData)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("config path mode = %v, want regular file", info.Mode())
+	}
+	assertMode(t, path, 0o600)
+}
+
+func TestSaveRejectsSymlinkedConfigDirectory(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	targetDir := filepath.Join(root, "target")
+	if err := os.MkdirAll(targetDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(targetDir, filepath.Join(root, "clipfan")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Save(&Config{SharedKey: NewSharedKey()}); err == nil {
+		t.Fatal("Save returned nil error for symlinked config directory")
+	}
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %o, want %o", path, got, want)
+	}
+}

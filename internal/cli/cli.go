@@ -5,9 +5,7 @@ package cli
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -15,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -124,20 +123,31 @@ func pushToDaemon(kind string, body []byte) error {
 		h, _ := os.Hostname()
 		origin = shortName(h)
 	}
-	sum := sha256.Sum256(body)
+	sealedBody, bodyNonce, err := auth.SealBody(body)
+	if err != nil {
+		return err
+	}
 	env := transport.Envelope{
-		ID:     transport.NewClipID(),
-		Origin: origin,
-		TS:     time.Now().UTC(),
-		Kind:   kind,
-		SHA256: hex.EncodeToString(sum[:]),
-		Body:   transport.EncodeBody(body),
+		ID:        transport.NewClipID(),
+		Origin:    origin,
+		Recipient: origin,
+		TS:        time.Now().UTC(),
+		Kind:      kind,
+		Body:      sealedBody,
+		Nonce:     bodyNonce,
 	}
 	raw, _ := json.Marshal(env)
 
 	req, _ := http.NewRequest("POST", localURL+"/v1/clip", bytes.NewReader(raw))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Clipfan-Sig", auth.Sign(raw))
+	nonce := transport.NewClipID()
+	if nonce == "" {
+		return errors.New("generate request nonce")
+	}
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	req.Header.Set("X-Clipfan-Ts", ts)
+	req.Header.Set("X-Clipfan-Nonce", nonce)
+	req.Header.Set("X-Clipfan-Sig", auth.SignRequest(req.Method, req.URL.RequestURI(), ts, nonce, raw))
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {

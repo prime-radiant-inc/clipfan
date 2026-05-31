@@ -6,14 +6,40 @@ final class SigningTests: XCTestCase {
     // Raw key = ASCII "0123456789abcdef0123456789abcdef" (32 bytes).
     private let rawKey = Data("0123456789abcdef0123456789abcdef".utf8)
 
-    func testSignEmptyBodyMatchesGo() {
-        let sig = clipfanSign(body: Data(), key: rawKey)
-        XCTAssertEqual(sig, "796cd3078af14636753d26b3b5555422ff55a3e261cf847b48e95371b9bd0aa2")
+    func testSignHistoryRequestMatchesGo() {
+        let sig = clipfanSign(
+            method: "GET",
+            requestURI: "/v1/history?limit=10",
+            timestamp: "1780257600",
+            nonce: "nonce-1",
+            body: Data(),
+            key: rawKey
+        )
+        XCTAssertEqual(sig, "4653ff5ab124b2cc35fcee57709494f8a9b09c0981389654893d513a84191c40")
     }
 
-    func testSignBodyMatchesGo() {
-        let sig = clipfanSign(body: Data(#"{"id":"abc"}"#.utf8), key: rawKey)
-        XCTAssertEqual(sig, "45e60cb68a96381d8441f775dbdc19811bbfcf853d036a33599da3e55841df72")
+    func testSignRestoreRequestMatchesGo() {
+        let sig = clipfanSign(
+            method: "POST",
+            requestURI: "/v1/restore",
+            timestamp: "1780257600",
+            nonce: "nonce-2",
+            body: Data(#"{"id":"abc"}"#.utf8),
+            key: rawKey
+        )
+        XCTAssertEqual(sig, "bc45df25bb616a886c831c26136fcfd38957c355d800179cfa39e53cc5c15086")
+    }
+
+    func testSignatureHeadersIncludeFreshnessFields() {
+        let headers = clipfanSignatureHeaders(
+            method: "GET",
+            requestURI: "/v1/peers",
+            body: Data(),
+            key: rawKey
+        )
+        XCTAssertNotNil(headers["X-Clipfan-Ts"])
+        XCTAssertNotNil(headers["X-Clipfan-Nonce"])
+        XCTAssertNotNil(headers["X-Clipfan-Sig"])
     }
 
     func testLoadKeyDecodesBase64() throws {

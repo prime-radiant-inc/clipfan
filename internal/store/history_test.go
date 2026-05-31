@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -177,4 +178,41 @@ func TestImageGCSpareReferenced(t *testing.T) {
 	if _, err := os.Stat(p); err != nil {
 		t.Fatalf("referenced image was GC'd: %v", err)
 	}
+}
+
+func TestAppendHistoryUsesPrivatePermissions(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := AppendHistory(clipboard.New(clipboard.KindText, []byte("secret"), ts(1)), "m4", ""); err != nil {
+		t.Fatal(err)
+	}
+	assertMode(t, filepath.Join(root, "clipfan"), 0o700)
+	assertMode(t, filepath.Join(root, "clipfan", "history.json"), 0o600)
+}
+
+func TestLoadHistoryRepairsExistingPrivatePermissions(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", root)
+	dir := filepath.Join(root, "clipfan")
+	path := filepath.Join(dir, "history.json")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`[{"id":"abc","kind":"text","preview":"secret","text":"secret","size_bytes":6,"origin":"m4","ts":"2026-05-28T12:00:00Z"}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadHistory(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Preview != "secret" {
+		t.Fatalf("history = %+v, want secret entry", got)
+	}
+	assertMode(t, dir, 0o700)
+	assertMode(t, path, 0o600)
 }

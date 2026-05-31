@@ -28,11 +28,12 @@ internal/
     store.go           images/<sha>.png write + history-aware image GC
     state.go           state.json + current.txt (the shim's view of the clipboard)
     history.go         history.json: append/load, pin/delete, retention GC
-  transport/           HTTP server + client; HMAC-signed JSON envelopes
+  transport/           HTTP server + client; HMAC-signed, encrypted JSON envelopes
     server.go          POST /v1/clip, GET /v1/peers, GET /v1/health, history endpoints
     client.go          push (PushAs stamps a chosen origin for relay)
     envelope.go        the wire envelope
-    auth.go            shared-key HMAC (SHA-256)
+    auth.go            shared-key request HMAC (SHA-256)
+    crypto.go          AES-GCM envelope body encryption
   tmux/                load-buffer-all: enumerate /tmp/tmux-$UID/* and call tmux -S sock load-buffer -
   daemon/              wires everything together: poll local clipboard, broadcast on change, write on receive
     daemon.go          poll / onReceive / fanout / relay + peer-status tracking;
@@ -50,23 +51,40 @@ A clipboard event is sent as a JSON envelope:
 {
   "id": "9f3a1c7b8e2d4a06b15c0f9e7d2a4b13",
   "origin": "magic-kingdom",
+  "recipient": "paradise-park",
   "ts": "2026-05-28T12:34:56.789Z",
   "kind": "text",
-  "sha256": "abc...",
-  "body": "<base64>"
+  "body": "<base64 ciphertext>",
+  "nonce": "<base64 AES-GCM nonce>",
+  "concealed": false
 }
 ```
 
 `id` is a random 128-bit hex token (`transport.NewClipID`) minted once at the
 clip's true origin and preserved verbatim through every relay — it is the identity
 the mesh dedups on (see Recirculation prevention). `kind` is `"text"` or
-`"image"`. `body` is the base64-encoded payload — the UTF-8 text for text, or the
-PNG bytes for an image. `sha256` is the hex digest of the raw (pre-base64) payload
-(an integrity field; dedup keys on `id`, not content).
+`"image"`. `body` is the AES-GCM ciphertext encoded as base64; the AES-GCM key
+is derived from `shared_key`, and `nonce` is the base64 nonce needed to decrypt
+that body. `concealed` marks password-manager or transient pasteboard items so
+receivers drop them without writing clipboard, state, history, or relay output.
+`recipient` is the daemon identity the push was intended for. It is inside the
+signed JSON body, and a configured daemon rejects `/v1/clip` envelopes whose
+recipient does not match its local identity after short-name normalization
+(`.local` and FQDN forms normalize to the same short host). Suffix aliases are
+not accepted at this security boundary. A clip request captured for one peer
+therefore fails closed when replayed to another peer, even when both peers share
+the same `shared_key`.
+The envelope does not carry a payload `sha256`; content hashes are computed from
+raw payload bytes inside the daemon where needed for echo suppression, history
+identity, and image filenames.
 
-Every request carries `X-Clipfan-Sig: hex(hmac-sha256(shared_key, request_body))`,
-computed over the exact JSON request body. The receiving daemon recomputes the
-HMAC and rejects any request whose signature doesn't match.
+Every signed request carries `X-Clipfan-Ts`, `X-Clipfan-Nonce`, and
+`X-Clipfan-Sig`. The signature is
+`hex(hmac-sha256(shared_key, method + "\n" + request_uri + "\n" + timestamp +
+"\n" + nonce + "\n" + body))`, where `request_uri` includes the query string.
+The server rejects missing or bad signatures, stale timestamps, and replayed
+request nonces. There is no legacy body-only HMAC compatibility path, so
+mixed-version fleets fail closed.
 
 ## HTTP API
 
@@ -74,13 +92,14 @@ The daemon listens on `:7853` by default and serves these endpoints:
 
 | Method & path        | Auth          | Purpose |
 |----------------------|---------------|---------|
-| `POST /v1/clip`      | `X-Clipfan-Sig` | Accept a clipboard envelope from a peer (or from `clipfan copy`) and apply it locally. Returns `204 No Content`. |
-| `GET /v1/peers`      | none (loopback) | Return `{ "origin": "<this host>", "peers": [PeerState, ...] }` for the menubar app. |
+| `POST /v1/clip`      | signed request | Accept a clipboard envelope from a peer (or from `clipfan copy`) and apply it locally. Returns `204 No Content`. |
+| `GET /v1/peers`      | signed request, loopback only | Return `{ "origin": "<this host>", "peers": [PeerState, ...] }` for the menubar app. |
 | `GET /v1/health`     | none          | Liveness check. Returns `200` with body `ok`. |
-| `GET /v1/history`    | `X-Clipfan-Sig` | Return `{ "entries": [HistoryEntry, ...] }`; `?limit=<n>` caps the count. |
-| `POST /v1/restore`   | `X-Clipfan-Sig` | Re-copy a history entry as the current clipboard and fan it out to the fleet. |
-| `POST /v1/history/pin` | `X-Clipfan-Sig` | Pin or unpin a history entry. |
-| `DELETE /v1/history` | `X-Clipfan-Sig` | Delete one entry, or all unpinned entries. |
+| `GET /v1/history`    | signed request, loopback only | Return `{ "entries": [HistoryEntry, ...] }`; `?limit=<n>` caps the count. |
+| `POST /v1/restore`   | signed request, loopback only | Re-copy a history entry as the current clipboard and fan it out to the fleet. |
+| `POST /v1/history/pin` | signed request, loopback only | Pin or unpin a history entry. |
+| `DELETE /v1/history` | signed request, loopback only | Delete one entry, or all unpinned entries. |
+| `POST /v1/config`    | signed request, loopback only | Update local daemon configuration currently exposed through the app, such as `max_history`. |
 
 `PeerState` carries the hostname, port, last push timestamp + outcome, last push
 error, and last receive timestamp. The menubar app polls `GET /v1/peers` over
@@ -101,10 +120,13 @@ type Discoverer interface {
 }
 ```
 
-`tailscale.Discoverer` shells out to `tailscale status --json` and filters to
-online peers in the configured tailnet. `static.Discoverer` reads a hostname
-list from config. The active discoverer is chosen by the config's `discovery`
-field; the default is `tailscale`.
+`static_peers` is the explicit Clipfan fleet allowlist. `static.Discoverer`
+reads it directly as the hostname list. `tailscale.Discoverer` shells out to
+`tailscale status --json`, but filters online tailnet peers through the same
+short-name allowlist before fanout. An empty `static_peers` list in Tailscale
+mode returns only the local host and produces no non-self fanout. The active
+discoverer is chosen by the config's `discovery` field; the default is
+`tailscale`.
 
 ## Recirculation prevention
 
@@ -270,16 +292,16 @@ history entry. The reference set is computed from `history.json` before trimming
 
 ### Privacy — concealed clips
 
-The daemon does not record concealed clips. macOS password managers mark
-pasteboard items with `org.nspasteboard.ConcealedType`; the macOS clipboard
-backend detects that type and skips the history append (the item may still sync
-as the current clipboard, but it is never written to `history.json`). This keeps
-secrets out of history.
+The daemon does not record or sync concealed clips. macOS password managers mark
+pasteboard items with concealed or transient pasteboard types; the macOS
+clipboard backend detects those types, local fanout skips the clip, and receivers
+drop any peer envelope marked `concealed` before writing peer state, history, the
+clipboard, tmux, or relay output.
 
 ### History API
 
-These endpoints are HMAC-SHA256 signed with the shared key, exactly like
-`POST /v1/clip`:
+These endpoints are signed with the shared key and are accepted only from
+loopback:
 
 - `GET /v1/history?limit=<n>` → `{ "entries": [HistoryEntry, ...] }`.
   Pinned floated to the top, then newest first. `limit` caps the count; without
@@ -299,13 +321,19 @@ These endpoints are HMAC-SHA256 signed with the shared key, exactly like
 | State (state.json, current.txt, images/, history.json) | `${XDG_STATE_HOME:-$HOME/.local/state}/clipfan/` |
 | Logs (launchd/systemd capture stderr; rotated by them) | n/a |
 
+The config directory, state directory, image directory, and clipboard-bearing
+files are private to the current user (`0700` directories and `0600` files).
+Config, state, history, current text, and image writes validate and repair
+private paths, and avoid following unsafe symlinked temporary or final paths.
+
 ## Auth model
 
-Single shared HMAC key per fleet, in `config.json`. The daemon refuses any
-`POST /v1/clip` request without a valid `X-Clipfan-Sig` header. This is plenty
-for a Tailscale-only or LAN deployment — the network layer already authenticates
-the peer; HMAC is belt-and-suspenders against accidental misrouting. The
-loopback-only `GET /v1/peers` and `GET /v1/health` endpoints are unauthenticated.
+Single shared key per fleet, in `config.json`. The daemon derives the envelope
+encryption key from it and also uses it for canonical request HMAC signatures.
+Peer clip pushes require valid signed requests. Local admin endpoints
+(`/v1/peers`, history, restore, pin/delete, and config) also require valid
+signatures and loopback source addresses. `GET /v1/health` remains
+unauthenticated for liveness checks.
 
 ## Non-goals
 

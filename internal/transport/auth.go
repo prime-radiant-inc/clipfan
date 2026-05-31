@@ -21,21 +21,37 @@ func NewAuth(b64Key string) (*Auth, error) {
 	return &Auth{key: k}, nil
 }
 
-func (a *Auth) Sign(body []byte) string {
+func (a *Auth) SignRequest(method, requestURI, timestamp, nonce string, body []byte) string {
 	mac := hmac.New(sha256.New, a.key)
-	mac.Write(body)
+	writeCanonicalRequest(mac, method, requestURI, timestamp, nonce, body)
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func (a *Auth) Verify(body []byte, sig string) error {
+func (a *Auth) VerifyRequest(method, requestURI, timestamp, nonce string, body []byte, sig string) error {
 	expect, err := hex.DecodeString(sig)
 	if err != nil {
 		return err
 	}
 	got := hmac.New(sha256.New, a.key)
-	got.Write(body)
+	writeCanonicalRequest(got, method, requestURI, timestamp, nonce, body)
 	if !hmac.Equal(expect, got.Sum(nil)) {
 		return errors.New("bad signature")
 	}
 	return nil
+}
+
+func writeCanonicalRequest(mac hashWriter, method, requestURI, timestamp, nonce string, body []byte) {
+	mac.Write([]byte(method))
+	mac.Write([]byte("\n"))
+	mac.Write([]byte(requestURI))
+	mac.Write([]byte("\n"))
+	mac.Write([]byte(timestamp))
+	mac.Write([]byte("\n"))
+	mac.Write([]byte(nonce))
+	mac.Write([]byte("\n"))
+	mac.Write(body)
+}
+
+type hashWriter interface {
+	Write([]byte) (int, error)
 }

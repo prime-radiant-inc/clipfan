@@ -21,23 +21,28 @@ func imagesDir() string {
 
 // SaveImage writes the bytes to $XDG_STATE_HOME/clipfan/images/<sha256>.png
 // and returns the absolute path. If a file with the same content hash already
-// exists it is left untouched.
+// exists, the contents are left untouched and its permissions are repaired.
 func SaveImage(body []byte) (string, error) {
 	dir := imagesDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := ensurePrivateDir(config.StateDir()); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", config.StateDir(), err)
+	}
+	if err := ensurePrivateDir(dir); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	sum := sha256.Sum256(body)
 	name := hex.EncodeToString(sum[:]) + ".png"
 	path := filepath.Join(dir, name)
-	if _, err := os.Stat(path); err == nil {
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("image file %s is not a regular file", path)
+		}
+		if err := os.Chmod(path, privateFileMode); err != nil {
+			return "", err
+		}
 		return path, nil
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, body, 0o644); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := writeAtomic(path, body, privateFileMode); err != nil {
 		return "", err
 	}
 	go gc(dir)

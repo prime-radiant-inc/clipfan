@@ -8,12 +8,14 @@ import (
 )
 
 type Envelope struct {
-	ID     string    `json:"id"`
-	Origin string    `json:"origin"`
-	TS     time.Time `json:"ts"`
-	Kind   string    `json:"kind"`
-	SHA256 string    `json:"sha256"`
-	Body   string    `json:"body"`
+	ID        string    `json:"id"`
+	Origin    string    `json:"origin"`
+	Recipient string    `json:"recipient"`
+	TS        time.Time `json:"ts"`
+	Kind      string    `json:"kind"`
+	Body      string    `json:"body"`
+	Nonce     string    `json:"nonce"`
+	Concealed bool      `json:"concealed"`
 }
 
 // NewClipID returns a random 128-bit hex token identifying one logical clip.
@@ -30,8 +32,8 @@ func NewClipID() string {
 	return hex.EncodeToString(b[:])
 }
 
-func (e *Envelope) Bytes() ([]byte, error) {
-	return base64.StdEncoding.DecodeString(e.Body)
+func (e *Envelope) Bytes(auth *Auth) ([]byte, error) {
+	return auth.OpenBody(e.Nonce, e.Body)
 }
 
 func EncodeBody(b []byte) string {

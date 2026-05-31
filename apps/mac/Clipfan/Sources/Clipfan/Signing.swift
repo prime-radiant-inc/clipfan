@@ -1,11 +1,30 @@
 import Foundation
 import CryptoKit
 
-/// clipfanSign returns the hex-encoded HMAC-SHA256 of body under key, matching
-/// the Go daemon's transport.Auth.Sign (hex over the raw request body bytes).
-func clipfanSign(body: Data, key: Data) -> String {
-    let mac = HMAC<SHA256>.authenticationCode(for: body, using: SymmetricKey(data: key))
+func clipfanSign(method: String, requestURI: String, timestamp: String, nonce: String, body: Data, key: Data) -> String {
+    var canonical = Data()
+    canonical.append(Data(method.utf8))
+    canonical.append(Data("\n".utf8))
+    canonical.append(Data(requestURI.utf8))
+    canonical.append(Data("\n".utf8))
+    canonical.append(Data(timestamp.utf8))
+    canonical.append(Data("\n".utf8))
+    canonical.append(Data(nonce.utf8))
+    canonical.append(Data("\n".utf8))
+    canonical.append(body)
+
+    let mac = HMAC<SHA256>.authenticationCode(for: canonical, using: SymmetricKey(data: key))
     return mac.map { String(format: "%02x", $0) }.joined()
+}
+
+func clipfanSignatureHeaders(method: String, requestURI: String, body: Data, key: Data) -> [String: String] {
+    let timestamp = String(Int(Date().timeIntervalSince1970))
+    let nonce = UUID().uuidString
+    return [
+        "X-Clipfan-Ts": timestamp,
+        "X-Clipfan-Nonce": nonce,
+        "X-Clipfan-Sig": clipfanSign(method: method, requestURI: requestURI, timestamp: timestamp, nonce: nonce, body: body, key: key),
+    ]
 }
 
 /// loadSharedKey reads the base64 `shared_key` from the clipfan config and

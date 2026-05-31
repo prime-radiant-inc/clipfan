@@ -63,10 +63,12 @@ func preview(body []byte, imagePath string) string {
 }
 
 func readHistory() ([]HistoryEntry, error) {
-	data, err := os.ReadFile(historyPath())
-	if errors.Is(err, os.ErrNotExist) {
+	if err := repairStateFile(historyPath()); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
+	} else if err != nil {
+		return nil, err
 	}
+	data, err := os.ReadFile(historyPath())
 	if err != nil {
 		return nil, err
 	}
@@ -78,11 +80,11 @@ func readHistory() ([]HistoryEntry, error) {
 }
 
 func writeHistory(list []HistoryEntry) error {
-	if err := os.MkdirAll(config.StateDir(), 0o755); err != nil {
+	if err := ensurePrivateDir(config.StateDir()); err != nil {
 		return err
 	}
 	data, _ := json.MarshalIndent(list, "", "  ")
-	return writeAtomic(historyPath(), data, 0o644)
+	return writeAtomic(historyPath(), data, privateFileMode)
 }
 
 // AppendHistory records a clip. imagePath is the on-disk PNG path for images

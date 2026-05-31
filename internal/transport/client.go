@@ -3,7 +3,6 @@ package transport
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -36,25 +35,38 @@ func (c *Client) Push(ctx context.Context, host string, port int, content clipbo
 // client's own origin. Used by the relay path so the original copy source is
 // preserved end-to-end and receivers can short-circuit if they're the origin.
 func (c *Client) PushAs(ctx context.Context, host string, port int, content clipboard.Content, origin string) error {
-	env := Envelope{
-		ID:     content.ID,
-		Origin: origin,
-		TS:     content.TS,
-		Kind:   string(content.Kind),
-		SHA256: hex.EncodeToString(content.Hash[:]),
-		Body:   EncodeBody(content.Bytes),
+	body, bodyNonce, err := c.auth.SealBody(content.Bytes)
+	if err != nil {
+		return err
 	}
-	body, err := json.Marshal(env)
+	env := Envelope{
+		ID:        content.ID,
+		Origin:    origin,
+		Recipient: host,
+		TS:        content.TS,
+		Kind:      string(content.Kind),
+		Body:      body,
+		Nonce:     bodyNonce,
+		Concealed: content.Concealed,
+	}
+	raw, err := json.Marshal(env)
 	if err != nil {
 		return err
 	}
 	url := fmt.Sprintf("http://%s/v1/clip", net.JoinHostPort(host, strconv.Itoa(port)))
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Clipfan-Sig", c.auth.Sign(body))
+	requestNonce := NewClipID()
+	if requestNonce == "" {
+		return fmt.Errorf("generate request nonce")
+	}
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	req.Header.Set("X-Clipfan-Ts", ts)
+	req.Header.Set("X-Clipfan-Nonce", requestNonce)
+	req.Header.Set("X-Clipfan-Sig", c.auth.SignRequest(req.Method, req.URL.RequestURI(), ts, requestNonce, raw))
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err

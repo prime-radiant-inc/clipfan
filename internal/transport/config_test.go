@@ -15,12 +15,12 @@ func TestPostConfigDispatchesMaxHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := NewServer(":0", auth, func(clipboard.Content, string) {}, func() any { return nil })
+	setFixedServerTime(s)
 	var got int
 	s.SetConfigFunc(func(n int) error { got = n; return nil })
 
 	body := []byte(`{"max_history":123}`)
-	req := httptest.NewRequest("POST", "/v1/config", bytes.NewReader(body))
-	req.Header.Set("X-Clipfan-Sig", auth.Sign(body))
+	req := signedRequestWithNonce(t, auth, http.MethodPost, "/v1/config", "config", body)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -31,6 +31,7 @@ func TestPostConfigDispatchesMaxHistory(t *testing.T) {
 	}
 
 	req2 := httptest.NewRequest("POST", "/v1/config", bytes.NewReader(body))
+	req2.RemoteAddr = "127.0.0.1:1234"
 	rec2 := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusUnauthorized {

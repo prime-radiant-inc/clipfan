@@ -57,9 +57,17 @@ jobs:
       - name: Build Daemon Payload
         run: |
           set -euo pipefail
-          # Cross-compiles the daemon for all arches and stages dist/ (with the
-          # version stamped from git describe). The app embeds dist/ as Resources/dist.
+          unset CLIPFAN_BUILD_HELPER_ONLY CLIPFAN_BUILD_GO CLIPFAN_TEST_HELPER_ONLY
+          # Cross-compiles the daemon and pasteboard helpers for all arches and
+          # stages dist/ (with the version stamped from git describe). The app
+          # embeds dist/ as Resources/dist.
           bash dist/build-all.sh
+
+      - name: Verify Release Payload
+        run: |
+          set -euo pipefail
+          unset CLIPFAN_BUILD_HELPER_ONLY CLIPFAN_BUILD_GO CLIPFAN_TEST_HELPER_ONLY
+          CLIPFAN_VERIFY_ONLY=1 bash dist/build-all.sh
 
       - name: Build Release App
         id: build

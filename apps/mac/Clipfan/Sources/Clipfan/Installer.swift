@@ -27,6 +27,8 @@ struct InstallProgress {
 /// installs. Source binaries are read out of $HOME/.local/share/clipfan
 /// (staged by `dist/install.sh` on the host running the menubar app).
 actor Installer {
+    typealias CommandRunner = (String, [String]) async throws -> String
+
     static let shareDir: URL = {
         if let xdg = ProcessInfo.processInfo.environment["XDG_DATA_HOME"] {
             return URL(fileURLWithPath: xdg).appendingPathComponent("clipfan")
@@ -35,10 +37,67 @@ actor Installer {
             .appendingPathComponent(".local/share/clipfan")
     }()
 
+    static func localConfigURL(environment: [String: String] = ProcessInfo.processInfo.environment,
+                               homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        if let xdg = environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
+            return URL(fileURLWithPath: xdg).appendingPathComponent("clipfan/config.json")
+        }
+        return homeDirectory.appendingPathComponent(".config/clipfan/config.json")
+    }
+
     /// tmuxFlag maps the Add-Peer tmux checkbox to the install.sh flag. The GUI
     /// always passes an explicit flag so installs are never subject to auto-detect.
     static func tmuxFlag(_ withTmux: Bool) -> String {
         withTmux ? "--with-tmux" : "--no-tmux"
+    }
+
+    static func remoteStageCommand() -> String {
+        "set -e; stage=$(mktemp -d /tmp/clipfan-install.XXXXXX); chmod 700 \"$stage\"; printf '%s\\n' \"$stage\""
+    }
+
+    static func remoteInstallCommand(stage: String, withTmux: Bool) -> String {
+        let quotedStage = shellSingleQuote(stage)
+        return """
+        set -e
+        stage=\(quotedStage)
+        trap 'rm -rf "$stage"' EXIT
+        mkdir -p ~/.config/clipfan
+        install -m 0600 "$stage/config.json" ~/.config/clipfan/config.json
+        cd "$stage" && bash install.sh \(tmuxFlag(withTmux))
+        """
+    }
+
+    static func remoteCleanupCommand(stage: String) -> String {
+        let quotedStage = shellSingleQuote(stage)
+        return "stage=\(quotedStage); rm -rf \"$stage\""
+    }
+
+    static func validatedRemoteStagePath(_ output: String) throws -> String {
+        let path: String
+        if output.hasSuffix("\n") {
+            path = String(output.dropLast())
+        } else {
+            path = output
+        }
+
+        let prefix = "/tmp/clipfan-install."
+        guard path.hasPrefix(prefix) else {
+            throw InstallError.configIO("unexpected remote stage path: \(output)")
+        }
+
+        let suffix = String(path.dropFirst(prefix.count))
+        let allowedCharacters = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+        guard !suffix.isEmpty,
+              suffix.rangeOfCharacter(from: allowedCharacters.inverted) == nil,
+              !suffix.contains("..") else {
+            throw InstallError.configIO("unexpected remote stage path: \(output)")
+        }
+
+        return path
+    }
+
+    static func shellSingleQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
     }
 
     static func install(user: String, host: String, port: Int, sshKey: String,
@@ -133,24 +192,23 @@ actor Installer {
         }
         try remoteConfigJSON.write(to: stage.appendingPathComponent("config.json"),
                                    atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                              ofItemAtPath: stage.appendingPathComponent("config.json").path)
         stagedFiles.append("config.json")
 
         let fileCount = stagedFiles.count
         await MainActor.run { onProgress(.init(step: "Upload", detail: "scp \(fileCount) files")) }
-        _ = try await run("/usr/bin/ssh", sshArgs + [target, "mkdir -p /tmp/clipfan-install"])
-        let scpFull: [String] = scpArgs +
-            stagedFiles.map { stage.appendingPathComponent($0).path } +
-            ["\(target):/tmp/clipfan-install/"]
-        _ = try await run("/usr/bin/scp", scpFull)
-
-        await MainActor.run { onProgress(.init(step: "Install", detail: "running install.sh on \(target)")) }
-        let cmd = """
-        set -e
-        mkdir -p ~/.config/clipfan
-        install -m 0600 /tmp/clipfan-install/config.json ~/.config/clipfan/config.json
-        cd /tmp/clipfan-install && bash install.sh \(tmuxFlag(withTmux))
-        """
-        _ = try await run("/usr/bin/ssh", sshArgs + [target, cmd])
+        try await uploadAndInstallRemoteStage(target: target,
+                                              sshArgs: sshArgs,
+                                              scpArgs: scpArgs,
+                                              stage: stage,
+                                              stagedFiles: stagedFiles,
+                                              withTmux: withTmux,
+                                              runCommand: run,
+                                              onInstall: {
+                                                  onProgress(.init(step: "Install",
+                                                                   detail: "running install.sh on \(target)"))
+                                              })
 
         // Add this host to our own static_peers, save, kick the daemon.
         await MainActor.run { onProgress(.init(step: "Local", detail: "adding peer to local config")) }
@@ -159,24 +217,49 @@ actor Installer {
         await DaemonClient.shared.restartDaemon()
     }
 
+    static func uploadAndInstallRemoteStage(target: String, sshArgs: [String], scpArgs: [String],
+                                            stage: URL, stagedFiles: [String], withTmux: Bool,
+                                            runCommand: CommandRunner,
+                                            onInstall: @MainActor @escaping () -> Void = {}) async throws {
+        let remoteStageOutput = try await runCommand("/usr/bin/ssh", sshArgs + [target, remoteStageCommand()])
+        let remoteStage = try validatedRemoteStagePath(remoteStageOutput)
+        let scpFull: [String] = scpArgs +
+            stagedFiles.map { stage.appendingPathComponent($0).path } +
+            ["\(target):\(remoteStage)/"]
+        do {
+            _ = try await runCommand("/usr/bin/scp", scpFull)
+
+            await onInstall()
+            let cmd = remoteInstallCommand(stage: remoteStage, withTmux: withTmux)
+            _ = try await runCommand("/usr/bin/ssh", sshArgs + [target, cmd])
+        } catch {
+            _ = try? await runCommand("/usr/bin/ssh", sshArgs + [target, remoteCleanupCommand(stage: remoteStage)])
+            throw error
+        }
+    }
+
     // MARK: - helpers
 
-    static func readLocalConfig() async throws -> [String: Any] {
-        let p = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/clipfan/config.json")
+    static func readLocalConfig(configURL: URL? = nil) async throws -> [String: Any] {
+        let p = configURL ?? localConfigURL()
         let data = try Data(contentsOf: p)
         return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
     }
 
-    static func addPeerToLocalConfig(_ host: String) async throws {
-        let p = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/clipfan/config.json")
-        var cfg = (try? await readLocalConfig()) ?? [:]
+    static func addPeerToLocalConfig(_ host: String, configURL: URL? = nil) async throws {
+        let p = configURL ?? localConfigURL()
+        var cfg = (try? await readLocalConfig(configURL: p)) ?? [:]
         var peers = (cfg["static_peers"] as? [String]) ?? []
         if !peers.contains(host) { peers.append(host) }
         cfg["static_peers"] = peers
         let data = try JSONSerialization.data(withJSONObject: cfg, options: [.prettyPrinted])
+        let dir = p.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700],
+                                              ofItemAtPath: dir.path)
         try data.write(to: p, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                              ofItemAtPath: p.path)
     }
 
     static func run(_ exe: String, _ args: [String]) async throws -> String {

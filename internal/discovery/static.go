@@ -33,3 +33,13 @@ func shortName(h string) string {
 	h = strings.TrimSuffix(h, ".local")
 	return strings.SplitN(h, ".", 2)[0]
 }
+
+func allowedHostSet(hosts []string) map[string]bool {
+	allowed := map[string]bool{}
+	for _, h := range hosts {
+		if s := shortName(h); s != "" {
+			allowed[s] = true
+		}
+	}
+	return allowed
+}

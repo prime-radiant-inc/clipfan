@@ -6,10 +6,17 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
+)
+
+const (
+	signatureSkew  = 2 * time.Minute
+	nonceRetention = 2 * signatureSkew
 )
 
 type ReceiveFunc func(c clipboard.Content, origin string)
@@ -40,10 +47,26 @@ type Server struct {
 	pinFn     PinFunc
 	deleteFn  DeleteHistoryFunc
 	configFn  func(maxHistory int) error
+	nonces    *nonceCache
+	now       func() time.Time
+	recipient string
 }
 
 func NewServer(listen string, auth *Auth, onRecv ReceiveFunc, peersFn PeersFunc) *Server {
-	return &Server{auth: auth, listen: listen, onRecv: onRecv, peersFn: peersFn}
+	return &Server{
+		auth:    auth,
+		listen:  listen,
+		onRecv:  onRecv,
+		peersFn: peersFn,
+		nonces:  newNonceCache(nonceRetention),
+		now:     time.Now,
+	}
+}
+
+// SetRecipientIdentity enables recipient validation for signed peer clip posts.
+// Tests and local harnesses that do not configure it accept any recipient.
+func (s *Server) SetRecipientIdentity(recipient string) {
+	s.recipient = recipient
 }
 
 // SetHistory wires the history endpoints. Called by the daemon after construction.
@@ -92,18 +115,8 @@ func (s *Server) Serve(ctx context.Context) error {
 }
 
 func (s *Server) postClip(w http.ResponseWriter, r *http.Request) {
-	sig := r.Header.Get("X-Clipfan-Sig")
-	if sig == "" {
-		http.Error(w, "missing X-Clipfan-Sig", http.StatusUnauthorized)
-		return
-	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := s.auth.Verify(body, sig); err != nil {
-		http.Error(w, "bad signature", http.StatusUnauthorized)
+	body := s.readSigned(w, r, 64<<20)
+	if body == nil {
 		return
 	}
 	var env Envelope
@@ -111,19 +124,27 @@ func (s *Server) postClip(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	raw, err := env.Bytes()
+	if s.recipient != "" && !RecipientMatches(env.Recipient, s.recipient) {
+		http.Error(w, "wrong recipient", http.StatusForbidden)
+		return
+	}
+	raw, err := env.Bytes(s.auth)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "decrypt envelope body", http.StatusBadRequest)
 		return
 	}
 	c := clipboard.New(clipboard.Kind(env.Kind), raw, env.TS)
 	c.ID = env.ID
+	c.Concealed = env.Concealed
 	slog.Debug("clip received", "id", env.ID, "origin", env.Origin, "kind", env.Kind, "bytes", len(raw))
 	s.onRecv(c, env.Origin)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) getPeers(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) getPeers(w http.ResponseWriter, r *http.Request) {
+	if s.readSignedLocal(w, r) == nil {
+		return
+	}
 	if s.peersFn == nil {
 		http.Error(w, "peers endpoint not wired", http.StatusNotImplemented)
 		return
@@ -133,8 +154,8 @@ func (s *Server) getPeers(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) getHistory(w http.ResponseWriter, r *http.Request) {
-	if s.readSigned(w, r) == nil {
-		return // readSigned already wrote 401/400
+	if s.readSignedLocal(w, r) == nil {
+		return
 	}
 	if s.historyFn == nil {
 		http.Error(w, "history disabled", http.StatusServiceUnavailable)
@@ -156,7 +177,7 @@ func (s *Server) getHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteHistory(w http.ResponseWriter, r *http.Request) {
-	body := s.readSigned(w, r)
+	body := s.readSignedLocal(w, r)
 	if body == nil {
 		return
 	}
@@ -176,7 +197,7 @@ func (s *Server) deleteHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) postRestore(w http.ResponseWriter, r *http.Request) {
-	body := s.readSigned(w, r)
+	body := s.readSignedLocal(w, r)
 	if body == nil {
 		return
 	}
@@ -195,7 +216,7 @@ func (s *Server) postRestore(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) postPin(w http.ResponseWriter, r *http.Request) {
-	body := s.readSigned(w, r)
+	body := s.readSignedLocal(w, r)
 	if body == nil {
 		return
 	}
@@ -215,7 +236,7 @@ func (s *Server) postPin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) postConfig(w http.ResponseWriter, r *http.Request) {
-	body := s.readSigned(w, r)
+	body := s.readSignedLocal(w, r)
 	if body == nil {
 		return
 	}
@@ -237,23 +258,68 @@ func (s *Server) postConfig(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// readSigned reads the body and verifies the HMAC signature, mirroring postClip.
-// Returns nil (after writing an error response) on failure. auth.Verify returns
-// an error (nil == valid), not a bool.
-func (s *Server) readSigned(w http.ResponseWriter, r *http.Request) []byte {
+func (s *Server) readSignedLocal(w http.ResponseWriter, r *http.Request) []byte {
+	if !isLoopbackRemote(r.RemoteAddr) {
+		http.Error(w, "loopback required", http.StatusForbidden)
+		return nil
+	}
+	body := s.readSigned(w, r, 1<<20)
+	if body == nil {
+		return nil
+	}
+	return body
+}
+
+// readSigned reads the body and verifies the canonical request HMAC signature.
+// Returns nil after writing an error response on failure.
+func (s *Server) readSigned(w http.ResponseWriter, r *http.Request, maxBody int64) []byte {
 	sig := r.Header.Get("X-Clipfan-Sig")
 	if sig == "" {
 		http.Error(w, "missing X-Clipfan-Sig", http.StatusUnauthorized)
 		return nil
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	ts := r.Header.Get("X-Clipfan-Ts")
+	if ts == "" {
+		http.Error(w, "missing X-Clipfan-Ts", http.StatusUnauthorized)
+		return nil
+	}
+	nonce := r.Header.Get("X-Clipfan-Nonce")
+	if nonce == "" {
+		http.Error(w, "missing X-Clipfan-Nonce", http.StatusUnauthorized)
+		return nil
+	}
+	unixTs, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil {
+		http.Error(w, "bad timestamp", http.StatusUnauthorized)
+		return nil
+	}
+	now := s.now()
+	requestTime := time.Unix(unixTs, 0)
+	if requestTime.Before(now.Add(-signatureSkew)) || requestTime.After(now.Add(signatureSkew)) {
+		http.Error(w, "stale timestamp", http.StatusUnauthorized)
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return nil
 	}
-	if err := s.auth.Verify(body, sig); err != nil {
+	if err := s.auth.VerifyRequest(r.Method, r.URL.RequestURI(), ts, nonce, body, sig); err != nil {
 		http.Error(w, "bad signature", http.StatusUnauthorized)
 		return nil
 	}
+	if !s.nonces.accept(nonce, now) {
+		http.Error(w, "replayed nonce", http.StatusUnauthorized)
+		return nil
+	}
 	return body
+}
+
+func isLoopbackRemote(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

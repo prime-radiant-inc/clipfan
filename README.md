@@ -167,9 +167,24 @@ The `shared_key` must be identical on every host. It's generated automatically
 on first launch — copy it to the other hosts after the first daemon starts. It
 is host-local state and never belongs in a dotfiles repo.
 
-`discovery: "tailscale"` shells out to `tailscale status --json` and pushes to
-every online peer. `discovery: "static"` uses the `static_peers` hostname list.
+`static_peers` is the explicit Clipfan fleet allowlist. `discovery: "static"`
+uses it as the hostname list. `discovery: "tailscale"` shells out to
+`tailscale status --json`, but only syncs with online hosts whose short names
+are listed in `static_peers`. Empty `static_peers` with Tailscale discovery
+returns only the local host and does no non-self fanout.
 `max_history` caps the clipboard history (default 200).
+
+Security notes:
+
+- Peer clipboard payload bytes are encrypted with a key derived from
+  `shared_key` before they are sent over HTTP.
+- Request signatures bind the method, request URI, timestamp, nonce, and body.
+  Mixed-version fleets fail closed; upgrade all peers together.
+- Peer clip envelopes include the intended recipient in the signed body, so a
+  captured clip push for one peer is rejected if replayed to another peer.
+- Local history, config, and peers endpoints are signed and loopback-only.
+- Concealed or transient pasteboard items are not synced.
+- Config, state, history, and image storage are private to the current user.
 
 ## Menubar app (macOS)
 
@@ -191,7 +206,7 @@ the center of the screen:
   click away) to dismiss. Right-click a row to **pin** or **delete**.
 
 History is local to each host, capped at `max_history` (default 200). Password
-manager pastes (concealed clips) are never recorded.
+manager pastes (concealed or transient clips) are never synced or recorded.
 
 ### Menubar dropdown
 
@@ -208,7 +223,7 @@ see at a glance whether your fleet is in sync. Click a peer to jump to its detai
   daemon health. Developer bits (config path, daemon log, restart) live in a
   collapsed **Developer** section.
 
-The app polls `localhost:7853/v1/peers` over loopback, so it needs no Local
+The app signs its `localhost:7853/v1/peers` loopback poll, so it needs no Local
 Network privacy grant. Build it from `apps/mac/Clipfan` (`./build-app.sh`).
 
 ## Known caveats

@@ -32,9 +32,18 @@ final class DaemonClient: ObservableObject {
     }
 
     func refresh() async {
+        guard let key = loadSharedKey(),
+              let url = URL(string: "\(base.absoluteString)/v1/peers") else {
+            self.connected = false
+            return
+        }
         do {
-            var req = URLRequest(url: base.appendingPathComponent("/v1/peers"))
+            var req = URLRequest(url: url)
+            req.httpMethod = "GET"
             req.timeoutInterval = 2
+            for (header, value) in clipfanSignatureHeaders(method: "GET", requestURI: "/v1/peers", body: Data(), key: key) {
+                req.setValue(value, forHTTPHeaderField: header)
+            }
             let (data, _) = try await URLSession.shared.data(for: req)
             let resp = try JSONDecoder.clipfan.decode(PeersResponse.self, from: data)
             self.origin = resp.origin
@@ -79,11 +88,15 @@ final class DaemonClient: ObservableObject {
     }
 
     func refreshHistory() async {
+        let requestURI = "/v1/history?limit=\(maxHistory)"
         guard let key = loadSharedKey(),
-              let url = URL(string: "\(base.absoluteString)/v1/history?limit=\(maxHistory)") else { return }
+              let url = URL(string: "\(base.absoluteString)\(requestURI)") else { return }
         var req = URLRequest(url: url)
+        req.httpMethod = "GET"
         req.timeoutInterval = 2
-        req.setValue(clipfanSign(body: Data(), key: key), forHTTPHeaderField: "X-Clipfan-Sig")
+        for (header, value) in clipfanSignatureHeaders(method: "GET", requestURI: requestURI, body: Data(), key: key) {
+            req.setValue(value, forHTTPHeaderField: header)
+        }
         do {
             let (data, _) = try await URLSession.shared.data(for: req)
             let resp = try JSONDecoder.clipfan.decode(HistoryResponse.self, from: data)
@@ -131,7 +144,9 @@ final class DaemonClient: ObservableObject {
         req.httpMethod = method
         req.httpBody = payload
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue(clipfanSign(body: payload, key: key), forHTTPHeaderField: "X-Clipfan-Sig")
+        for (header, value) in clipfanSignatureHeaders(method: method, requestURI: path, body: payload, key: key) {
+            req.setValue(value, forHTTPHeaderField: header)
+        }
         _ = try? await URLSession.shared.data(for: req)
     }
 }

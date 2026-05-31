@@ -62,7 +62,8 @@ git push origin v0.3.0
 ```
 
 The workflow then:
-1. cross-compiles the daemon (`dist/build-all.sh`, version stamped from the tag),
+1. cross-compiles the daemon and pasteboard helpers (`dist/build-all.sh`,
+   version stamped from the tag) and verifies the full release payload set,
 2. builds `Clipfan.app` via xcodegen + xcodebuild,
 3. Developer ID-signs the app, the embedded Sparkle framework, and the bundled
    macOS daemon binaries (hardened runtime),
@@ -71,6 +72,23 @@ The workflow then:
 
 Installed copies pick up the update from
 `https://github.com/prime-radiant-inc/clipfan/releases/latest/download/appcast.xml`.
+
+## Security verification before tagging
+
+Run the release payload and test checks before creating a version tag:
+
+```sh
+bash dist/build-all.sh
+test -x dist/clipfan-pasteboard-helper-darwin-amd64
+test -x dist/clipfan-pasteboard-helper-darwin-arm64
+TMPDIR=/tmp go test ./...
+(cd apps/mac/Clipfan && swift test)
+bash dist/test-build-all-helper.sh
+```
+
+The helper executable checks are release-critical: the daemon depends on the
+Darwin pasteboard helper to detect concealed or transient pasteboard items and
+to write image pasteboard payloads correctly.
 
 ## Local build (no signing)
 
@@ -84,5 +102,7 @@ or the SwiftPM dev path that still works for day-to-day:
 
 ```sh
 bash dist/build-all.sh
+test -x dist/clipfan-pasteboard-helper-darwin-amd64
+test -x dist/clipfan-pasteboard-helper-darwin-arm64
 cd apps/mac/Clipfan && bash build-app.sh
 ```
