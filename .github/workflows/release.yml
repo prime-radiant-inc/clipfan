@@ -27,6 +27,11 @@ jobs:
       - name: Install Tools
         run: brew install xcodegen
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
       - name: Setup Signing Keychain
         env:
           DEVELOPER_ID_APPLICATION_CERT_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_CERT_BASE64 }}
