@@ -17,6 +17,10 @@ struct StatusMenuView: View {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "settings")
             }
+            menuButton("Check for Updates…", systemImage: "arrow.triangle.2.circlepath", shortcut: "") {
+                NSApp.activate(ignoringOtherApps: true)
+                Updater.shared.checkForUpdates()
+            }
             menuButton("Quit", systemImage: "power", shortcut: "⌘Q") {
                 NSApp.terminate(nil)
             }

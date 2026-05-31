@@ -9,6 +9,7 @@ struct ClipfanApp: App {
 
     init() {
         DaemonClient.shared.start()
+        _ = Updater.shared   // start Sparkle's background update checks
         KeyboardShortcuts.onKeyDown(for: .toggleClipboard) {
             CommandPanelController.shared.toggle()
         }

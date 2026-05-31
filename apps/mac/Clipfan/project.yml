@@ -1,0 +1,52 @@
+name: Clipfan
+
+options:
+  bundleIdPrefix: com.primeradiant
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+
+packages:
+  KeyboardShortcuts:
+    url: https://github.com/sindresorhus/KeyboardShortcuts
+    from: 2.0.0
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.6.0
+
+targets:
+  Clipfan:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/Clipfan
+      - path: Resources/AppIcon.icns
+        buildPhase: resources
+      # The full daemon payload (built by dist/build-all.sh) is embedded as a
+      # folder reference so it lands at Contents/Resources/dist, exactly as
+      # build-app.sh assembles it for the SwiftPM dev build.
+      - path: ../../../dist
+        name: dist
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: KeyboardShortcuts
+      - package: Sparkle
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.primeradiant.clipfan.menu
+        PRODUCT_NAME: Clipfan
+        INFOPLIST_FILE: Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        MARKETING_VERSION: "0.2.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/../Frameworks"
+        # The app shells out to install.sh / launchctl and spawns the daemon, so
+        # it is intentionally not sandboxed. Hardened runtime is on for notarization.
+        ENABLE_APP_SANDBOX: NO
