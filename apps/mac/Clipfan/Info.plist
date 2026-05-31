@@ -24,5 +24,11 @@
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>SUFeedURL</key>
+    <string>https://github.com/prime-radiant-inc/clipfan/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>ZY/ZPlRrnPohsWVic4GcjZ8tJg8qScm9MRHj3EWO4mg=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
 </dict>
 </plist>
