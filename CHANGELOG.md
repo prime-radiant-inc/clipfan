@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.7] - 2026-06-01
+
+### Fixed
+
+- Remote Linux updates now install correctly from staging directories that do not allow execution, such as `/tmp` mounted with `noexec`.
+- Peer update verification now waits for the peer daemon to report the version just installed over SSH, so fleet rows turn green after the updated daemon is actually serving.
+- The peer update sheet stays open with copyable verification details when install succeeds but daemon verification is still pending.
+
 ## [0.3.6] - 2026-06-01
 
 ### Changed
