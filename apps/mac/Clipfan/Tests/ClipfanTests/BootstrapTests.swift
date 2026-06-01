@@ -3,17 +3,48 @@ import XCTest
 
 final class BootstrapDecisionTests: XCTestCase {
     func testHealthyDaemonLaunchesNormally() {
-        XCTAssertEqual(LaunchDecision.decide(binaryInstalled: true, daemonHealthy: true), .normal)
+        XCTAssertEqual(LaunchDecision.decide(binaryInstalled: true, daemonHealthy: true, installedBinaryCurrent: true), .normal)
         // Healthy wins even if we somehow think the binary is absent.
-        XCTAssertEqual(LaunchDecision.decide(binaryInstalled: false, daemonHealthy: true), .normal)
+        XCTAssertEqual(LaunchDecision.decide(binaryInstalled: false, daemonHealthy: true, installedBinaryCurrent: false), .normal)
     }
 
     func testInstalledButDownRestartsExisting() {
-        XCTAssertEqual(LaunchDecision.decide(binaryInstalled: true, daemonHealthy: false), .restartExisting)
+        XCTAssertEqual(LaunchDecision.decide(binaryInstalled: true, daemonHealthy: false, installedBinaryCurrent: true), .restartExisting)
     }
 
     func testNotInstalledTriggersFirstRunInstall() {
-        XCTAssertEqual(LaunchDecision.decide(binaryInstalled: false, daemonHealthy: false), .firstRunInstall)
+        XCTAssertEqual(LaunchDecision.decide(binaryInstalled: false, daemonHealthy: false, installedBinaryCurrent: false), .firstRunInstall)
+    }
+
+    func testOutdatedInstalledDaemonUpgradesBeforeNormalLaunch() {
+        XCTAssertEqual(LaunchDecision.decide(binaryInstalled: true, daemonHealthy: true, installedBinaryCurrent: false), .upgradeExisting)
+    }
+
+    func testOutdatedInstalledDaemonUpgradesBeforeRestart() {
+        XCTAssertEqual(LaunchDecision.decide(binaryInstalled: true, daemonHealthy: false, installedBinaryCurrent: false), .upgradeExisting)
+    }
+}
+
+final class BootstrapInstallTests: XCTestCase {
+    func testUpgradeInstallDoesNotTouchTmuxConfig() {
+        XCTAssertEqual(Bootstrap.installerArguments(mode: .upgradeExisting), ["--no-tmux"])
+        XCTAssertEqual(Bootstrap.installerArguments(mode: .setup), [])
+    }
+
+    func testFileComparisonDetectsOutdatedInstalledBinary() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-bootstrap-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let installed = dir.appendingPathComponent("installed")
+        let bundled = dir.appendingPathComponent("bundled")
+        try Data("old".utf8).write(to: installed)
+        try Data("new".utf8).write(to: bundled)
+
+        XCTAssertFalse(Bootstrap.filesEqual(installed, bundled))
+        try Data("new".utf8).write(to: installed)
+        XCTAssertTrue(Bootstrap.filesEqual(installed, bundled))
     }
 }
 

@@ -1,19 +1,28 @@
 import Foundation
 
 /// What the app should do on launch, derived from whether the daemon binary is
-/// installed and whether the daemon is currently answering on the local port.
+/// installed, whether it matches the bundled payload, and whether the daemon is
+/// currently answering on the local port.
 enum LaunchDecision: Equatable {
     /// Daemon is answering — launch normally, no setup UI.
     case normal
+    /// Installed daemon is older/different than the daemon bundled in this app.
+    case upgradeExisting
     /// Binary is installed but the daemon is down — kickstart / child-launch it.
     case restartExisting
     /// No daemon installed — run the guided first-run install.
     case firstRunInstall
 
-    static func decide(binaryInstalled: Bool, daemonHealthy: Bool) -> LaunchDecision {
+    static func decide(binaryInstalled: Bool, daemonHealthy: Bool, installedBinaryCurrent: Bool) -> LaunchDecision {
+        if binaryInstalled && !installedBinaryCurrent { return .upgradeExisting }
         if daemonHealthy { return .normal }
         return binaryInstalled ? .restartExisting : .firstRunInstall
     }
+}
+
+enum BootstrapInstallMode {
+    case setup
+    case upgradeExisting
 }
 
 /// State of the first-run setup, rendered by the Welcome window.
@@ -66,24 +75,61 @@ enum Bootstrap {
         Bundle.main.resourceURL?.appendingPathComponent("dist")
     }
 
+    static var bundledDaemonBinary: URL? {
+        bundledPayload?.appendingPathComponent("clipfan-darwin-\(currentGoArch)")
+    }
+
+    static var installedBinaryCurrent: Bool {
+        guard binaryInstalled else { return false }
+        guard let bundled = bundledDaemonBinary,
+              FileManager.default.fileExists(atPath: bundled.path) else { return true }
+        return filesEqual(daemonBinary, bundled)
+    }
+
     static var installLog: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/clipfan-install.log")
     }
 
+    static func installerArguments(mode: BootstrapInstallMode) -> [String] {
+        switch mode {
+        case .setup: return []
+        case .upgradeExisting: return ["--no-tmux"]
+        }
+    }
+
+    static func filesEqual(_ a: URL, _ b: URL) -> Bool {
+        guard let aSize = try? FileManager.default.attributesOfItem(atPath: a.path)[.size] as? NSNumber,
+              let bSize = try? FileManager.default.attributesOfItem(atPath: b.path)[.size] as? NSNumber,
+              aSize == bSize else { return false }
+        guard let aData = try? Data(contentsOf: a),
+              let bData = try? Data(contentsOf: b) else { return false }
+        return aData == bData
+    }
+
+    private static var currentGoArch: String {
+        #if arch(arm64)
+        return "arm64"
+        #elseif arch(x86_64)
+        return "amd64"
+        #else
+        return ""
+        #endif
+    }
+
     /// Run the bundled install.sh, redirecting combined stdout+stderr to `log`.
     /// Returns true on a clean (exit 0) install. Blocking work runs off-main.
     ///
-    /// No tmux flag is passed, so install.sh runs in its `auto` mode — wiring up
-    /// tmux only if tmux is installed — matching a hand-run terminal install.
-    static func runInstaller(script: URL, logTo log: URL) async -> Bool {
+    /// Setup uses install.sh's default tmux behavior, while daemon upgrades pass
+    /// `--no-tmux` so app updates do not alter shell configuration.
+    static func runInstaller(script: URL, logTo log: URL, mode: BootstrapInstallMode = .setup) async -> Bool {
         await Task.detached(priority: .userInitiated) {
             FileManager.default.createFile(atPath: log.path, contents: nil)
             guard let handle = try? FileHandle(forWritingTo: log) else { return false }
             defer { try? handle.close() }
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-            proc.arguments = [script.path]
+            proc.arguments = [script.path] + installerArguments(mode: mode)
             proc.currentDirectoryURL = script.deletingLastPathComponent()
             proc.standardOutput = handle
             proc.standardError = handle
@@ -114,9 +160,10 @@ final class BootstrapController: ObservableObject {
     /// for the daemon to come online. Reachable from first-run, the Settings
     /// "Re-run setup" button, and the Welcome "Retry" button, so guard against a
     /// second run landing on the same log file and `launchctl` reload.
-    func install() async {
+    func install(mode: BootstrapInstallMode = .setup) async {
         if case .installing = state { return }
-        state = .installing(progress: ["Preparing background service…"])
+        let firstStep = mode == .upgradeExisting ? "Updating background service…" : "Preparing background service…"
+        state = .installing(progress: [firstStep])
         guard let dist = Bootstrap.bundledPayload else {
             state = .failed(message: "Bundled installer not found in the app.",
                             logPath: installLogPath)
@@ -135,7 +182,7 @@ final class BootstrapController: ObservableObject {
                                      ["-dr", "com.apple.quarantine", dist.path])
 
         state = state.appendingProgress("Installing…")
-        guard await Bootstrap.runInstaller(script: script, logTo: Bootstrap.installLog) else {
+        guard await Bootstrap.runInstaller(script: script, logTo: Bootstrap.installLog, mode: mode) else {
             state = .failed(message: "Install failed. See the log for details.",
                             logPath: installLogPath)
             return

@@ -50,9 +50,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             await DaemonClient.shared.refresh()
             switch LaunchDecision.decide(binaryInstalled: Bootstrap.binaryInstalled,
-                                         daemonHealthy: DaemonClient.shared.connected) {
+                                         daemonHealthy: DaemonClient.shared.connected,
+                                         installedBinaryCurrent: Bootstrap.installedBinaryCurrent) {
             case .normal:
                 break
+            case .upgradeExisting:
+                await BootstrapController.shared.install(mode: .upgradeExisting)
+                if case .failed = BootstrapController.shared.state {
+                    WelcomeWindowController.shared.show(startInstall: false)
+                }
             case .restartExisting:
                 await DaemonClient.shared.ensureDaemonRunning()
             case .firstRunInstall:
