@@ -56,6 +56,10 @@ existing key shared with clearance — the matching private key is what goes in
 The tag drives the version (`vX.Y.Z` → `CFBundleShortVersionString X.Y.Z`); the
 build number is the workflow run number.
 
+Add a matching `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md` before
+tagging. The release workflow extracts that section, embeds it into the Sparkle
+appcast, and uses it as the GitHub Release notes.
+
 ```sh
 git tag v0.3.0
 git push origin v0.3.0
@@ -68,7 +72,8 @@ The workflow then:
 3. Developer ID-signs the app, the embedded Sparkle framework, and the bundled
    macOS daemon binaries (hardened runtime),
 4. notarizes + staples,
-5. publishes the `.zip`, `.dmg`, and `appcast.xml` to the GitHub Release.
+5. publishes the `.zip`, `.dmg`, and `appcast.xml` to the GitHub Release, using
+   the changelog section as release notes.
 
 Installed copies pick up the update from
 `https://github.com/prime-radiant-inc/clipfan/releases/latest/download/appcast.xml`.

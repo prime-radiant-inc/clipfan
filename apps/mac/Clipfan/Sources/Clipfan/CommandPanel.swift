@@ -3,6 +3,7 @@ import AppKit
 
 /// Floating HUD panel that hosts the command panel. Becomes key without
 /// activating the whole app, and closes when it loses key (click-away) or on Esc.
+@MainActor
 final class CommandPanelController: NSObject, NSWindowDelegate {
     static let shared = CommandPanelController()
 

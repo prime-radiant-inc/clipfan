@@ -96,6 +96,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 	d.cl = transport.NewClient(auth, origin)
 	d.sv = transport.NewServer(cfg.Listen, auth, d.onReceive, d.peersHandler)
 	d.sv.SetRecipientIdentity(origin)
+	d.sv.SetVersionFunc(d.versionHandler)
 	d.sv.SetHistory(
 		func(limit int) (any, error) { return store.LoadHistory(limit) },
 		d.Restore,
@@ -196,6 +197,10 @@ func (d *Daemon) peersHandler() any {
 		"version":     version.Version,
 		"max_history": store.CapLimit(),
 	}
+}
+
+func (d *Daemon) versionHandler() any {
+	return map[string]string{"version": version.Version}
 }
 
 // setMaxHistory persists a new history cap. Values are clamped to [50, 5000];

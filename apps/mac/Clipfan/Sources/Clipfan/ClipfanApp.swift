@@ -64,6 +64,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .firstRunInstall:
                 WelcomeWindowController.shared.show(startInstall: true)
             }
+            await DaemonClient.shared.refresh()
+            await RemoteUpdateOfferController.shared.maybeOffer()
         }
     }
 }

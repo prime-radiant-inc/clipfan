@@ -48,7 +48,12 @@ struct FleetTab: View {
             HStack {
                 Text("Fleet").font(.headline)
                 Spacer()
-                Button("Refresh") { Task { await daemon.refresh() } }
+                Button("Refresh") {
+                    Task {
+                        await daemon.refresh()
+                        await daemon.refreshPeerVersions()
+                    }
+                }
             }
             if shouldPromptLocalNetwork(peers: daemon.peers) {
                 LocalNetworkNudge()
@@ -61,6 +66,13 @@ struct FleetTab: View {
                         HStack(spacing: 8) {
                             FleetRow(model: row)
                             if let peer = row.peer {
+                                if let status = daemon.peerVersions[peer.hostname],
+                                   status.needsUpdate {
+                                    Label(status.label, systemImage: "exclamationmark.arrow.triangle.2.circlepath")
+                                        .labelStyle(.iconOnly)
+                                        .foregroundStyle(.orange)
+                                        .help(status.label)
+                                }
                                 Button {
                                     updatePeer = peer
                                 } label: {
@@ -96,6 +108,9 @@ struct FleetTab: View {
         .sheet(isPresented: $showAdd) { AddPeerSheet() }
         .sheet(item: $updatePeer) { peer in
             UpdatePeerSheet(peer: peer)
+        }
+        .onAppear {
+            Task { await daemon.refreshPeerVersions() }
         }
     }
 }

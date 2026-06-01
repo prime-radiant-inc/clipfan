@@ -25,6 +25,9 @@ type ReceiveFunc func(c clipboard.Content, origin string)
 // Returning `any` keeps daemon types out of the transport package.
 type PeersFunc func() any
 
+// VersionFunc returns a JSON-encodable version snapshot for signed peer probes.
+type VersionFunc func() any
+
 // HistoryFunc returns a JSON-encodable snapshot of the clipboard history.
 type HistoryFunc func(limit int) (any, error)
 
@@ -42,6 +45,7 @@ type Server struct {
 	listen    string
 	onRecv    ReceiveFunc
 	peersFn   PeersFunc
+	versionFn VersionFunc
 	historyFn HistoryFunc
 	restoreFn RestoreFunc
 	pinFn     PinFunc
@@ -83,11 +87,15 @@ func (s *Server) SetHistory(h HistoryFunc, r RestoreFunc, p PinFunc, d DeleteHis
 // SetConfigFunc wires the config-write endpoint. Called by the daemon.
 func (s *Server) SetConfigFunc(fn func(maxHistory int) error) { s.configFn = fn }
 
+// SetVersionFunc wires the signed network version endpoint. Called by the daemon.
+func (s *Server) SetVersionFunc(fn VersionFunc) { s.versionFn = fn }
+
 // Handler builds the HTTP routes. Exposed so it can be exercised in tests.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/clip", s.postClip)
 	mux.HandleFunc("GET /v1/peers", s.getPeers)
+	mux.HandleFunc("GET /v1/version", s.getVersion)
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
@@ -161,6 +169,18 @@ func (s *Server) getPeers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeSignedJSON(w, signed.nonce, s.peersFn())
+}
+
+func (s *Server) getVersion(w http.ResponseWriter, r *http.Request) {
+	signed := s.readSigned(w, r, 1<<20)
+	if signed == nil {
+		return
+	}
+	if s.versionFn == nil {
+		http.Error(w, "version endpoint not wired", http.StatusNotImplemented)
+		return
+	}
+	s.writeSignedJSON(w, signed.nonce, s.versionFn())
 }
 
 func (s *Server) getHistory(w http.ResponseWriter, r *http.Request) {

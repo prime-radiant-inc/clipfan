@@ -29,7 +29,7 @@ internal/
     state.go           state.json + current.txt (the shim's view of the clipboard)
     history.go         history.json: append/load, pin/delete, retention GC
   transport/           HTTP server + client; HMAC-signed, encrypted JSON envelopes
-    server.go          POST /v1/clip, GET /v1/peers, GET /v1/health, history endpoints
+    server.go          POST /v1/clip, GET /v1/peers, GET /v1/version, GET /v1/health, history endpoints
     client.go          push (PushAs stamps a chosen origin for relay)
     envelope.go        the wire envelope
     auth.go            shared-key request HMAC (SHA-256)
@@ -94,6 +94,7 @@ The daemon listens on `:7853` by default and serves these endpoints:
 |----------------------|---------------|---------|
 | `POST /v1/clip`      | signed request | Accept a clipboard envelope from a peer (or from `clipfan copy`) and apply it locally. Returns `204 No Content`. |
 | `GET /v1/peers`      | signed request, loopback only | Return `{ "origin": "<this host>", "peers": [PeerState, ...] }` for the menubar app. |
+| `GET /v1/version`    | signed request | Return `{ "version": "<daemon version>" }` so trusted peers can detect stale installs. |
 | `GET /v1/health`     | none          | Liveness check. Returns `200` with body `ok`. |
 | `GET /v1/history`    | signed request, loopback only | Return `{ "entries": [HistoryEntry, ...] }`; `?limit=<n>` caps the count. |
 | `POST /v1/restore`   | signed request, loopback only | Re-copy a history entry as the current clipboard and fan it out to the fleet. |
@@ -330,10 +331,10 @@ private paths, and avoid following unsafe symlinked temporary or final paths.
 
 Single shared key per fleet, in `config.json`. The daemon derives the envelope
 encryption key from it and also uses it for canonical request HMAC signatures.
-Peer clip pushes require valid signed requests. Local admin endpoints
-(`/v1/peers`, history, restore, pin/delete, and config) also require valid
-signatures and loopback source addresses. `GET /v1/health` remains
-unauthenticated for liveness checks.
+Peer clip pushes and peer version probes require valid signed requests. Local
+admin endpoints (`/v1/peers`, history, restore, pin/delete, and config) also
+require valid signatures and loopback source addresses. `GET /v1/health`
+remains unauthenticated for liveness checks.
 
 ## Non-goals
 

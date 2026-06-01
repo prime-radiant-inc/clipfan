@@ -104,7 +104,9 @@ To update an existing peer, open **Settings… → Fleet** and click the update
 button on that peer's row. The app prompts for SSH details, uploads the current
 bundled payload, and runs `install.sh --no-tmux` on the peer. This refreshes the
 binary and restarts the launchd/systemd user service without rewriting the
-peer's `~/.config/clipfan/config.json` or touching tmux config.
+peer's `~/.config/clipfan/config.json` or touching tmux config. After a Mac app
+update, clipfan probes peers through their signed version endpoint and offers to
+open Fleet settings when a peer is older or lacks the version endpoint.
 
 You can also install a host by hand: copy this Mac's `shared_key` into the new
 host's `~/.config/clipfan/config.json` and run `./install.sh` there.
@@ -205,6 +207,10 @@ What clipfan protects:
   control responses are also signed and bound to the request nonce, so GUI
   clients can reject a spoofed loopback listener that does not know
   `shared_key`. The unauthenticated health endpoint returns only `ok`.
+- **Signed peer version probes.** `/v1/version` is intentionally reachable from
+  peers so the Mac app can detect stale remote installs. It still requires a
+  valid signed request, returns a signed response, and exposes only the daemon
+  version string.
 - **Local file permissions.** Config, state, history, and image storage are kept
   under the current user's XDG config/state directories. clipfan creates and
   repairs those directories as `0700` and the files as `0600`.
@@ -218,7 +224,8 @@ What clipfan protects:
   future clip.
 - **Release-time tooling.** CI builds Sparkle's `generate_appcast` from the
   pinned Sparkle revision in this repo, then checks out that exact revision
-  before using the appcast signing key.
+  before using the appcast signing key. Sparkle release notes are extracted from
+  `CHANGELOG.md` and embedded in the signed appcast.
 
 What clipfan does **not** protect against:
 

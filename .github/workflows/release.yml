@@ -225,13 +225,19 @@ jobs:
           GENERATE_APPCAST="$SPARKLE_BUILD/Build/Products/Release/generate_appcast"
           APPCAST_DIR="$RUNNER_TEMP/appcast"
           ED_KEY_FILE="$RUNNER_TEMP/sparkle-private-key"
+          VERSION="${GITHUB_REF_NAME#v}"
 
           mkdir -p "$APPCAST_DIR"
           cp "${{ steps.notarize.outputs.app_zip }}" "$APPCAST_DIR/"
+          ZIP_NAME="$(basename "${{ steps.notarize.outputs.app_zip }}")"
+          RELEASE_NOTES="$APPCAST_DIR/${ZIP_NAME%.*}.md"
+          bash scripts/extract-release-notes.sh "$VERSION" CHANGELOG.md "$RELEASE_NOTES"
+          cp "$RELEASE_NOTES" "$ARTIFACTS_DIR/release-notes.md"
           printf '%s' "$SPARKLE_PRIVATE_ED_KEY" > "$ED_KEY_FILE"
 
           "$GENERATE_APPCAST" "$APPCAST_DIR" \
             --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/" \
+            --embed-release-notes \
             --ed-key-file "$ED_KEY_FILE"
 
           cp "$APPCAST_DIR/appcast.xml" "$ARTIFACTS_DIR/appcast.xml"
@@ -247,9 +253,10 @@ jobs:
             "${{ env.ARTIFACTS_DIR }}/appcast.xml"
           )
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file "${{ env.ARTIFACTS_DIR }}/release-notes.md"
             gh release upload "$GITHUB_REF_NAME" "${RELEASE_FILES[@]}" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "${RELEASE_FILES[@]}" --generate-notes
+            gh release create "$GITHUB_REF_NAME" "${RELEASE_FILES[@]}" --notes-file "${{ env.ARTIFACTS_DIR }}/release-notes.md"
           fi
 
       - name: Cleanup Keychain

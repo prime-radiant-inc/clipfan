@@ -9,6 +9,7 @@ final class DaemonClient: ObservableObject {
     @Published var version: String?
     @Published var maxHistory: Int = 200
     @Published var peers: [Peer] = []
+    @Published var peerVersions: [String: PeerVersionStatus] = [:]
     @Published var connected: Bool = false
     @Published var history: [HistoryEntry] = []
 
@@ -27,6 +28,7 @@ final class DaemonClient: ObservableObject {
         }
         Task {
             await refresh()
+            await refreshPeerVersions()
             await refreshHistory()
         }
     }
@@ -91,6 +93,41 @@ final class DaemonClient: ObservableObject {
         } catch {
             // leave history unchanged on transient failure
         }
+    }
+
+    func refreshPeerVersions() async {
+        guard let key = loadSharedKey(), let localVersion = version else {
+            peerVersions = [:]
+            return
+        }
+        let currentPeers = peers
+        if currentPeers.isEmpty {
+            peerVersions = [:]
+            return
+        }
+
+        var statuses: [String: PeerVersionStatus] = [:]
+        await withTaskGroup(of: (String, PeerVersionStatus?).self) { group in
+            for peer in currentPeers {
+                group.addTask {
+                    do {
+                        let remoteVersion = try await PeerVersionProbe.fetch(host: peer.hostname,
+                                                                             port: peer.port,
+                                                                             key: key)
+                        return (peer.hostname, PeerUpdateAdvisor.status(remoteVersion: remoteVersion,
+                                                                        localVersion: localVersion))
+                    } catch {
+                        return (peer.hostname, PeerUpdateAdvisor.status(forProbeError: error))
+                    }
+                }
+            }
+            for await (hostname, status) in group {
+                if let status {
+                    statuses[hostname] = status
+                }
+            }
+        }
+        peerVersions = statuses
     }
 
     func restore(_ id: String) async {
