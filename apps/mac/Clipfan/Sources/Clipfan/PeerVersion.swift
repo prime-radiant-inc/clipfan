@@ -68,6 +68,68 @@ enum PeerUpdateAdvisor {
     }
 }
 
+struct PeerUpdateVerificationResult: Equatable {
+    let status: PeerVersionStatus?
+    let detail: String
+}
+
+enum PeerUpdateVerifier {
+    typealias Fetch = (String, Int, Data) async throws -> String
+
+    static func verify(host: String,
+                       port: Int,
+                       key: Data,
+                       expectedVersion: String,
+                       attempts: Int,
+                       delayNanoseconds: UInt64,
+                       fetch: Fetch = PeerVersionProbe.fetch) async -> PeerUpdateVerificationResult {
+        let totalAttempts = max(1, attempts)
+        var lastResult = PeerUpdateVerificationResult(
+            status: nil,
+            detail: "\(host) did not answer /v1/version"
+        )
+
+        for attempt in 0..<totalAttempts {
+            do {
+                let remoteVersion = try await fetch(host, port, key)
+                let status = PeerUpdateAdvisor.status(remoteVersion: remoteVersion,
+                                                      localVersion: expectedVersion)
+                let detail: String
+                switch status {
+                case .current:
+                    detail = "\(host) is running \(remoteVersion)"
+                case .needsUpdate:
+                    detail = "\(host) answered with \(remoteVersion); expected \(expectedVersion)"
+                case .unknown:
+                    detail = "\(host) version is unknown"
+                }
+                lastResult = PeerUpdateVerificationResult(status: status, detail: detail)
+                if case .current = status {
+                    return lastResult
+                }
+            } catch {
+                if let status = PeerUpdateAdvisor.status(forProbeError: error) {
+                    lastResult = PeerUpdateVerificationResult(
+                        status: status,
+                        detail: "\(host) does not expose /v1/version yet"
+                    )
+                } else {
+                    lastResult = PeerUpdateVerificationResult(
+                        status: nil,
+                        detail: "\(host) version probe failed: \(error.localizedDescription)"
+                    )
+                }
+            }
+
+            if attempt + 1 < totalAttempts, delayNanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: delayNanoseconds)
+            }
+        }
+
+        return lastResult
+    }
+}
+
 struct PreparedPeerVersionRequest {
     let request: URLRequest
     let requestNonce: String

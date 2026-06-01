@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+func shouldDismissPeerUpdateSheet(_ result: PeerUpdateVerificationResult?) -> Bool {
+    if case .current = result?.status {
+        return true
+    }
+    return false
+}
+
 struct UpdatePeerSheet: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -104,22 +111,31 @@ struct UpdatePeerSheet: View {
                     log.record(.init(step: "Verify", detail: "probing signed /v1/version on \(peer.hostname)"))
                 }
                 await DaemonClient.shared.refresh()
-                let status = await DaemonClient.shared.refreshPeerVersion(hostname: peer.hostname,
-                                                                          attempts: 6,
-                                                                          delayNanoseconds: 1_000_000_000)
+                let result = await DaemonClient.shared.verifyPeerVersion(hostname: peer.hostname,
+                                                                         expectedVersion: version,
+                                                                         attempts: 6,
+                                                                         delayNanoseconds: 1_000_000_000)
+                let shouldDismiss = shouldDismissPeerUpdateSheet(result)
                 await MainActor.run {
-                    if case .current = status {
-                        log.record(.init(step: "Verify", detail: "\(peer.hostname) is running \(version)"))
+                    if case .current = result?.status {
+                        log.record(.init(step: "Verify", detail: result?.detail ?? "\(peer.hostname) is running \(version)"))
                         progress = "\(targetHost): Updated to \(version)."
                     } else {
-                        log.record(.init(step: "Verify", detail: "\(peer.hostname) did not answer with the current daemon version yet"))
+                        log.record(.init(step: "Verify",
+                                         detail: result?.detail ?? "\(peer.hostname) did not answer with the current daemon version yet"))
                         progress = "\(targetHost): Updated to \(version); daemon verification is still pending."
                     }
                 }
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                await MainActor.run {
-                    updating = false
-                    dismiss()
+                if shouldDismiss {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    await MainActor.run {
+                        updating = false
+                        dismiss()
+                    }
+                } else {
+                    await MainActor.run {
+                        updating = false
+                    }
                 }
             } catch {
                 await MainActor.run {
