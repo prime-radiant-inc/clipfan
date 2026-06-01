@@ -61,7 +61,7 @@ case "$uname_s" in
 esac
 
 bin_src="$here/clipfan-$goos-$arch"
-if [[ ! -x "$bin_src" ]]; then
+if [[ ! -f "$bin_src" ]]; then
     echo "Missing binary: $bin_src" >&2
     exit 1
 fi
@@ -73,7 +73,7 @@ install -m 0755 "$bin_src" "$DEST/clipfan"
 # NSPasteboardItem so Cmd-V image paste works in GUI apps too.
 if [[ "$goos" == "darwin" ]]; then
     helper_src="$here/clipfan-pasteboard-helper-$goos-$arch"
-    if [[ -x "$helper_src" ]]; then
+    if [[ -f "$helper_src" ]]; then
         echo "Installing $helper_src -> $DEST/clipfan-pasteboard-helper"
         install -m 0755 "$helper_src" "$DEST/clipfan-pasteboard-helper"
     fi
@@ -81,7 +81,7 @@ fi
 
 if [[ "$goos" == "linux" ]]; then
     shim_src="$here/clipfan-shim-$goos-$arch"
-    if [[ -x "$shim_src" ]]; then
+    if [[ -f "$shim_src" ]]; then
         echo "Installing $shim_src -> $DEST/clipfan-shim"
         install -m 0755 "$shim_src" "$DEST/clipfan-shim"
         ln -sf "$DEST/clipfan-shim" "$DEST/xclip"
