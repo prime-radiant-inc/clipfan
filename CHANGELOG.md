@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.9] - 2026-06-01
+
+### Fixed
+
+- Peer update verification now probes signed remote daemon versions without macOS App Transport Security blocking cleartext peer HTTP.
+- The release workflow now uses Node 24-based GitHub Actions for checkout and Go setup.
+
 ## [0.3.8] - 2026-06-01
 
 ### Changed
