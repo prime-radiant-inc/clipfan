@@ -196,12 +196,19 @@ func DeleteEntry(id string) error {
 		return err
 	}
 	out := make([]HistoryEntry, 0, len(list))
+	removed := make([]HistoryEntry, 0, 1)
 	for _, e := range list {
 		if e.ID != id {
 			out = append(out, e)
+			continue
 		}
+		removed = append(removed, e)
 	}
-	return writeHistory(out)
+	if err := writeHistory(out); err != nil {
+		return err
+	}
+	removeUnreferencedImages(removed, out)
+	return nil
 }
 
 // ClearUnpinned removes every entry that is not pinned.
@@ -213,12 +220,49 @@ func ClearUnpinned() error {
 		return err
 	}
 	out := make([]HistoryEntry, 0, len(list))
+	removed := make([]HistoryEntry, 0, len(list))
 	for _, e := range list {
 		if e.Pinned {
 			out = append(out, e)
+			continue
+		}
+		removed = append(removed, e)
+	}
+	if err := writeHistory(out); err != nil {
+		return err
+	}
+	removeUnreferencedImages(removed, out)
+	return nil
+}
+
+func removeUnreferencedImages(removed, kept []HistoryEntry) {
+	referenced := make(map[string]struct{}, len(kept))
+	for _, e := range kept {
+		if name := imageFileName(e.ImagePath); name != "" {
+			referenced[name] = struct{}{}
 		}
 	}
-	return writeHistory(out)
+	for _, e := range removed {
+		name := imageFileName(e.ImagePath)
+		if name == "" {
+			continue
+		}
+		if _, ok := referenced[name]; ok {
+			continue
+		}
+		_ = os.Remove(filepath.Join(imagesDir(), name))
+	}
+}
+
+func imageFileName(path string) string {
+	if path == "" {
+		return ""
+	}
+	name := filepath.Base(path)
+	if name == "." || name == string(filepath.Separator) {
+		return ""
+	}
+	return name
 }
 
 // EntryByID returns the entry with the given id, or ok=false if not found.

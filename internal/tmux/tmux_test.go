@@ -37,6 +37,63 @@ func TestSocketsIgnoresRegularFiles(t *testing.T) {
 	}
 }
 
+func TestSocketsRejectsSharedSocketDir(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMUX_TMPDIR", tmp)
+	dir := tmp + "/tmux-" + uid()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Sockets(); err == nil {
+		t.Fatal("expected shared tmux socket directory to be rejected")
+	}
+}
+
+func TestSocketsRejectsSymlinkSocketDir(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMUX_TMPDIR", tmp)
+	target := tmp + "/target"
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, tmp+"/tmux-"+uid()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Sockets(); err == nil {
+		t.Fatal("expected symlinked tmux socket directory to be rejected")
+	}
+}
+
+func TestSocketsIgnoresSharedSocket(t *testing.T) {
+	tmp := shortTempDir(t)
+	t.Setenv("TMUX_TMPDIR", tmp)
+	dir := tmp + "/tmux-" + uid()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", dir+"/default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if err := os.Chmod(dir+"/default", 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	socks, err := Sockets()
+	if err != nil {
+		t.Fatalf("Sockets() error: %v", err)
+	}
+	if len(socks) != 0 {
+		t.Fatalf("shared socket should be ignored, got %v", socks)
+	}
+}
+
 func uid() string {
 	// strconv.Itoa(os.Getuid()) but kept inline to keep the test small
 	return func() string {
@@ -64,7 +121,7 @@ func uid() string {
 // TestImagePathWritebackDedupedHeadless.) A fake `tmux` on PATH records the
 // subcommand actually invoked.
 func TestLoadBufferAllUsesLoadBuffer(t *testing.T) {
-	tmp := t.TempDir()
+	tmp := shortTempDir(t)
 	t.Setenv("TMUX_TMPDIR", tmp)
 
 	// A real unix socket so Sockets() returns it (it filters on os.ModeSocket).
@@ -99,4 +156,14 @@ func TestLoadBufferAllUsesLoadBuffer(t *testing.T) {
 	if !strings.Contains(got, "load-buffer") {
 		t.Fatalf("writeback should use load-buffer; got args: %q", got)
 	}
+}
+
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "clipfan-tmux-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }

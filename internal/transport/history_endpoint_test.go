@@ -41,6 +41,7 @@ func TestHistoryGETRequiresSignature(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("signed GET status = %d, want 200", rec.Code)
 	}
+	requireSignedResponse(t, auth, rec, "history-get")
 	if !called {
 		t.Fatal("history func not invoked on signed GET")
 	}
@@ -74,6 +75,7 @@ func TestRestoreRequiresSignature(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("signed status = %d, want 200", rec.Code)
 	}
+	requireSignedResponse(t, auth, rec, "restore")
 	if restored != "abc" {
 		t.Fatalf("restore id = %q, want abc", restored)
 	}
@@ -164,6 +166,7 @@ func TestPeersRequiresSignatureAndLoopback(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("local signed peers status = %d, want 200", rec.Code)
 	}
+	requireSignedResponse(t, auth, rec, "local-peers")
 }
 
 func TestFutureTimestampReplayRejectedUntilSkewWindowExpires(t *testing.T) {
@@ -210,6 +213,79 @@ func TestFutureTimestampReplayRejectedUntilSkewWindowExpires(t *testing.T) {
 	}
 }
 
+func TestPostClipRejectsEnvelopeTimestampBeyondRequestSkew(t *testing.T) {
+	auth := testAuth(t)
+	now := time.Unix(1780257600, 0)
+	received := 0
+	srv := NewServer(":0", auth, func(clipboard.Content, string) {
+		received++
+	}, nil)
+	srv.now = func() time.Time { return now }
+
+	sealedBody, bodyNonce, err := auth.SealBody([]byte("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(Envelope{
+		ID:     "clip-future-envelope",
+		Origin: "sender",
+		TS:     now.Add(signatureSkew + time.Second).UTC(),
+		Kind:   "text",
+		Body:   sealedBody,
+		Nonce:  bodyNonce,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := signedRequestWithTimestampAndNonce(t, auth, http.MethodPost, "/v1/clip", strconv.FormatInt(now.Unix(), 10), "future-envelope", body)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("future envelope timestamp status = %d, want 400", rec.Code)
+	}
+	if received != 0 {
+		t.Fatalf("received clips = %d, want 0", received)
+	}
+}
+
+func TestPostClipRejectsEnvelopeTimestampBeyondReceiverSkew(t *testing.T) {
+	auth := testAuth(t)
+	now := time.Unix(1780257600, 0)
+	received := 0
+	srv := NewServer(":0", auth, func(clipboard.Content, string) {
+		received++
+	}, nil)
+	srv.now = func() time.Time { return now }
+
+	sealedBody, bodyNonce, err := auth.SealBody([]byte("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(Envelope{
+		ID:     "clip-future-receiver",
+		Origin: "sender",
+		TS:     now.Add(signatureSkew + time.Second).UTC(),
+		Kind:   "text",
+		Body:   sealedBody,
+		Nonce:  bodyNonce,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestTS := strconv.FormatInt(now.Add(signatureSkew-time.Second).Unix(), 10)
+	req := signedRequestWithTimestampAndNonce(t, auth, http.MethodPost, "/v1/clip", requestTS, "future-receiver", body)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("future envelope timestamp status = %d, want 400", rec.Code)
+	}
+	if received != 0 {
+		t.Fatalf("received clips = %d, want 0", received)
+	}
+}
+
 func TestPostClipRejectsWrongLengthBodyNonce(t *testing.T) {
 	auth := testAuth(t)
 	received := 0
@@ -241,6 +317,17 @@ func TestPostClipRejectsWrongLengthBodyNonce(t *testing.T) {
 	}
 	if received != 0 {
 		t.Fatalf("received clips = %d, want 0", received)
+	}
+}
+
+func requireSignedResponse(t *testing.T, auth *Auth, rec *httptest.ResponseRecorder, requestNonce string) {
+	t.Helper()
+	sig := rec.Header().Get("X-Clipfan-Response-Sig")
+	if sig == "" {
+		t.Fatal("missing X-Clipfan-Response-Sig")
+	}
+	if err := auth.VerifyResponse(requestNonce, rec.Body.Bytes(), sig); err != nil {
+		t.Fatalf("response signature: %v", err)
 	}
 }
 

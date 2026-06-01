@@ -113,10 +113,11 @@ struct CommandPanelView: View {
                     if e.kind == .image, let p = e.imagePath, let img = NSImage(contentsOfFile: p) {
                         Image(nsImage: img).resizable().scaledToFit().padding(18)
                     } else {
+                        let text = historyPreviewText(e)
                         ScrollView {
-                            Text(e.text ?? e.preview)
+                            Text(text)
                                 .font(.system(size: 13,
-                                               design: isMonospacePreferred(e.text ?? e.preview) ? .monospaced : .default))
+                                               design: isMonospacePreferred(text) ? .monospaced : .default))
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(18)

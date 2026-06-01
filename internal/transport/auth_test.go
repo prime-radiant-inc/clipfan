@@ -56,6 +56,22 @@ func TestRequestSignatureRejectsChangedQuery(t *testing.T) {
 	}
 }
 
+func TestResponseSignatureIsBoundToRequestNonceAndBody(t *testing.T) {
+	auth := testAuth(t)
+	body := []byte(`{"origin":"m4"}`)
+	sig := auth.SignResponse("nonce-1", body)
+
+	if err := auth.VerifyResponse("nonce-1", body, sig); err != nil {
+		t.Fatalf("VerifyResponse signed body: %v", err)
+	}
+	if err := auth.VerifyResponse("nonce-2", body, sig); err == nil {
+		t.Fatal("expected request nonce change to reject response signature")
+	}
+	if err := auth.VerifyResponse("nonce-1", []byte(`{"origin":"evil"}`), sig); err == nil {
+		t.Fatal("expected body change to reject response signature")
+	}
+}
+
 func TestNonceCacheRejectsReplayAndExpiresOldEntries(t *testing.T) {
 	cache := newNonceCache(2 * time.Minute)
 	now := time.Unix(1780257600, 0)

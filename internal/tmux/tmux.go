@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 )
 
 // LoadBufferAll writes `content` as the top paste buffer on every tmux server
@@ -37,6 +38,16 @@ func LoadBufferAll(content []byte) error {
 // owns under the standard tmux directory.
 func Sockets() ([]string, error) {
 	dir := socketDir()
+	dirInfo, err := os.Lstat(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if err := requireTrustedSocketDir(dir, dirInfo); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -46,15 +57,41 @@ func Sockets() ([]string, error) {
 	}
 	var out []string
 	for _, e := range entries {
-		info, err := e.Info()
+		path := filepath.Join(dir, e.Name())
+		info, err := os.Lstat(path)
 		if err != nil {
 			continue
 		}
-		if info.Mode()&os.ModeSocket != 0 {
-			out = append(out, filepath.Join(dir, e.Name()))
+		if info.Mode()&os.ModeSocket != 0 && trustedSocket(info) {
+			out = append(out, path)
 		}
 	}
 	return out, nil
+}
+
+func requireTrustedSocketDir(path string, info os.FileInfo) error {
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("tmux socket dir %s is a symlink", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("tmux socket dir %s is not a directory", path)
+	}
+	if !ownedByCurrentUser(info) {
+		return fmt.Errorf("tmux socket dir %s is not owned by current user", path)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("tmux socket dir %s permissions %03o are too open", path, info.Mode().Perm())
+	}
+	return nil
+}
+
+func trustedSocket(info os.FileInfo) bool {
+	return ownedByCurrentUser(info) && info.Mode().Perm()&0o022 == 0
+}
+
+func ownedByCurrentUser(info os.FileInfo) bool {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	return ok && int(st.Uid) == os.Getuid()
 }
 
 func socketDir() string {

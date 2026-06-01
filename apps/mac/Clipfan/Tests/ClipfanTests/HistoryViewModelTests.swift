@@ -45,6 +45,22 @@ final class HistoryFilterTests: XCTestCase {
         XCTAssertEqual(filteredHistory([e], search: "hidden", typeFilter: .all).map(\.id), ["1"])
     }
 
+    func testSearchDoesNotScanBeyondBoundedText() {
+        let text = String(repeating: "a", count: historySearchTextLimit + 10) + "needle"
+        let e = HistoryEntry(id: "1", kind: .text, preview: "short", text: text,
+                             imagePath: nil, sizeBytes: text.count, origin: "m4",
+                             ts: Date(timeIntervalSince1970: 0), pinned: false)
+        XCTAssertEqual(filteredHistory([e], search: "needle", typeFilter: .all), [])
+    }
+
+    func testPreviewTextIsBounded() {
+        let text = String(repeating: "a", count: historyPreviewTextLimit + 10)
+        let e = HistoryEntry(id: "1", kind: .text, preview: "short", text: text,
+                             imagePath: nil, sizeBytes: text.count, origin: "m4",
+                             ts: Date(timeIntervalSince1970: 0), pinned: false)
+        XCTAssertEqual(historyPreviewText(e).count, historyPreviewTextLimit)
+    }
+
     func testTypeFilterLabels() {
         XCTAssertEqual(TypeFilter.allCases.map(\.label), ["All", "Text", "Image", "Link"])
     }

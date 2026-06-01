@@ -40,6 +40,25 @@ func (a *Auth) VerifyRequest(method, requestURI, timestamp, nonce string, body [
 	return nil
 }
 
+func (a *Auth) SignResponse(requestNonce string, body []byte) string {
+	mac := hmac.New(sha256.New, a.key)
+	writeCanonicalResponse(mac, requestNonce, body)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (a *Auth) VerifyResponse(requestNonce string, body []byte, sig string) error {
+	expect, err := hex.DecodeString(sig)
+	if err != nil {
+		return err
+	}
+	got := hmac.New(sha256.New, a.key)
+	writeCanonicalResponse(got, requestNonce, body)
+	if !hmac.Equal(expect, got.Sum(nil)) {
+		return errors.New("bad response signature")
+	}
+	return nil
+}
+
 func writeCanonicalRequest(mac hashWriter, method, requestURI, timestamp, nonce string, body []byte) {
 	mac.Write([]byte(method))
 	mac.Write([]byte("\n"))
@@ -48,6 +67,13 @@ func writeCanonicalRequest(mac hashWriter, method, requestURI, timestamp, nonce 
 	mac.Write([]byte(timestamp))
 	mac.Write([]byte("\n"))
 	mac.Write([]byte(nonce))
+	mac.Write([]byte("\n"))
+	mac.Write(body)
+}
+
+func writeCanonicalResponse(mac hashWriter, requestNonce string, body []byte) {
+	mac.Write([]byte("response\n"))
+	mac.Write([]byte(requestNonce))
 	mac.Write([]byte("\n"))
 	mac.Write(body)
 }

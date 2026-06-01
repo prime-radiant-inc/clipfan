@@ -195,8 +195,10 @@ What clipfan protects:
   the signed body, so a captured clip push for one peer is rejected if replayed
   to another peer.
 - **Local control endpoints.** History, config, restore, and peer-status
-  endpoints require a valid signature and are loopback-only. The unauthenticated
-  health endpoint returns only `ok`.
+  endpoints require a valid signature and are loopback-only. Successful local
+  control responses are also signed and bound to the request nonce, so GUI
+  clients can reject a spoofed loopback listener that does not know
+  `shared_key`. The unauthenticated health endpoint returns only `ok`.
 - **Local file permissions.** Config, state, history, and image storage are kept
   under the current user's XDG config/state directories. clipfan creates and
   repairs those directories as `0700` and the files as `0600`.
@@ -204,6 +206,13 @@ What clipfan protects:
   macOS service is a LaunchAgent. The daemon is not intended to run as root.
 - **Concealed pasteboard items.** Password-manager-style concealed or transient
   pasteboard items are not synced or recorded.
+- **Peer timestamp bounds.** Peer envelopes are rejected if their clipboard
+  timestamp is more than two minutes ahead of the receiver's clock. This
+  prevents a trusted peer from poisoning local ordering state with an arbitrary
+  future clip.
+- **Release-time tooling.** CI builds Sparkle's `generate_appcast` from the
+  pinned Sparkle revision in this repo, then checks out that exact revision
+  before using the appcast signing key.
 
 What clipfan does **not** protect against:
 
@@ -223,6 +232,10 @@ What clipfan does **not** protect against:
 - **Traffic metadata.** Payload bytes are encrypted, but HTTP metadata such as
   hostnames, peer addresses, timing, and message sizes can still be visible to
   the network path unless you run over an encrypted underlay such as Tailscale.
+- **Large local clips.** The macOS app caps how much history text it searches and
+  renders at once, but clipfan still stores clipboard history up to your
+  configured history limit. A same-user process can still create large local
+  clips and consume local disk or memory.
 
 Multi-user Linux notes:
 
@@ -234,27 +247,17 @@ Multi-user Linux notes:
 - Other Unix users may be able to connect to the TCP listener, but they still
   need `shared_key` to read or change clipboard state. Without the key, the only
   intended unauthenticated endpoint is `/v1/health`.
-- tmux integration assumes the standard tmux socket directory is owned by the
-  clipfan user and not writable by other users (normally `/tmp/tmux-$UID` mode
-  `0700`). clipfan currently discovers sockets by location and socket type; it
-  does not independently verify socket owner and directory permissions before
-  calling `tmux -S <socket> load-buffer -`. On shared Linux hosts, keep
-  `TMUX_TMPDIR` trusted, verify `/tmp/tmux-$UID` ownership/mode, or install with
-  `--no-tmux` until owner/mode checks are added.
-
-Known hardening work:
-
-- Pin release-time tooling that runs with signing secrets. The app dependency
-  lockfile does not automatically pin separate tools cloned by CI.
-- Authenticate the local daemon identity before GUI clients send sensitive
-  signed local requests. A signature proves the client knows `shared_key`; it
-  does not by itself prove the process listening on `127.0.0.1:7853` is the real
-  daemon.
-- Treat peer-controlled envelope timestamps as untrusted input. A signed peer is
-  trusted to send clips, but it should not be able to poison local ordering state
-  with an arbitrary future timestamp.
-- Add tmux socket owner and permission checks before writing clipboard contents
-  into discovered sockets.
+- tmux integration verifies that the tmux socket directory is not a symlink, is
+  owned by the clipfan user, and is not accessible by group or other users
+  (normally `/tmp/tmux-$UID` mode `0700`). Discovered socket files must also be
+  owned by the clipfan user and not group/world-writable before clipfan calls
+  `tmux -S <socket> load-buffer -`.
+- Local daemon identity is authenticated with signed responses, but the local
+  HTTP API still uses separate loopback HTTP requests. That protects against a
+  different local Unix user who cannot read `shared_key`; it is not a sandbox
+  against the same user, root, or a host configuration that exposes the key.
+- Deleting a history item or clearing unpinned history also removes image files
+  that are no longer referenced by remaining history entries.
 
 ## Menubar app (macOS)
 

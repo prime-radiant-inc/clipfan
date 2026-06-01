@@ -1,5 +1,8 @@
 import Foundation
 
+let historySearchTextLimit = 8192
+let historyPreviewTextLimit = 20000
+
 enum TypeFilter: String, CaseIterable, Identifiable {
     case all, text, image, link
     var id: String { rawValue }
@@ -22,11 +25,24 @@ func filteredHistory(_ entries: [HistoryEntry], search: String, typeFilter: Type
         let typeOK = typeFilter == .all || e.kind.rawValue == typeFilter.rawValue
         guard typeOK else { return false }
         guard !q.isEmpty else { return true }
-        let hay = (e.preview + " " + (e.text ?? "")).lowercased()
+        let hay = searchableHistoryText(e).lowercased()
         return hay.contains(q)
     }
     return matched.sorted { a, b in
         if a.pinned != b.pinned { return a.pinned }
         return a.ts > b.ts
     }
+}
+
+func searchableHistoryText(_ entry: HistoryEntry) -> String {
+    boundedHistoryText(entry.preview, limit: historySearchTextLimit) + " " +
+        boundedHistoryText(entry.text ?? "", limit: historySearchTextLimit)
+}
+
+func historyPreviewText(_ entry: HistoryEntry) -> String {
+    boundedHistoryText(entry.text ?? entry.preview, limit: historyPreviewTextLimit)
+}
+
+private func boundedHistoryText(_ text: String, limit: Int) -> String {
+    String(text.prefix(limit))
 }

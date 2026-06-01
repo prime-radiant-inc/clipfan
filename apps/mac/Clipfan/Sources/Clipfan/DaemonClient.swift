@@ -32,24 +32,13 @@ final class DaemonClient: ObservableObject {
     }
 
     func refresh() async {
-        guard let key = loadSharedKey(),
-              let url = URL(string: "\(base.absoluteString)/v1/peers") else {
+        guard let key = loadSharedKey() else {
             self.connected = false
             return
         }
         do {
-            var req = URLRequest(url: url)
-            req.httpMethod = "GET"
-            req.timeoutInterval = 2
-            for (header, value) in clipfanSignatureHeaders(method: "GET", requestURI: "/v1/peers", body: Data(), key: key) {
-                req.setValue(value, forHTTPHeaderField: header)
-            }
-            let (data, _) = try await URLSession.shared.data(for: req)
-            let resp = try JSONDecoder.clipfan.decode(PeersResponse.self, from: data)
-            self.origin = resp.origin
-            self.version = resp.version
-            if let m = resp.max_history { self.maxHistory = m }
-            self.peers = resp.peers
+            let resp = try await fetchPeers(key: key)
+            applyPeers(resp)
             self.connected = true
         } catch {
             self.connected = false
@@ -88,17 +77,11 @@ final class DaemonClient: ObservableObject {
     }
 
     func refreshHistory() async {
-        let requestURI = "/v1/history?limit=\(maxHistory)"
         guard let key = loadSharedKey(),
-              let url = URL(string: "\(base.absoluteString)\(requestURI)") else { return }
-        var req = URLRequest(url: url)
-        req.httpMethod = "GET"
-        req.timeoutInterval = 2
-        for (header, value) in clipfanSignatureHeaders(method: "GET", requestURI: requestURI, body: Data(), key: key) {
-            req.setValue(value, forHTTPHeaderField: header)
-        }
+              await verifyDaemon(key: key) else { return }
+        let requestURI = "/v1/history?limit=\(maxHistory)"
         do {
-            let (data, _) = try await URLSession.shared.data(for: req)
+            let data = try await signedData(method: "GET", path: requestURI, body: Data(), key: key)
             let resp = try JSONDecoder.clipfan.decode(HistoryResponse.self, from: data)
             // Only publish when the list actually changed so the 3s poll doesn't
             // re-render (and disturb selection/scroll) on every tick.
@@ -138,15 +121,54 @@ final class DaemonClient: ObservableObject {
 
     private func signedRequest(method: String, path: String, body: [String: Any]) async {
         guard let key = loadSharedKey(),
-              let url = URL(string: "\(base.absoluteString)\(path)"),
+              await verifyDaemon(key: key),
               let payload = try? JSONSerialization.data(withJSONObject: body) else { return }
+        _ = try? await signedData(method: method, path: path, body: payload, key: key)
+    }
+
+    private func fetchPeers(key: Data) async throws -> PeersResponse {
+        let data = try await signedData(method: "GET", path: "/v1/peers", body: Data(), key: key)
+        return try JSONDecoder.clipfan.decode(PeersResponse.self, from: data)
+    }
+
+    private func verifyDaemon(key: Data) async -> Bool {
+        do {
+            let resp = try await fetchPeers(key: key)
+            applyPeers(resp)
+            self.connected = true
+            return true
+        } catch {
+            self.connected = false
+            return false
+        }
+    }
+
+    private func applyPeers(_ resp: PeersResponse) {
+        self.origin = resp.origin
+        self.version = resp.version
+        if let m = resp.max_history { self.maxHistory = m }
+        self.peers = resp.peers
+    }
+
+    private func signedData(method: String, path: String, body: Data, key: Data) async throws -> Data {
+        guard let url = URL(string: "\(base.absoluteString)\(path)") else {
+            throw URLError(.badURL)
+        }
         var req = URLRequest(url: url)
         req.httpMethod = method
-        req.httpBody = payload
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        for (header, value) in clipfanSignatureHeaders(method: method, requestURI: path, body: payload, key: key) {
+        if !body.isEmpty {
+            req.httpBody = body
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        req.timeoutInterval = 2
+        let headers = clipfanSignatureHeaders(method: method, requestURI: path, body: body, key: key)
+        for (header, value) in headers {
             req.setValue(value, forHTTPHeaderField: header)
         }
-        _ = try? await URLSession.shared.data(for: req)
+        guard let requestNonce = headers["X-Clipfan-Nonce"] else {
+            throw ClipfanAuthenticationError.missingRequestNonce
+        }
+        let (data, response) = try await URLSession.shared.data(for: req)
+        return try authenticatedClipfanData(data, response: response, requestNonce: requestNonce, key: key)
     }
 }

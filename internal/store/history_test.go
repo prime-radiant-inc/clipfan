@@ -107,6 +107,27 @@ func TestDeleteEntry(t *testing.T) {
 	}
 }
 
+func TestDeleteEntryRemovesUnreferencedImage(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	png := []byte("\x89PNG\r\n\x1a\n-delete-me")
+	p, err := SaveImage(png)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := clipboard.New(clipboard.KindImage, png, ts(1))
+	if err := AppendHistory(c, "m4", p); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := DeleteEntry(hex.EncodeToString(c.Hash[:])); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Fatalf("deleted image still exists or stat failed differently: %v", err)
+	}
+}
+
 func TestClearUnpinnedKeepsPinned(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	AppendHistory(clipboard.New(clipboard.KindText, []byte("pin"), ts(1)), "m4", "")
@@ -118,6 +139,42 @@ func TestClearUnpinnedKeepsPinned(t *testing.T) {
 	got, _ := LoadHistory(10)
 	if len(got) != 1 || got[0].Preview != "pin" {
 		t.Fatalf("clear-unpinned failed: %+v", got)
+	}
+}
+
+func TestClearUnpinnedRemovesOnlyUnreferencedImages(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	keepPNG := []byte("\x89PNG\r\n\x1a\n-keep")
+	dropPNG := []byte("\x89PNG\r\n\x1a\n-drop")
+	keepPath, err := SaveImage(keepPNG)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dropPath, err := SaveImage(dropPNG)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keep := clipboard.New(clipboard.KindImage, keepPNG, ts(1))
+	drop := clipboard.New(clipboard.KindImage, dropPNG, ts(2))
+	if err := AppendHistory(keep, "m4", keepPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendHistory(drop, "m4", dropPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetPinned(hex.EncodeToString(keep.Hash[:]), true); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ClearUnpinned(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dropPath); !os.IsNotExist(err) {
+		t.Fatalf("cleared image still exists or stat failed differently: %v", err)
+	}
+	if _, err := os.Stat(keepPath); err != nil {
+		t.Fatalf("pinned image was removed: %v", err)
 	}
 }
 

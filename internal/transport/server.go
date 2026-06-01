@@ -52,6 +52,12 @@ type Server struct {
 	recipient string
 }
 
+type signedPayload struct {
+	body       []byte
+	nonce      string
+	receivedAt time.Time
+}
+
 func NewServer(listen string, auth *Auth, onRecv ReceiveFunc, peersFn PeersFunc) *Server {
 	return &Server{
 		auth:    auth,
@@ -115,17 +121,21 @@ func (s *Server) Serve(ctx context.Context) error {
 }
 
 func (s *Server) postClip(w http.ResponseWriter, r *http.Request) {
-	body := s.readSigned(w, r, 64<<20)
-	if body == nil {
+	signed := s.readSigned(w, r, 64<<20)
+	if signed == nil {
 		return
 	}
 	var env Envelope
-	if err := json.Unmarshal(body, &env); err != nil {
+	if err := json.Unmarshal(signed.body, &env); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if s.recipient != "" && !RecipientMatches(env.Recipient, s.recipient) {
 		http.Error(w, "wrong recipient", http.StatusForbidden)
+		return
+	}
+	if env.TS.After(signed.receivedAt.Add(signatureSkew)) {
+		http.Error(w, "future envelope timestamp", http.StatusBadRequest)
 		return
 	}
 	raw, err := env.Bytes(s.auth)
@@ -142,19 +152,20 @@ func (s *Server) postClip(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getPeers(w http.ResponseWriter, r *http.Request) {
-	if s.readSignedLocal(w, r) == nil {
+	signed := s.readSignedLocal(w, r)
+	if signed == nil {
 		return
 	}
 	if s.peersFn == nil {
 		http.Error(w, "peers endpoint not wired", http.StatusNotImplemented)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(s.peersFn())
+	s.writeSignedJSON(w, signed.nonce, s.peersFn())
 }
 
 func (s *Server) getHistory(w http.ResponseWriter, r *http.Request) {
-	if s.readSignedLocal(w, r) == nil {
+	signed := s.readSignedLocal(w, r)
+	if signed == nil {
 		return
 	}
 	if s.historyFn == nil {
@@ -172,20 +183,19 @@ func (s *Server) getHistory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"entries": out})
+	s.writeSignedJSON(w, signed.nonce, map[string]any{"entries": out})
 }
 
 func (s *Server) deleteHistory(w http.ResponseWriter, r *http.Request) {
-	body := s.readSignedLocal(w, r)
-	if body == nil {
+	signed := s.readSignedLocal(w, r)
+	if signed == nil {
 		return
 	}
 	var req struct {
 		ID          string `json:"id"`
 		AllUnpinned bool   `json:"all_unpinned"`
 	}
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := json.Unmarshal(signed.body, &req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
@@ -193,18 +203,18 @@ func (s *Server) deleteHistory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	s.writeSignedBody(w, signed.nonce, http.StatusOK, nil)
 }
 
 func (s *Server) postRestore(w http.ResponseWriter, r *http.Request) {
-	body := s.readSignedLocal(w, r)
-	if body == nil {
+	signed := s.readSignedLocal(w, r)
+	if signed == nil {
 		return
 	}
 	var req struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := json.Unmarshal(signed.body, &req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
@@ -212,19 +222,19 @@ func (s *Server) postRestore(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	s.writeSignedBody(w, signed.nonce, http.StatusOK, nil)
 }
 
 func (s *Server) postPin(w http.ResponseWriter, r *http.Request) {
-	body := s.readSignedLocal(w, r)
-	if body == nil {
+	signed := s.readSignedLocal(w, r)
+	if signed == nil {
 		return
 	}
 	var req struct {
 		ID     string `json:"id"`
 		Pinned bool   `json:"pinned"`
 	}
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := json.Unmarshal(signed.body, &req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
@@ -232,12 +242,12 @@ func (s *Server) postPin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	s.writeSignedBody(w, signed.nonce, http.StatusOK, nil)
 }
 
 func (s *Server) postConfig(w http.ResponseWriter, r *http.Request) {
-	body := s.readSignedLocal(w, r)
-	if body == nil {
+	signed := s.readSignedLocal(w, r)
+	if signed == nil {
 		return
 	}
 	if s.configFn == nil {
@@ -247,7 +257,7 @@ func (s *Server) postConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		MaxHistory int `json:"max_history"`
 	}
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := json.Unmarshal(signed.body, &req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
@@ -255,24 +265,38 @@ func (s *Server) postConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	s.writeSignedBody(w, signed.nonce, http.StatusOK, nil)
 }
 
-func (s *Server) readSignedLocal(w http.ResponseWriter, r *http.Request) []byte {
+func (s *Server) writeSignedJSON(w http.ResponseWriter, requestNonce string, v any) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	s.writeSignedBody(w, requestNonce, http.StatusOK, body)
+}
+
+func (s *Server) writeSignedBody(w http.ResponseWriter, requestNonce string, status int, body []byte) {
+	w.Header().Set("X-Clipfan-Response-Sig", s.auth.SignResponse(requestNonce, body))
+	w.WriteHeader(status)
+	if len(body) > 0 {
+		_, _ = w.Write(body)
+	}
+}
+
+func (s *Server) readSignedLocal(w http.ResponseWriter, r *http.Request) *signedPayload {
 	if !isLoopbackRemote(r.RemoteAddr) {
 		http.Error(w, "loopback required", http.StatusForbidden)
 		return nil
 	}
-	body := s.readSigned(w, r, 1<<20)
-	if body == nil {
-		return nil
-	}
-	return body
+	return s.readSigned(w, r, 1<<20)
 }
 
 // readSigned reads the body and verifies the canonical request HMAC signature.
 // Returns nil after writing an error response on failure.
-func (s *Server) readSigned(w http.ResponseWriter, r *http.Request, maxBody int64) []byte {
+func (s *Server) readSigned(w http.ResponseWriter, r *http.Request, maxBody int64) *signedPayload {
 	sig := r.Header.Get("X-Clipfan-Sig")
 	if sig == "" {
 		http.Error(w, "missing X-Clipfan-Sig", http.StatusUnauthorized)
@@ -312,7 +336,7 @@ func (s *Server) readSigned(w http.ResponseWriter, r *http.Request, maxBody int6
 		http.Error(w, "replayed nonce", http.StatusUnauthorized)
 		return nil
 	}
-	return body
+	return &signedPayload{body: body, nonce: nonce, receivedAt: now}
 }
 
 func isLoopbackRemote(remoteAddr string) bool {

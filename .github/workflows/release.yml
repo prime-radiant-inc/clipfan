@@ -198,11 +198,17 @@ jobs:
           echo "app_dmg=$APP_DMG" >> "$GITHUB_OUTPUT"
 
       - name: Build Sparkle Appcast Tool
+        env:
+          SPARKLE_REVISION: 6276ba2b404829d139c45ff98427cf90e2efc59b
         run: |
           set -euo pipefail
           SPARKLE_SOURCE="$RUNNER_TEMP/Sparkle"
           SPARKLE_BUILD="$RUNNER_TEMP/sparkle-build"
-          git clone --depth 1 https://github.com/sparkle-project/Sparkle.git "$SPARKLE_SOURCE"
+          git init "$SPARKLE_SOURCE"
+          git -C "$SPARKLE_SOURCE" remote add origin https://github.com/sparkle-project/Sparkle.git
+          git -C "$SPARKLE_SOURCE" fetch --depth 1 origin "$SPARKLE_REVISION"
+          git -C "$SPARKLE_SOURCE" checkout --detach FETCH_HEAD
+          test "$(git -C "$SPARKLE_SOURCE" rev-parse HEAD)" = "$SPARKLE_REVISION"
           xcodebuild \
             -project "$SPARKLE_SOURCE/Sparkle.xcodeproj" \
             -scheme generate_appcast \

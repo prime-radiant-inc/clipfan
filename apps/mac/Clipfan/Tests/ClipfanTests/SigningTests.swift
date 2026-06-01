@@ -30,6 +30,31 @@ final class SigningTests: XCTestCase {
         XCTAssertEqual(sig, "bc45df25bb616a886c831c26136fcfd38957c355d800179cfa39e53cc5c15086")
     }
 
+    func testSignResponseMatchesGo() {
+        let sig = clipfanResponseSignature(
+            requestNonce: "nonce-1",
+            body: Data(#"{"origin":"m4"}"#.utf8),
+            key: rawKey
+        )
+        XCTAssertEqual(sig, "42c761090fce0e3702d231663a20b8e7b05e0cd8c3bd2e357d9f4e85420a1d86")
+    }
+
+    func testAuthenticatedResponseRejectsWrongSignature() throws {
+        let url = URL(string: "http://127.0.0.1:7853/v1/peers")!
+        let body = Data(#"{"origin":"m4"}"#.utf8)
+        let sig = clipfanResponseSignature(requestNonce: "nonce-1", body: body, key: rawKey)
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["X-Clipfan-Response-Sig": sig]
+        ))
+
+        XCTAssertNoThrow(try authenticatedClipfanData(body, response: response, requestNonce: "nonce-1", key: rawKey))
+        XCTAssertThrowsError(try authenticatedClipfanData(body, response: response, requestNonce: "nonce-2", key: rawKey))
+        XCTAssertThrowsError(try authenticatedClipfanData(Data(#"{"origin":"evil"}"#.utf8), response: response, requestNonce: "nonce-1", key: rawKey))
+    }
+
     func testSignatureHeadersIncludeFreshnessFields() {
         let headers = clipfanSignatureHeaders(
             method: "GET",
