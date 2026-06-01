@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.8] - 2026-06-01
+
+### Changed
+
+- App release versions and daemon update versions are now decoupled, so UI-only Mac app updates do not force peer daemon updates.
+
+### Fixed
+
+- The menubar icon now uses template artwork so it remains visible on dark menu bars.
+
 ## [0.3.7] - 2026-06-01
 
 ### Fixed

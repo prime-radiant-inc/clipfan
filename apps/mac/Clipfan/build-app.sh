@@ -36,10 +36,18 @@ if (( ${#missing[@]} )); then
     exit 1
 fi
 
+SPARKLE_FRAMEWORK=".build/$CONFIG/Sparkle.framework"
+if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
+    echo "ERROR: Sparkle.framework not found at $SPARKLE_FRAMEWORK." >&2
+    exit 1
+fi
+
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/dist"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources/dist"
 cp Info.plist "$APP/Contents/Info.plist"
 cp "$BIN" "$APP/Contents/MacOS/Clipfan"
+install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/Clipfan"
+cp -R "$SPARKLE_FRAMEWORK" "$APP/Contents/Frameworks/Sparkle.framework"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 for f in "${REQUIRED[@]}"; do
     cp "$DIST/$f" "$APP/Contents/Resources/dist/$f"

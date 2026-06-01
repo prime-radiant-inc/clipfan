@@ -5,7 +5,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 mkdir -p dist
-version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+version=${CLIPFAN_DAEMON_VERSION:-}
+if [[ -z "$version" ]]; then
+    if [[ ! -f DAEMON_VERSION ]]; then
+        echo "missing DAEMON_VERSION" >&2
+        exit 1
+    fi
+    version=$(<DAEMON_VERSION)
+fi
+version=${version//$'\n'/}
+version=${version//$'\r'/}
 ldflags="-s -w -X github.com/prime-radiant-inc/clipfan/internal/version.Version=$version"
 
 go_payloads=(

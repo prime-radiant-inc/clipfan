@@ -106,7 +106,9 @@ bundled payload, and runs `install.sh --no-tmux` on the peer. This refreshes the
 binary and restarts the launchd/systemd user service without rewriting the
 peer's `~/.config/clipfan/config.json` or touching tmux config. After a Mac app
 update, clipfan probes peers through their signed version endpoint and offers to
-open Fleet settings when a peer is older or lacks the version endpoint.
+open Fleet settings when a peer is older or lacks the version endpoint. App
+UI-only releases do not force peer updates; peers are compared against the
+daemon version stamped from `DAEMON_VERSION`.
 
 You can also install a host by hand: copy this Mac's `shared_key` into the new
 host's `~/.config/clipfan/config.json` and run `./install.sh` there.
@@ -210,7 +212,8 @@ What clipfan protects:
 - **Signed peer version probes.** `/v1/version` is intentionally reachable from
   peers so the Mac app can detect stale remote installs. It still requires a
   valid signed request, returns a signed response, and exposes only the daemon
-  version string.
+  version string. The daemon version is intentionally separate from the Mac app
+  version so UI-only app releases do not mark peers stale.
 - **Local file permissions.** Config, state, history, and image storage are kept
   under the current user's XDG config/state directories. clipfan creates and
   repairs those directories as `0700` and the files as `0600`.

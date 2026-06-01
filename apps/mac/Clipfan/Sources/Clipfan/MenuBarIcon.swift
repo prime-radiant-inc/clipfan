@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct MenuBarCopyAnimationTracker {
@@ -24,44 +25,80 @@ struct MenuBarCopyAnimationTracker {
     }
 }
 
+enum ClipfanMenuBarIconArtwork {
+    private static let iconSize = NSSize(width: 22, height: 18)
+
+    static func stackImage() -> NSImage {
+        makeImage { context in
+            drawCard(context, width: 11, height: 13, cornerRadius: 2.2, opacity: 0.36,
+                     rotation: -12, offsetX: -3.5, offsetY: 1.5)
+            drawCard(context, width: 11, height: 13, cornerRadius: 2.2, opacity: 0.62,
+                     rotation: 0, offsetX: -0.5, offsetY: 0)
+            drawCard(context, width: 11, height: 13, cornerRadius: 2.2, opacity: 1.0,
+                     rotation: 11, offsetX: 3.2, offsetY: -0.3)
+        }
+    }
+
+    static func frontCardImage() -> NSImage {
+        makeImage { context in
+            drawCard(context, width: 11, height: 13, cornerRadius: 2.2, opacity: 1.0,
+                     rotation: 11, offsetX: 3.2, offsetY: -0.3)
+        }
+    }
+
+    private static func makeImage(_ draw: @escaping (CGContext) -> Void) -> NSImage {
+        let image = NSImage(size: iconSize, flipped: false) { _ in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            draw(context)
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }
+
+    private static func drawCard(_ context: CGContext,
+                                 width: CGFloat,
+                                 height: CGFloat,
+                                 cornerRadius: CGFloat,
+                                 opacity: Double,
+                                 rotation: CGFloat,
+                                 offsetX: CGFloat,
+                                 offsetY: CGFloat) {
+        context.saveGState()
+        context.translateBy(x: iconSize.width / 2 + offsetX,
+                            y: iconSize.height / 2 - offsetY)
+        context.rotate(by: rotation * .pi / 180)
+        let rect = CGRect(x: -width / 2, y: -height / 2, width: width, height: height)
+        let path = CGPath(roundedRect: rect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+        context.addPath(path)
+        context.setFillColor(NSColor.black.withAlphaComponent(opacity).cgColor)
+        context.fillPath()
+        context.addPath(path)
+        context.setStrokeColor(NSColor.black.withAlphaComponent(0.88).cgColor)
+        context.setLineWidth(1.1)
+        context.strokePath()
+        context.restoreGState()
+    }
+}
+
 struct ClipfanMenuBarIcon: View {
     let isAnimatingCopy: Bool
 
     var body: some View {
         ZStack {
-            card(width: 11, height: 13, cornerRadius: 2.2, opacity: 0.36)
-                .rotationEffect(.degrees(-12))
-                .offset(x: -3.5, y: 1.5)
-            card(width: 11, height: 13, cornerRadius: 2.2, opacity: 0.62)
-                .rotationEffect(.degrees(0))
-                .offset(x: -0.5, y: 0)
-            card(width: 11, height: 13, cornerRadius: 2.2, opacity: 1.0)
-                .rotationEffect(.degrees(11))
-                .offset(x: 3.2, y: -0.3)
+            Image(nsImage: ClipfanMenuBarIconArtwork.stackImage())
+                .renderingMode(.template)
 
             if isAnimatingCopy {
-                card(width: 11, height: 13, cornerRadius: 2.2, opacity: 1.0)
-                    .rotationEffect(.degrees(11))
-                    .offset(x: 3.2, y: -0.3)
+                Image(nsImage: ClipfanMenuBarIconArtwork.frontCardImage())
+                    .renderingMode(.template)
                     .transition(.asymmetric(
                         insertion: .offset(x: -7, y: -8).combined(with: .opacity),
                         removal: .opacity
                     ))
             }
         }
-        .foregroundStyle(.primary)
         .frame(width: 22, height: 18)
         .accessibilityLabel("Clipfan")
     }
-
-    private func card(width: CGFloat, height: CGFloat, cornerRadius: CGFloat, opacity: Double) -> some View {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(.primary.opacity(opacity))
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(.primary.opacity(0.88), lineWidth: 1.1)
-            }
-            .frame(width: width, height: height)
-    }
 }
-

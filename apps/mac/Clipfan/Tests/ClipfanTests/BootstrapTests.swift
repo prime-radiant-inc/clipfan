@@ -46,6 +46,38 @@ final class BootstrapInstallTests: XCTestCase {
         try Data("new".utf8).write(to: installed)
         XCTAssertTrue(Bootstrap.filesEqual(installed, bundled))
     }
+
+    func testMatchingReportedDaemonVersionIsCurrentEvenWhenBinariesDiffer() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-bootstrap-version-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let installed = try writeVersionScript(dir.appendingPathComponent("installed"),
+                                               version: "v0.3.7",
+                                               marker: "installed")
+        let bundled = try writeVersionScript(dir.appendingPathComponent("bundled"),
+                                             version: "v0.3.7",
+                                             marker: "bundled")
+
+        XCTAssertTrue(Bootstrap.installedBinaryCurrent(installed: installed, bundled: bundled))
+        XCTAssertFalse(Bootstrap.filesEqual(installed, bundled))
+    }
+
+    private func writeVersionScript(_ url: URL, version: String, marker: String) throws -> URL {
+        let script = """
+        #!/usr/bin/env bash
+        if [[ "$1" == "version" ]]; then
+          echo "\(version)"
+        else
+          echo "\(marker)"
+        fi
+        """
+        try script.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                              ofItemAtPath: url.path)
+        return url
+    }
 }
 
 final class LocalNetworkNudgeTests: XCTestCase {

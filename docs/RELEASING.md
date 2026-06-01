@@ -56,6 +56,11 @@ existing key shared with clearance — the matching private key is what goes in
 The tag drives the version (`vX.Y.Z` → `CFBundleShortVersionString X.Y.Z`); the
 build number is the workflow run number.
 
+The daemon version is separate. `dist/build-all.sh` stamps daemon binaries from
+`DAEMON_VERSION`, so UI-only app releases do not force peer daemon updates. Bump
+`DAEMON_VERSION` only when the daemon payload, protocol, installer behavior, or
+peer-compatibility contract changes.
+
 Add a matching `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md` before
 tagging. The release workflow extracts that section, embeds it into the Sparkle
 appcast, and uses it as the GitHub Release notes.
@@ -67,7 +72,8 @@ git push origin v0.3.0
 
 The workflow then:
 1. cross-compiles the daemon and pasteboard helpers (`dist/build-all.sh`,
-   version stamped from the tag) and verifies the full release payload set,
+   daemon version stamped from `DAEMON_VERSION`) and verifies the full release
+   payload set,
 2. builds `Clipfan.app` via xcodegen + xcodebuild,
 3. Developer ID-signs the app, the embedded Sparkle framework, and the bundled
    macOS daemon binaries (hardened runtime),

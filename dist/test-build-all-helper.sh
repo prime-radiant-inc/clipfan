@@ -84,6 +84,7 @@ cat > "$tmp/bin/go" <<'SH'
 #!/usr/bin/env bash
 out=""
 pkg=""
+ldflags=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -o)
@@ -92,6 +93,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     -ldflags)
       shift
+      ldflags="$1"
       ;;
     ./*)
       pkg="$1"
@@ -107,7 +109,7 @@ done
 mkdir -p "$(dirname "$out")"
 printf '#!/bin/sh\n# fake go package=%s target=%s/%s\n' "$pkg" "${GOOS:-}" "${GOARCH:-}" > "$out"
 chmod 0755 "$out"
-printf '%s %s %s\n' "$out" "$pkg" "${GOOS:-}/${GOARCH:-}" >> "$FAKE_GO_LOG"
+printf '%s %s %s %s\n' "$out" "$pkg" "${GOOS:-}/${GOARCH:-}" "$ldflags" >> "$FAKE_GO_LOG"
 SH
 chmod 0755 "$tmp/bin/go"
 
@@ -115,6 +117,13 @@ export FAKE_SWIFTC_LOG="$tmp/swiftc.log"
 export FAKE_SWIFTC_EXPECTED_INPUT="dist/clipfan-pasteboard-helper.swift"
 export FAKE_GO_LOG="$tmp/go.log"
 PATH="$tmp/bin:$PATH" bash "$repo/dist/build-all.sh"
+
+expected_daemon_version=$(<"$repo/DAEMON_VERSION")
+if grep -v -- "-X github.com/prime-radiant-inc/clipfan/internal/version.Version=$expected_daemon_version" "$FAKE_GO_LOG" >/dev/null; then
+  echo "go builds were not stamped with DAEMON_VERSION=$expected_daemon_version" >&2
+  cat "$FAKE_GO_LOG" >&2
+  exit 1
+fi
 
 for f in "${helpers[@]}"; do
   [[ -x "$f" ]] || { echo "missing executable helper: $f" >&2; exit 1; }

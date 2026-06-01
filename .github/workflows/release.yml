@@ -22,7 +22,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # full history so `git describe` stamps the daemon version
+          fetch-depth: 0
 
       - name: Install Tools
         run: brew install xcodegen
@@ -59,7 +59,7 @@ jobs:
           set -euo pipefail
           unset CLIPFAN_BUILD_HELPER_ONLY CLIPFAN_BUILD_GO CLIPFAN_TEST_HELPER_ONLY
           # Cross-compiles the daemon and pasteboard helpers for all arches and
-          # stages dist/ (with the version stamped from git describe). The app
+          # stages dist/ (with the daemon version stamped from DAEMON_VERSION). The app
           # embeds dist/ as Resources/dist.
           bash dist/build-all.sh
 

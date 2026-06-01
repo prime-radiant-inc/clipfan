@@ -2,6 +2,14 @@ import XCTest
 @testable import Clipfan
 
 final class MenuBarCopyAnimationTests: XCTestCase {
+    func testMenuBarArtworkIsTemplateImage() {
+        let image = ClipfanMenuBarIconArtwork.stackImage()
+
+        XCTAssertTrue(image.isTemplate)
+        XCTAssertGreaterThan(image.size.width, 0)
+        XCTAssertGreaterThan(image.size.height, 0)
+    }
+
     func testInitialLoadedHistoryDoesNotAnimate() {
         var tracker = MenuBarCopyAnimationTracker()
 
@@ -33,4 +41,3 @@ final class MenuBarCopyAnimationTests: XCTestCase {
         XCTAssertFalse(tracker.shouldAnimate(latestHistoryID: "loaded-later"))
     }
 }
-

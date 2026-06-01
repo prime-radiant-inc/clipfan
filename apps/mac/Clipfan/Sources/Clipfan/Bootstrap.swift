@@ -80,10 +80,18 @@ enum Bootstrap {
     }
 
     static var installedBinaryCurrent: Bool {
-        guard binaryInstalled else { return false }
-        guard let bundled = bundledDaemonBinary,
+        installedBinaryCurrent(installed: daemonBinary, bundled: bundledDaemonBinary)
+    }
+
+    static func installedBinaryCurrent(installed: URL, bundled: URL?) -> Bool {
+        guard FileManager.default.fileExists(atPath: installed.path) else { return false }
+        guard let bundled,
               FileManager.default.fileExists(atPath: bundled.path) else { return true }
-        return filesEqual(daemonBinary, bundled)
+        if let installedVersion = binaryVersion(installed),
+           let bundledVersion = binaryVersion(bundled) {
+            return installedVersion == bundledVersion
+        }
+        return filesEqual(installed, bundled)
     }
 
     static var installLog: URL {
@@ -105,6 +113,26 @@ enum Bootstrap {
         guard let aData = try? Data(contentsOf: a),
               let bData = try? Data(contentsOf: b) else { return false }
         return aData == bData
+    }
+
+    static func binaryVersion(_ binary: URL) -> String? {
+        let proc = Process()
+        proc.executableURL = binary
+        proc.arguments = ["version"]
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = Pipe()
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            return nil
+        }
+        guard proc.terminationStatus == 0 else { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        let version = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return version.isEmpty ? nil : version
     }
 
     private static var currentGoArch: String {
