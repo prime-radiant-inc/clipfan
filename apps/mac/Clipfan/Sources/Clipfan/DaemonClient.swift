@@ -12,6 +12,7 @@ final class DaemonClient: ObservableObject {
     @Published var peerVersions: [String: PeerVersionStatus] = [:]
     @Published var connected: Bool = false
     @Published var history: [HistoryEntry] = []
+    @Published var historyLoaded: Bool = false
 
     private let base = URL(string: "http://127.0.0.1:7853")!
     private var timer: Timer?
@@ -93,6 +94,7 @@ final class DaemonClient: ObservableObject {
         } catch {
             // leave history unchanged on transient failure
         }
+        historyLoaded = true
     }
 
     func refreshPeerVersions() async {

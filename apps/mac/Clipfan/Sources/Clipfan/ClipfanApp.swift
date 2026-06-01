@@ -21,6 +21,7 @@ struct ClipfanApp: App {
                 .environmentObject(daemon)
         } label: {
             MenuBarLabel()
+                .environmentObject(daemon)
         }
         .menuBarExtraStyle(.window)
 
@@ -37,9 +38,49 @@ struct ClipfanApp: App {
 /// place to capture the scene's `openWindow` action for AppKit call sites.
 private struct MenuBarLabel: View {
     @Environment(\.openWindow) private var openWindow
+    @EnvironmentObject private var daemon: DaemonClient
+    @State private var tracker = MenuBarCopyAnimationTracker()
+    @State private var isAnimatingCopy = false
+    @State private var animationGeneration = 0
+
+    private var latestHistoryID: String? {
+        daemon.history.first?.id
+    }
+
     var body: some View {
-        Image(systemName: "doc.on.clipboard")
+        ClipfanMenuBarIcon(isAnimatingCopy: isAnimatingCopy)
             .task { WindowOpener.shared.openWindow = openWindow }
+            .onAppear {
+                if daemon.historyLoaded {
+                    tracker.seedInitialHistory(latestHistoryID)
+                }
+            }
+            .onChange(of: daemon.historyLoaded) { loaded in
+                guard loaded else { return }
+                tracker.seedInitialHistory(latestHistoryID)
+            }
+            .onChange(of: latestHistoryID) { historyID in
+                guard daemon.historyLoaded,
+                      tracker.shouldAnimate(latestHistoryID: historyID) else { return }
+                triggerCopyAnimation()
+            }
+    }
+
+    private func triggerCopyAnimation() {
+        animationGeneration += 1
+        let generation = animationGeneration
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.72)) {
+            isAnimatingCopy = true
+        }
+        Task {
+            try? await Task.sleep(nanoseconds: 520_000_000)
+            await MainActor.run {
+                guard generation == animationGeneration else { return }
+                withAnimation(.easeOut(duration: 0.12)) {
+                    isAnimatingCopy = false
+                }
+            }
+        }
     }
 }
 

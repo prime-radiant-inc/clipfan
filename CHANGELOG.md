@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.6] - 2026-06-01
+
+### Changed
+
+- The menubar item now uses a monochrome card-stack icon based on the app icon.
+- New clipboard history entries animate an extra card sliding onto the icon stack after initial history load.
+
 ## [0.3.5] - 2026-06-01
 
 ### Fixed
