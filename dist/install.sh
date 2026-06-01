@@ -157,7 +157,8 @@ case "$goos" in
         echo "Writing $unit"
         install -m 0644 "$here/clipfan.service" "$unit"
         systemctl --user daemon-reload
-        systemctl --user enable --now clipfan.service
+        systemctl --user enable clipfan.service
+        systemctl --user restart clipfan.service
         systemctl --user status clipfan.service --no-pager | head -10 || true
         ;;
 esac

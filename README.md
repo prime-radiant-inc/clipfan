@@ -100,6 +100,12 @@ app scp's the right-arch binary and a config carrying this Mac's `shared_key`,
 runs `install.sh` over SSH, and adds the host to your local peer list. Check the
 **tmux copy integration** box for hosts you use inside tmux.
 
+To update an existing peer, open **Settings… → Fleet** and click the update
+button on that peer's row. The app prompts for SSH details, uploads the current
+bundled payload, and runs `install.sh --no-tmux` on the peer. This refreshes the
+binary and restarts the launchd/systemd user service without rewriting the
+peer's `~/.config/clipfan/config.json` or touching tmux config.
+
 You can also install a host by hand: copy this Mac's `shared_key` into the new
 host's `~/.config/clipfan/config.json` and run `./install.sh` there.
 

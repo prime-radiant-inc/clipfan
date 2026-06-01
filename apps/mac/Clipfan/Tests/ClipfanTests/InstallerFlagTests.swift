@@ -34,6 +34,18 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertTrue(command.contains("cd \"$stage\" && bash install.sh --no-tmux"))
     }
 
+    func testRemoteUpdateCommandPreservesConfigAndSkipsTmux() {
+        let command = Installer.remoteUpdateCommand(stage: "/tmp/clipfan-install.ABC123")
+
+        XCTAssertTrue(command.contains("stage='/tmp/clipfan-install.ABC123'"))
+        XCTAssertTrue(command.contains("trap 'rm -rf \"$stage\"' EXIT"))
+        XCTAssertTrue(command.contains("cd \"$stage\" && bash install.sh --no-tmux >&2"))
+        XCTAssertTrue(command.contains("\"$bin\" version"))
+        XCTAssertFalse(command.contains("config.json"))
+        XCTAssertFalse(command.contains("~/.config/clipfan"))
+        XCTAssertFalse(command.contains("--with-tmux"))
+    }
+
     func testValidatedRemoteStagePathAcceptsPrivateMktempOutput() throws {
         let path = try Installer.validatedRemoteStagePath("/tmp/clipfan-install.ABC123\n")
 
@@ -104,6 +116,39 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertEqual(commands[1].1.last, "remote.example:/tmp/clipfan-install.ABC123/")
         XCTAssertEqual(commands[2].0, "/usr/bin/ssh")
         XCTAssertEqual(commands[2].1.last, Installer.remoteCleanupCommand(stage: "/tmp/clipfan-install.ABC123"))
+    }
+
+    func testUploadAndUpdateRemoteStageRunsUpdateCommandAndReturnsVersion() async throws {
+        let stage = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-update-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: stage) }
+
+        var commands: [(String, [String])] = []
+        let version = try await Installer.uploadAndUpdateRemoteStage(
+            target: "remote.example",
+            sshArgs: ["-o", "ConnectTimeout=5"],
+            scpArgs: ["-q"],
+            stage: stage,
+            stagedFiles: ["clipfan-linux-arm64", "install.sh", "clipfan.service"],
+            runCommand: { exe, args in
+                commands.append((exe, args))
+                if exe == "/usr/bin/ssh", args.last == Installer.remoteStageCommand() {
+                    return "/tmp/clipfan-install.ABC123\n"
+                }
+                if exe == "/usr/bin/ssh", args.last == Installer.remoteUpdateCommand(stage: "/tmp/clipfan-install.ABC123") {
+                    return "v0.3.2\n"
+                }
+                return ""
+            }
+        )
+
+        XCTAssertEqual(version, "v0.3.2")
+        XCTAssertEqual(commands.count, 3)
+        XCTAssertEqual(commands[1].0, "/usr/bin/scp")
+        XCTAssertEqual(commands[1].1.last, "remote.example:/tmp/clipfan-install.ABC123/")
+        XCTAssertEqual(commands[2].0, "/usr/bin/ssh")
+        XCTAssertEqual(commands[2].1.last, Installer.remoteUpdateCommand(stage: "/tmp/clipfan-install.ABC123"))
     }
 
     func testLocalConfigURLHonorsXDGConfigHome() {

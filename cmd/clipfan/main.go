@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -12,41 +13,51 @@ import (
 	"github.com/prime-radiant-inc/clipfan/internal/cli"
 	"github.com/prime-radiant-inc/clipfan/internal/config"
 	"github.com/prime-radiant-inc/clipfan/internal/daemon"
+	"github.com/prime-radiant-inc/clipfan/internal/version"
 )
 
-func usage() {
-	fmt.Fprintln(os.Stderr, "usage: clipfan [daemon|copy|paste] [flags]")
-	fmt.Fprintln(os.Stderr, "  (no subcommand) — run the daemon (back-compat)")
-	fmt.Fprintln(os.Stderr, "  daemon          — explicitly run the daemon")
-	fmt.Fprintln(os.Stderr, "  copy [--osc52 /dev/tty] [--image] [--no-daemon] [--no-osc52]")
-	fmt.Fprintln(os.Stderr, "                  — read stdin, push to local daemon and/or emit OSC 52")
-	fmt.Fprintln(os.Stderr, "  paste [--raw]   — write current clipfan state to stdout")
+func usage(w io.Writer) {
+	fmt.Fprintln(w, "usage: clipfan [daemon|copy|paste|version] [flags]")
+	fmt.Fprintln(w, "  (no subcommand) — run the daemon (back-compat)")
+	fmt.Fprintln(w, "  daemon          — explicitly run the daemon")
+	fmt.Fprintln(w, "  copy [--osc52 /dev/tty] [--image] [--no-daemon] [--no-osc52]")
+	fmt.Fprintln(w, "                  — read stdin, push to local daemon and/or emit OSC 52")
+	fmt.Fprintln(w, "  paste [--raw]   — write current clipfan state to stdout")
+	fmt.Fprintln(w, "  version         — print the build version")
 }
 
 func main() {
-	if len(os.Args) >= 2 {
-		switch os.Args[1] {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdout io.Writer, stderr io.Writer) int {
+	if len(args) >= 1 {
+		switch args[0] {
 		case "copy":
-			if err := cli.RunCopy(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "clipfan copy:", err)
-				os.Exit(1)
+			if err := cli.RunCopy(args[1:]); err != nil {
+				fmt.Fprintln(stderr, "clipfan copy:", err)
+				return 1
 			}
-			return
+			return 0
 		case "paste":
-			if err := cli.RunPaste(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "clipfan paste:", err)
-				os.Exit(1)
+			if err := cli.RunPaste(args[1:]); err != nil {
+				fmt.Fprintln(stderr, "clipfan paste:", err)
+				return 1
 			}
-			return
+			return 0
 		case "help", "-h", "--help":
-			usage()
-			return
+			usage(stderr)
+			return 0
+		case "version":
+			fmt.Fprintln(stdout, version.Version)
+			return 0
 		case "daemon":
-			os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+			os.Args = append([]string{os.Args[0]}, args[1:]...)
 			// fall through to daemon mode
 		}
 	}
 	runDaemon()
+	return 0
 }
 
 func runDaemon() {

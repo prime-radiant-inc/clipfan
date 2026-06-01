@@ -67,6 +67,18 @@ actor Installer {
         """
     }
 
+    static func remoteUpdateCommand(stage: String) -> String {
+        let quotedStage = shellSingleQuote(stage)
+        return """
+        set -e
+        stage=\(quotedStage)
+        trap 'rm -rf "$stage"' EXIT
+        cd "$stage" && bash install.sh --no-tmux >&2
+        bin="${DEST:-$HOME/.local/bin}/clipfan"
+        "$bin" version
+        """
+    }
+
     static func remoteCleanupCommand(stage: String) -> String {
         let quotedStage = shellSingleQuote(stage)
         return "stage=\(quotedStage); rm -rf \"$stage\""
@@ -103,45 +115,11 @@ actor Installer {
     static func install(user: String, host: String, port: Int, sshKey: String,
                         withTmux: Bool,
                         onProgress: @MainActor @escaping (InstallProgress) -> Void) async throws {
-        let target = user.isEmpty ? host : "\(user)@\(host)"
-        var sshArgs: [String] = ["-o", "ConnectTimeout=5"]
-        var scpArgs: [String] = ["-q"]
-        if !sshKey.isEmpty {
-            sshArgs += ["-i", sshKey]
-            scpArgs += ["-i", sshKey]
-        }
-        if port != 22 {
-            sshArgs += ["-p", "\(port)"]
-            scpArgs += ["-P", "\(port)"]
-        }
+        let invocation = sshInvocation(user: user, host: host, port: port, sshKey: sshKey)
 
-        await MainActor.run { onProgress(.init(step: "Probe", detail: "running uname on \(target)")) }
-        let probe = try await run("/usr/bin/ssh", sshArgs + [target, "uname -s; uname -m"])
-        let lines = probe.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n")
-        guard lines.count >= 2 else { throw InstallError.unsupportedHost(probe) }
-        let goos: String = {
-            switch String(lines[0]).lowercased() {
-            case "linux": return "linux"
-            case "darwin": return "darwin"
-            default: return ""
-            }
-        }()
-        let goarch: String = {
-            switch String(lines[1]).trimmingCharacters(in: .whitespaces) {
-            case "x86_64", "amd64": return "amd64"
-            case "arm64", "aarch64": return "arm64"
-            default: return ""
-            }
-        }()
-        guard !goos.isEmpty, !goarch.isEmpty else {
-            throw InstallError.unsupportedHost("\(lines[0]) \(lines[1])")
-        }
-
-        let binName = "clipfan-\(goos)-\(goarch)"
-        let binPath = shareDir.appendingPathComponent(binName)
-        guard FileManager.default.fileExists(atPath: binPath.path) else {
-            throw InstallError.missingPayload(binPath.path)
-        }
+        await MainActor.run { onProgress(.init(step: "Probe", detail: "running uname on \(invocation.target)")) }
+        let probe = try await run("/usr/bin/ssh", invocation.sshArgs + [invocation.target, "uname -s; uname -m"])
+        let platform = try remotePlatform(from: probe)
 
         // Resolve our shared key from the local daemon's config.
         await MainActor.run { onProgress(.init(step: "Config", detail: "reading shared key")) }
@@ -163,6 +141,108 @@ actor Installer {
         try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: stage) }
 
+        var stagedFiles = try stageInstallPayload(goos: platform.goos, goarch: platform.goarch, in: stage)
+        try remoteConfigJSON.write(to: stage.appendingPathComponent("config.json"),
+                                   atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                              ofItemAtPath: stage.appendingPathComponent("config.json").path)
+        stagedFiles.append("config.json")
+
+        let fileCount = stagedFiles.count
+        await MainActor.run { onProgress(.init(step: "Upload", detail: "scp \(fileCount) files")) }
+        try await uploadAndInstallRemoteStage(target: invocation.target,
+                                              sshArgs: invocation.sshArgs,
+                                              scpArgs: invocation.scpArgs,
+                                              stage: stage,
+                                              stagedFiles: stagedFiles,
+                                              withTmux: withTmux,
+                                              runCommand: run,
+                                              onInstall: {
+                                                  onProgress(.init(step: "Install",
+                                                                   detail: "running install.sh on \(invocation.target)"))
+                                              })
+
+        // Add this host to our own static_peers, save, kick the daemon.
+        await MainActor.run { onProgress(.init(step: "Local", detail: "adding peer to local config")) }
+        try await addPeerToLocalConfig(host)
+        await MainActor.run { onProgress(.init(step: "Restart", detail: "kickstarting local daemon")) }
+        await DaemonClient.shared.restartDaemon()
+    }
+
+    static func update(user: String, host: String, port: Int, sshKey: String,
+                       onProgress: @MainActor @escaping (InstallProgress) -> Void) async throws -> String {
+        let invocation = sshInvocation(user: user, host: host, port: port, sshKey: sshKey)
+
+        await MainActor.run { onProgress(.init(step: "Probe", detail: "running uname on \(invocation.target)")) }
+        let probe = try await run("/usr/bin/ssh", invocation.sshArgs + [invocation.target, "uname -s; uname -m"])
+        let platform = try remotePlatform(from: probe)
+
+        let stage = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-update-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: stage) }
+
+        let stagedFiles = try stageInstallPayload(goos: platform.goos, goarch: platform.goarch, in: stage)
+        await MainActor.run { onProgress(.init(step: "Upload", detail: "scp \(stagedFiles.count) files")) }
+        let version = try await uploadAndUpdateRemoteStage(target: invocation.target,
+                                                           sshArgs: invocation.sshArgs,
+                                                           scpArgs: invocation.scpArgs,
+                                                           stage: stage,
+                                                           stagedFiles: stagedFiles,
+                                                           runCommand: run,
+                                                           onInstall: {
+                                                               onProgress(.init(step: "Install",
+                                                                                detail: "updating clipfan on \(invocation.target)"))
+                                                           })
+        return version
+    }
+
+    private static func sshInvocation(user: String, host: String, port: Int, sshKey: String)
+        -> (target: String, sshArgs: [String], scpArgs: [String]) {
+        let target = user.isEmpty ? host : "\(user)@\(host)"
+        var sshArgs: [String] = ["-o", "ConnectTimeout=5"]
+        var scpArgs: [String] = ["-q"]
+        if !sshKey.isEmpty {
+            sshArgs += ["-i", sshKey]
+            scpArgs += ["-i", sshKey]
+        }
+        if port != 22 {
+            sshArgs += ["-p", "\(port)"]
+            scpArgs += ["-P", "\(port)"]
+        }
+        return (target, sshArgs, scpArgs)
+    }
+
+    private static func remotePlatform(from probe: String) throws -> (goos: String, goarch: String) {
+        let lines = probe.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n")
+        guard lines.count >= 2 else { throw InstallError.unsupportedHost(probe) }
+        let goos: String = {
+            switch String(lines[0]).lowercased() {
+            case "linux": return "linux"
+            case "darwin": return "darwin"
+            default: return ""
+            }
+        }()
+        let goarch: String = {
+            switch String(lines[1]).trimmingCharacters(in: .whitespaces) {
+            case "x86_64", "amd64": return "amd64"
+            case "arm64", "aarch64": return "arm64"
+            default: return ""
+            }
+        }()
+        guard !goos.isEmpty, !goarch.isEmpty else {
+            throw InstallError.unsupportedHost("\(lines[0]) \(lines[1])")
+        }
+        return (goos, goarch)
+    }
+
+    private static func stageInstallPayload(goos: String, goarch: String, in stage: URL) throws -> [String] {
+        let binName = "clipfan-\(goos)-\(goarch)"
+        let binPath = shareDir.appendingPathComponent(binName)
+        guard FileManager.default.fileExists(atPath: binPath.path) else {
+            throw InstallError.missingPayload(binPath.path)
+        }
+
         var stagedFiles: [String] = []
         try FileManager.default.copyItem(at: binPath, to: stage.appendingPathComponent(binName))
         stagedFiles.append(binName)
@@ -183,38 +263,14 @@ actor Installer {
                 stagedFiles.append(helperName)
             }
         }
-        for ancillary in ["install.sh", "clipfan.service", "com.primeradiant.clipfan.plist"] {
+        for ancillary in ["install.sh", "clipfan.service", "com.primeradiant.clipfan.plist", "tmux.conf.snippet"] {
             let src = shareDir.appendingPathComponent(ancillary)
             if FileManager.default.fileExists(atPath: src.path) {
                 try FileManager.default.copyItem(at: src, to: stage.appendingPathComponent(ancillary))
                 stagedFiles.append(ancillary)
             }
         }
-        try remoteConfigJSON.write(to: stage.appendingPathComponent("config.json"),
-                                   atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                              ofItemAtPath: stage.appendingPathComponent("config.json").path)
-        stagedFiles.append("config.json")
-
-        let fileCount = stagedFiles.count
-        await MainActor.run { onProgress(.init(step: "Upload", detail: "scp \(fileCount) files")) }
-        try await uploadAndInstallRemoteStage(target: target,
-                                              sshArgs: sshArgs,
-                                              scpArgs: scpArgs,
-                                              stage: stage,
-                                              stagedFiles: stagedFiles,
-                                              withTmux: withTmux,
-                                              runCommand: run,
-                                              onInstall: {
-                                                  onProgress(.init(step: "Install",
-                                                                   detail: "running install.sh on \(target)"))
-                                              })
-
-        // Add this host to our own static_peers, save, kick the daemon.
-        await MainActor.run { onProgress(.init(step: "Local", detail: "adding peer to local config")) }
-        try await addPeerToLocalConfig(host)
-        await MainActor.run { onProgress(.init(step: "Restart", detail: "kickstarting local daemon")) }
-        await DaemonClient.shared.restartDaemon()
+        return stagedFiles
     }
 
     static func uploadAndInstallRemoteStage(target: String, sshArgs: [String], scpArgs: [String],
@@ -232,6 +288,32 @@ actor Installer {
             await onInstall()
             let cmd = remoteInstallCommand(stage: remoteStage, withTmux: withTmux)
             _ = try await runCommand("/usr/bin/ssh", sshArgs + [target, cmd])
+        } catch {
+            _ = try? await runCommand("/usr/bin/ssh", sshArgs + [target, remoteCleanupCommand(stage: remoteStage)])
+            throw error
+        }
+    }
+
+    static func uploadAndUpdateRemoteStage(target: String, sshArgs: [String], scpArgs: [String],
+                                           stage: URL, stagedFiles: [String],
+                                           runCommand: CommandRunner,
+                                           onInstall: @MainActor @escaping () -> Void = {}) async throws -> String {
+        let remoteStageOutput = try await runCommand("/usr/bin/ssh", sshArgs + [target, remoteStageCommand()])
+        let remoteStage = try validatedRemoteStagePath(remoteStageOutput)
+        let scpFull: [String] = scpArgs +
+            stagedFiles.map { stage.appendingPathComponent($0).path } +
+            ["\(target):\(remoteStage)/"]
+        do {
+            _ = try await runCommand("/usr/bin/scp", scpFull)
+
+            await onInstall()
+            let cmd = remoteUpdateCommand(stage: remoteStage)
+            let output = try await runCommand("/usr/bin/ssh", sshArgs + [target, cmd])
+            let remoteVersion = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !remoteVersion.isEmpty else {
+                throw InstallError.configIO("remote version check returned empty output")
+            }
+            return remoteVersion
         } catch {
             _ = try? await runCommand("/usr/bin/ssh", sshArgs + [target, remoteCleanupCommand(stage: remoteStage)])
             throw error

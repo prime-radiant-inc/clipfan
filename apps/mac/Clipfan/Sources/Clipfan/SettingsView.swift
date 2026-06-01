@@ -41,6 +41,7 @@ struct SettingsView: View {
 struct FleetTab: View {
     @EnvironmentObject var daemon: DaemonClient
     @State private var showAdd = false
+    @State private var updatePeer: Peer?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -57,11 +58,23 @@ struct FleetTab: View {
                     ForEach(fleetRows(origin: daemon.origin,
                                       connected: daemon.connected,
                                       peers: daemon.peers)) { row in
-                        FleetRow(model: row)
-                            .padding(12)
-                            .background(Color.secondary.opacity(0.06))
-                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.12)))
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                        HStack(spacing: 8) {
+                            FleetRow(model: row)
+                            if let peer = row.peer {
+                                Button {
+                                    updatePeer = peer
+                                } label: {
+                                    Label("Update peer", systemImage: "arrow.triangle.2.circlepath")
+                                        .labelStyle(.iconOnly)
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Update clipfan on \(peer.hostname)")
+                            }
+                        }
+                        .padding(12)
+                        .background(Color.secondary.opacity(0.06))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.12)))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
                     if daemon.peers.isEmpty {
                         Text("No peers yet — add one in Settings")
@@ -81,6 +94,9 @@ struct FleetTab: View {
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .sheet(isPresented: $showAdd) { AddPeerSheet() }
+        .sheet(item: $updatePeer) { peer in
+            UpdatePeerSheet(peer: peer)
+        }
     }
 }
 
