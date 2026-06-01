@@ -30,7 +30,7 @@ struct StatusMenuView: View {
             fleet
         }
         .padding(8)
-        .frame(width: 280)
+        .frame(width: 360)
     }
 
     /// The current global toggle shortcut as a display string, or "" if unset.
@@ -48,7 +48,8 @@ struct StatusMenuView: View {
             .padding(.top, 6).padding(.bottom, 2)
         ForEach(fleetRows(origin: daemon.origin,
                           connected: daemon.connected,
-                          peers: daemon.peers)) { row in
+                          peers: daemon.peers,
+                          peerVersions: daemon.peerVersions)) { row in
             Button {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "settings")
@@ -59,6 +60,7 @@ struct StatusMenuView: View {
                     .padding(.vertical, 4)
             }
             .buttonStyle(MenuRowButtonStyle())
+            .focusable(false)
         }
     }
 
@@ -73,6 +75,7 @@ struct StatusMenuView: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
                 Text(title).font(.system(size: 13))
+                    .lineLimit(1)
                 Spacer()
                 Text(shortcut).font(.system(size: 11)).foregroundStyle(.tertiary)
             }
@@ -81,6 +84,7 @@ struct StatusMenuView: View {
             .padding(.vertical, 5)
         }
         .buttonStyle(MenuRowButtonStyle())
+        .focusable(false)
     }
 }
 

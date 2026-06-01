@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.5] - 2026-06-01
+
+### Fixed
+
+- Peer update failures now leave a visible, selectable log with a Copy Log button.
+- Fleet rows turn green after a peer update only after the signed daemon version probe verifies the peer is running the current version.
+- The menubar fleet list has more room, stable timestamp columns, host-name truncation, and no default focus ring on the first command.
+
 ## [0.3.4] - 2026-06-01
 
 ### Added
@@ -34,4 +42,3 @@
 ### Fixed
 
 - Hardened local endpoint access and remote install staging after the security scan follow-up.
-

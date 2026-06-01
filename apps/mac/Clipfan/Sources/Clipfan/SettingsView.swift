@@ -62,7 +62,8 @@ struct FleetTab: View {
                 VStack(spacing: 10) {
                     ForEach(fleetRows(origin: daemon.origin,
                                       connected: daemon.connected,
-                                      peers: daemon.peers)) { row in
+                                      peers: daemon.peers,
+                                      peerVersions: daemon.peerVersions)) { row in
                         HStack(spacing: 8) {
                             FleetRow(model: row)
                             if let peer = row.peer {

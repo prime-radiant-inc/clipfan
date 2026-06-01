@@ -67,4 +67,31 @@ extension FleetRowTests {
         XCTAssertEqual(rows[1].peer, p)
         XCTAssertFalse(rows[1].isSelf)
     }
+
+    func testCurrentVersionProbeMakesPeerHealthy() {
+        let stalePush = Peer(hostname: "flower-garden", port: 7853,
+                             last_push_ts: Date(), last_push_ok: false,
+                             last_push_err: "service restarted",
+                             last_recv_ts: Date.distantPast)
+
+        let rows = fleetRows(origin: "me",
+                             connected: true,
+                             peers: [stalePush],
+                             peerVersions: ["flower-garden": .current("v0.3.5")])
+
+        XCTAssertEqual(rows[1].health, .healthy)
+        XCTAssertEqual(rows[1].subtitle, "port 7853 · current")
+    }
+
+    func testVersionNeedingUpdateMakesPeerAttention() {
+        let pushedOK = peer("old-box")
+
+        let rows = fleetRows(origin: "me",
+                             connected: true,
+                             peers: [pushedOK],
+                             peerVersions: ["old-box": .needsUpdate("v0.3.4")])
+
+        XCTAssertEqual(rows[1].health, .attention)
+        XCTAssertEqual(rows[1].subtitle, "port 7853 · update available")
+    }
 }

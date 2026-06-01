@@ -23,6 +23,33 @@ struct InstallProgress {
     var detail: String
 }
 
+struct InstallCommandFailure: LocalizedError {
+    let executable: String
+    let arguments: [String]
+    let exitStatus: Int32
+    let stdout: String
+    let stderr: String
+
+    var commandLine: String {
+        ([executable] + arguments).joined(separator: " ")
+    }
+
+    var errorDescription: String? {
+        "\(commandLine) failed with exit \(exitStatus)"
+    }
+
+    var logText: String {
+        var parts = ["\(commandLine) failed with exit \(exitStatus)"]
+        if !stdout.isEmpty {
+            parts.append("stdout:\n\(stdout)")
+        }
+        if !stderr.isEmpty {
+            parts.append("stderr:\n\(stderr)")
+        }
+        return parts.joined(separator: "\n\n")
+    }
+}
+
 /// Drives the same scp + install.sh playbook used by `cc-clip`-style remote
 /// installs. Source binaries are read out of $HOME/.local/share/clipfan
 /// (staged by `dist/install.sh` on the host running the menubar app).
@@ -356,8 +383,11 @@ actor Installer {
         let stdout = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let stderr = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         if proc.terminationStatus != 0 {
-            throw NSError(domain: "subprocess", code: Int(proc.terminationStatus),
-                          userInfo: [NSLocalizedDescriptionKey: "\(exe) \(args.joined(separator: " ")) failed: \(stderr.isEmpty ? stdout : stderr)"])
+            throw InstallCommandFailure(executable: exe,
+                                        arguments: args,
+                                        exitStatus: proc.terminationStatus,
+                                        stdout: stdout,
+                                        stderr: stderr)
         }
         return stdout
     }

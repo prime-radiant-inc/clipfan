@@ -16,10 +16,31 @@ enum FleetHealth {
 
 /// Map a peer's push state to FleetHealth, mirroring Peer.healthColor exactly
 /// (avoids fragile SwiftUI Color equality checks).
-private func health(for p: Peer) -> FleetHealth {
+private func health(for p: Peer, versionStatus: PeerVersionStatus?) -> FleetHealth {
+    switch versionStatus {
+    case .current:
+        return .healthy
+    case .needsUpdate, .unknown:
+        return .attention
+    case nil:
+        break
+    }
     if p.last_push_ok { return .healthy }
     if let ts = p.last_push_ts, ts > Date.distantPast { return .attention }
     return .down
+}
+
+private func subtitle(for p: Peer, versionStatus: PeerVersionStatus?) -> String {
+    switch versionStatus {
+    case .current:
+        return "port \(p.port) · current"
+    case .needsUpdate:
+        return "port \(p.port) · update available"
+    case .unknown:
+        return "port \(p.port) · update recommended"
+    case nil:
+        return p.last_push_ok ? "port \(p.port) · synced" : "port \(p.port)"
+    }
 }
 
 /// One row in the unified fleet list — either the local host (isSelf) or a peer.
@@ -36,7 +57,10 @@ struct FleetRowModel: Identifiable {
 
 /// Build the ordered fleet rows: the local host first, then peers in order.
 /// The self row carries no sync times (the local host never pushes to itself).
-func fleetRows(origin: String, connected: Bool, peers: [Peer]) -> [FleetRowModel] {
+func fleetRows(origin: String,
+               connected: Bool,
+               peers: [Peer],
+               peerVersions: [String: PeerVersionStatus] = [:]) -> [FleetRowModel] {
     let selfRow = FleetRowModel(
         id: origin,
         name: origin,
@@ -48,11 +72,12 @@ func fleetRows(origin: String, connected: Bool, peers: [Peer]) -> [FleetRowModel
         peer: nil
     )
     let peerRows = peers.map { p in
-        FleetRowModel(
+        let versionStatus = peerVersions[p.hostname]
+        return FleetRowModel(
             id: p.hostname,
             name: p.hostname,
-            subtitle: p.last_push_ok ? "port \(p.port) · synced" : "port \(p.port)",
-            health: health(for: p),
+            subtitle: subtitle(for: p, versionStatus: versionStatus),
+            health: health(for: p, versionStatus: versionStatus),
             isSelf: false,
             pushTS: p.last_push_ts,
             recvTS: p.last_recv_ts,
@@ -81,6 +106,8 @@ struct FleetRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(model.name).font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                     if model.isSelf {
                         Text("you")
                             .font(.system(size: 9.5))
@@ -91,11 +118,18 @@ struct FleetRow: View {
                     }
                 }
                 Text(model.subtitle).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 0)
             if let push = model.pushTS, let recv = model.recvTS {
-                Text("↑ \(peerTimeAgo(push))   ↓ \(peerTimeAgo(recv))")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("↑ \(peerTimeAgo(push))")
+                    Text("↓ \(peerTimeAgo(recv))")
+                }
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: true, vertical: false)
             }
         }
     }

@@ -130,6 +130,41 @@ final class DaemonClient: ObservableObject {
         peerVersions = statuses
     }
 
+    func refreshPeerVersion(hostname: String,
+                            attempts: Int = 1,
+                            delayNanoseconds: UInt64 = 0) async -> PeerVersionStatus? {
+        guard let key = loadSharedKey(),
+              let localVersion = version,
+              let peer = peers.first(where: { $0.hostname == hostname }) else { return nil }
+
+        let totalAttempts = max(1, attempts)
+        for attempt in 0..<totalAttempts {
+            do {
+                let remoteVersion = try await PeerVersionProbe.fetch(host: peer.hostname,
+                                                                     port: peer.port,
+                                                                     key: key)
+                let status = PeerUpdateAdvisor.status(remoteVersion: remoteVersion,
+                                                      localVersion: localVersion)
+                peerVersions[peer.hostname] = status
+                return status
+            } catch {
+                if attempt + 1 < totalAttempts {
+                    if delayNanoseconds > 0 {
+                        try? await Task.sleep(nanoseconds: delayNanoseconds)
+                    }
+                    continue
+                }
+                if let status = PeerUpdateAdvisor.status(forProbeError: error) {
+                    peerVersions[peer.hostname] = status
+                    return status
+                }
+            }
+        }
+
+        peerVersions.removeValue(forKey: peer.hostname)
+        return nil
+    }
+
     func restore(_ id: String) async {
         await signedRequest(method: "POST", path: "/v1/restore", body: ["id": id])
         await refreshHistory()
