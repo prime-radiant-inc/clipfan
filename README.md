@@ -174,17 +174,87 @@ are listed in `static_peers`. Empty `static_peers` with Tailscale discovery
 returns only the local host and does no non-self fanout.
 `max_history` caps the clipboard history (default 200).
 
-Security notes:
+## Security model
 
-- Peer clipboard payload bytes are encrypted with a key derived from
-  `shared_key` before they are sent over HTTP.
-- Request signatures bind the method, request URI, timestamp, nonce, and body.
-  Mixed-version fleets fail closed; upgrade all peers together.
-- Peer clip envelopes include the intended recipient in the signed body, so a
-  captured clip push for one peer is rejected if replayed to another peer.
-- Local history, config, and peers endpoints are signed and loopback-only.
-- Concealed or transient pasteboard items are not synced.
-- Config, state, history, and image storage are private to the current user.
+clipfan is designed for a fleet of hosts you already trust with one shared
+clipboard. The `shared_key` is the fleet credential: any host that has it can
+send clipboard updates and participate as a trusted peer, and any local process
+that has it can use the signed local API. Do not copy it to a host you would
+not trust with your clipboard.
+
+What clipfan protects:
+
+- **Clipboard payload confidentiality on the wire.** Peer clipboard bytes are
+  encrypted with AES-GCM using a key derived from `shared_key` before they are
+  sent over HTTP.
+- **Request integrity and replay resistance.** Signed requests bind the method,
+  request URI, timestamp, nonce, and body. Stale timestamps and repeated request
+  nonces are rejected. Mixed-version fleets fail closed; upgrade all peers
+  together.
+- **Recipient binding.** Peer clip envelopes include the intended recipient in
+  the signed body, so a captured clip push for one peer is rejected if replayed
+  to another peer.
+- **Local control endpoints.** History, config, restore, and peer-status
+  endpoints require a valid signature and are loopback-only. The unauthenticated
+  health endpoint returns only `ok`.
+- **Local file permissions.** Config, state, history, and image storage are kept
+  under the current user's XDG config/state directories. clipfan creates and
+  repairs those directories as `0700` and the files as `0600`.
+- **User service scope.** The Linux service is a `systemd --user` unit and the
+  macOS service is a LaunchAgent. The daemon is not intended to run as root.
+- **Concealed pasteboard items.** Password-manager-style concealed or transient
+  pasteboard items are not synced or recorded.
+
+What clipfan does **not** protect against:
+
+- **A compromised trusted peer.** A host with the `shared_key` is inside the
+  trust boundary. It can send clipboard contents and disrupt sync. HMAC and
+  encryption protect against outsiders; they do not make an untrusted key holder
+  safe.
+- **The same Unix user on the same host.** A process running as the same user can
+  read the config, state, history, image files, and process environment. clipfan
+  does not try to sandbox the user's own processes from each other.
+- **Root or physical access.** A root user, device owner, or someone with
+  physical access to an unlocked desktop can read or change clipboard state.
+- **Internet exposure.** The daemon listens on `:7853` by default because peer
+  sync needs a network-reachable listener. Do not expose that port to the public
+  internet. Use a trusted LAN, a tailnet, firewall rules, or explicit static
+  peers.
+- **Traffic metadata.** Payload bytes are encrypted, but HTTP metadata such as
+  hostnames, peer addresses, timing, and message sizes can still be visible to
+  the network path unless you run over an encrypted underlay such as Tailscale.
+
+Multi-user Linux notes:
+
+- Other Unix users should not be able to read clipfan config, history, state, or
+  image files when the XDG directories are owned by the clipfan user and the
+  permissions above are intact. If a backup job, shared home directory, unusual
+  ACL, or admin policy makes those files readable to other users, that is outside
+  clipfan's guarantees.
+- Other Unix users may be able to connect to the TCP listener, but they still
+  need `shared_key` to read or change clipboard state. Without the key, the only
+  intended unauthenticated endpoint is `/v1/health`.
+- tmux integration assumes the standard tmux socket directory is owned by the
+  clipfan user and not writable by other users (normally `/tmp/tmux-$UID` mode
+  `0700`). clipfan currently discovers sockets by location and socket type; it
+  does not independently verify socket owner and directory permissions before
+  calling `tmux -S <socket> load-buffer -`. On shared Linux hosts, keep
+  `TMUX_TMPDIR` trusted, verify `/tmp/tmux-$UID` ownership/mode, or install with
+  `--no-tmux` until owner/mode checks are added.
+
+Known hardening work:
+
+- Pin release-time tooling that runs with signing secrets. The app dependency
+  lockfile does not automatically pin separate tools cloned by CI.
+- Authenticate the local daemon identity before GUI clients send sensitive
+  signed local requests. A signature proves the client knows `shared_key`; it
+  does not by itself prove the process listening on `127.0.0.1:7853` is the real
+  daemon.
+- Treat peer-controlled envelope timestamps as untrusted input. A signed peer is
+  trusted to send clips, but it should not be able to poison local ordering state
+  with an arbitrary future timestamp.
+- Add tmux socket owner and permission checks before writing clipboard contents
+  into discovered sockets.
 
 ## Menubar app (macOS)
 
