@@ -51,6 +51,7 @@ type Server struct {
 	pinFn     PinFunc
 	deleteFn  DeleteHistoryFunc
 	configFn  func(maxHistory int) error
+	safeMode  bool
 	nonces    *nonceCache
 	now       func() time.Time
 	recipient string
@@ -91,9 +92,15 @@ func (s *Server) SetConfigFunc(fn func(maxHistory int) error) { s.configFn = fn 
 // SetVersionFunc wires the signed network version endpoint. Called by the daemon.
 func (s *Server) SetVersionFunc(fn VersionFunc) { s.versionFn = fn }
 
+func (s *Server) SetSafeMode(enabled bool) { s.safeMode = enabled }
+
 // Handler builds the HTTP routes. Exposed so it can be exercised in tests.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	if s.safeMode {
+		mux.HandleFunc("/", s.safeModeRoute)
+		return mux
+	}
 	mux.HandleFunc("POST /v1/clip", s.postClip)
 	mux.HandleFunc("GET /v1/peers", s.getPeers)
 	mux.HandleFunc("GET /v1/version", s.getVersion)
@@ -107,6 +114,48 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/history/pin", s.postPin)
 	mux.HandleFunc("POST /v1/config", s.postConfig)
 	return mux
+}
+
+func (s *Server) safeModeRoute(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/health":
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/version":
+		s.getSafeModeVersion(w, r)
+	case r.Method == http.MethodGet && (r.URL.Path == "/v1/status" || r.URL.Path == "/v1/peers" || r.URL.Path == "/v1/ssh/logs"):
+		s.safeModeSignedUnavailable(w, r, "safe_mode_status_unavailable_before_schema")
+	case (r.Method == http.MethodGet || r.Method == http.MethodPatch) && r.URL.Path == "/v1/config/listener":
+		s.safeModeSignedUnavailable(w, r, "listener_repair_unavailable")
+	default:
+		writeSafeModeError(w, http.StatusConflict, "public_listen_requires_confirmation")
+	}
+}
+
+func (s *Server) getSafeModeVersion(w http.ResponseWriter, r *http.Request) {
+	signed := s.readSignedLocal(w, r)
+	if signed == nil {
+		return
+	}
+	if s.versionFn == nil {
+		s.writeSignedError(w, signed, http.StatusServiceUnavailable, "safe_mode_status_unavailable_before_schema")
+		return
+	}
+	s.writeSignedJSON(w, signed, s.versionFn())
+}
+
+func (s *Server) safeModeSignedUnavailable(w http.ResponseWriter, r *http.Request, code string) {
+	signed := s.readSignedLocal(w, r)
+	if signed == nil {
+		return
+	}
+	s.writeSignedError(w, signed, http.StatusServiceUnavailable, code)
+}
+
+func writeSafeModeError(w http.ResponseWriter, status int, code string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(`{"type":"error","code":"` + code + `"}` + "\n"))
 }
 
 func (s *Server) Serve(ctx context.Context) error {
@@ -313,6 +362,16 @@ func (s *Server) writeSignedBody(w http.ResponseWriter, signed *signedPayload, s
 	if len(body) > 0 {
 		_, _ = w.Write(body)
 	}
+}
+
+func (s *Server) writeSignedError(w http.ResponseWriter, signed *signedPayload, status int, code string) {
+	w.Header().Set("Content-Type", "application/json")
+	body, err := json.Marshal(map[string]string{"type": "error", "code": code})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.writeSignedBody(w, signed, status, append(body, '\n'))
 }
 
 func (s *Server) readSignedLocal(w http.ResponseWriter, r *http.Request) *signedPayload {
