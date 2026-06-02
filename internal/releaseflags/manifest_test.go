@@ -119,6 +119,26 @@ func TestReadRuntimeGatesRejectsDuplicateKeys(t *testing.T) {
 	assertErrorContains(t, err, "duplicate_gate")
 }
 
+func TestReadTransportGatesRejectsMalformedJSON(t *testing.T) {
+	_, err := ReadTransportGates(strings.NewReader(`{
+		"PeerHTTPRuntimeDisabled": false,
+		"ConfigV2WriteEnabled": false,
+		"RemoteSecretWriteReleaseEnabled": false,
+		"ssh_public_add_peer_success_enabled": false,
+	`))
+	assertErrorContains(t, err, "malformed_manifest")
+}
+
+func TestReadRuntimeGatesRejectsTrailingData(t *testing.T) {
+	_, err := ReadRuntimeGates(strings.NewReader(`{
+		"ssh_receive_primitive_enabled": false,
+		"ssh_sync_stream_enabled": false,
+		"ssh_persistent_current_enabled": false,
+		"ssh_sync_key_rotation_enabled": false
+	} false`))
+	assertErrorContains(t, err, "malformed_manifest")
+}
+
 func TestValidateGateBundleAcceptsAllFalseBundle(t *testing.T) {
 	if err := ValidateGateBundle(TransportGates{}, RuntimeGates{}); err != nil {
 		t.Fatal(err)
