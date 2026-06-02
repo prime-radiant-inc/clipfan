@@ -20,6 +20,7 @@ var (
 	ErrConfigV2WritesDisabled = errors.New("config_v2_writes_disabled")
 	ErrConfigRevisionConflict = errors.New("config_revision_conflict")
 	ErrConfigFileUnsafe       = errors.New("config_file_unsafe")
+	ErrConfigLockHeld         = errors.New("config_lock_held")
 )
 
 type RevisionState string
@@ -168,6 +169,10 @@ func updateConfigV2ScopedRawWithGate(path string, gateEnabled bool, expected Rev
 }
 
 func updateConfigV2ScopedRawWithBackup(path string, gateEnabled bool, expected RevisionExpectation, backupPath string, mutate func(*Config, map[string]json.RawMessage) error) error {
+	return updateConfigV2ScopedRawWithBackupAndLock(path, gateEnabled, expected, backupPath, withConfigFileLock, mutate)
+}
+
+func updateConfigV2ScopedRawWithBackupAndLock(path string, gateEnabled bool, expected RevisionExpectation, backupPath string, lock func(string, func() error) error, mutate func(*Config, map[string]json.RawMessage) error) error {
 	if !gateEnabled {
 		return ErrConfigV2WritesDisabled
 	}
@@ -175,7 +180,10 @@ func updateConfigV2ScopedRawWithBackup(path string, gateEnabled bool, expected R
 		return fmt.Errorf("missing scoped config mutation")
 	}
 
-	return withConfigFileLock(path, func() error {
+	if lock == nil {
+		lock = withConfigFileLock
+	}
+	return lock(path, func() error {
 		data, err := readConfigFileSafe(path)
 		if err != nil {
 			return err
@@ -251,6 +259,14 @@ func writeConfigV2Backup(path string, data []byte, mode os.FileMode) error {
 }
 
 func withConfigFileLock(path string, fn func() error) error {
+	return withConfigFileLockMode(path, false, fn)
+}
+
+func tryConfigFileLock(path string, fn func() error) error {
+	return withConfigFileLockMode(path, true, fn)
+}
+
+func withConfigFileLockMode(path string, nonBlocking bool, fn func() error) error {
 	dir := filepath.Dir(path)
 	if err := ensureConfigDir(dir); err != nil {
 		return err
@@ -278,7 +294,14 @@ func withConfigFileLock(path string, fn func() error) error {
 	if err := lockFile.Chmod(0o600); err != nil {
 		return err
 	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+	lockOp := syscall.LOCK_EX
+	if nonBlocking {
+		lockOp |= syscall.LOCK_NB
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), lockOp); err != nil {
+		if nonBlocking && (errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)) {
+			return fmt.Errorf("%w: %s", ErrConfigLockHeld, lockPath)
+		}
 		return err
 	}
 	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)

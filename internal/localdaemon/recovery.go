@@ -5,15 +5,18 @@ import "github.com/prime-radiant-inc/clipfan/internal/config"
 type RepairPath string
 
 const (
-	RepairPathSignedListener  RepairPath = "signed_listener_repair"
-	RepairPathOfflineListener RepairPath = "offline_listener_repair"
+	RepairPathSignedListener           RepairPath = "signed_listener_repair"
+	RepairPathOfflineListener          RepairPath = "offline_listener_repair"
+	RepairPathConfirmedLocalFleetReset RepairPath = "confirmed_local_fleet_reset"
 )
 
 type RecoveryOptions struct {
 	ClientSupportsHKDF             bool
 	ValidSharedKey                 bool
+	UnsafeListener                 bool
 	SignedListenerRepairAvailable  bool
 	OfflineListenerRepairAvailable bool
+	LocalFleetResetAvailable       bool
 }
 
 type RecoveryPlan struct {
@@ -38,8 +41,11 @@ func PlanRecovery(cfg *config.Config, opts RecoveryOptions) RecoveryPlan {
 	if opts.ValidSharedKey && opts.SignedListenerRepairAvailable {
 		plan.RepairPaths = append(plan.RepairPaths, RepairPathSignedListener)
 	}
-	if len(plan.RepairPaths) == 0 && opts.OfflineListenerRepairAvailable {
+	if len(plan.RepairPaths) == 0 && opts.UnsafeListener && opts.OfflineListenerRepairAvailable {
 		plan.RepairPaths = append(plan.RepairPaths, RepairPathOfflineListener)
+	}
+	if len(plan.RepairPaths) == 0 && !opts.ValidSharedKey && !opts.UnsafeListener && opts.LocalFleetResetAvailable {
+		plan.RepairPaths = append(plan.RepairPaths, RepairPathConfirmedLocalFleetReset)
 	}
 
 	plan.Recoverable = len(plan.RepairPaths) > 0

@@ -24,6 +24,7 @@ func TestPlanRecoveryConfigV2OldClientOfflineRepairIsNotTrap(t *testing.T) {
 	plan := PlanRecovery(versionedConfig(2), RecoveryOptions{
 		ClientSupportsHKDF:             false,
 		ValidSharedKey:                 false,
+		UnsafeListener:                 true,
 		OfflineListenerRepairAvailable: true,
 	})
 
@@ -38,6 +39,7 @@ func TestPlanRecoveryConfigV2OldClientFallsBackToOfflineWhenSignedRepairUnavaila
 	plan := PlanRecovery(versionedConfig(2), RecoveryOptions{
 		ClientSupportsHKDF:             false,
 		ValidSharedKey:                 true,
+		UnsafeListener:                 true,
 		OfflineListenerRepairAvailable: true,
 	})
 
@@ -46,6 +48,33 @@ func TestPlanRecoveryConfigV2OldClientFallsBackToOfflineWhenSignedRepairUnavaila
 		t.Fatalf("offline fallback plan recoverable=%v blocked=%v", plan.Recoverable, plan.Blocked)
 	}
 	assertRepairPaths(t, plan, []RepairPath{RepairPathOfflineListener})
+}
+
+func TestPlanRecoveryConfigV2InvalidSharedKeySafeListenerUsesConfirmedFleetReset(t *testing.T) {
+	plan := PlanRecovery(versionedConfig(2), RecoveryOptions{
+		ClientSupportsHKDF:       false,
+		ValidSharedKey:           false,
+		LocalFleetResetAvailable: true,
+	})
+
+	assertOldClientBlockedFromRawWrites(t, plan)
+	if !plan.Recoverable || plan.Blocked {
+		t.Fatalf("fleet reset plan recoverable=%v blocked=%v", plan.Recoverable, plan.Blocked)
+	}
+	assertRepairPaths(t, plan, []RepairPath{RepairPathConfirmedLocalFleetReset})
+}
+
+func TestPlanRecoveryPublicProfileBlocksFleetResetBeforeConfigV2Writes(t *testing.T) {
+	plan := PlanRecovery(versionedConfig(2), RecoveryOptions{
+		ClientSupportsHKDF: false,
+		ValidSharedKey:     false,
+	})
+
+	assertOldClientBlockedFromRawWrites(t, plan)
+	if plan.Recoverable || !plan.Blocked {
+		t.Fatalf("public false-gate plan recoverable=%v blocked=%v", plan.Recoverable, plan.Blocked)
+	}
+	assertRepairPaths(t, plan, nil)
 }
 
 func TestPlanRecoveryConfigV2OldClientWithoutRepairPathIsBlockedNotRaw(t *testing.T) {

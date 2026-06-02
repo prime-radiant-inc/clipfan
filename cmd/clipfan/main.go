@@ -27,6 +27,8 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "                  — read stdin, push to local daemon and/or emit OSC 52")
 	fmt.Fprintln(w, "  paste [--raw]   — write current clipfan state to stdout")
 	fmt.Fprintln(w, "  storage-preflight — check local runtime storage and print offline repair guidance")
+	fmt.Fprintln(w, "  local-fleet-reset --confirm \"RESET LOCAL CLIPFAN FLEET\"")
+	fmt.Fprintln(w, "                  — destructively reset local fleet credentials when recovery requires it")
 	fmt.Fprintln(w, "  version         — print the build version")
 }
 
@@ -52,6 +54,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		case "storage-preflight":
 			if err := cli.RunStoragePreflight(args[1:], stdout, stderr); err != nil {
 				fmt.Fprintln(stderr, "clipfan storage-preflight:", err)
+				return 1
+			}
+			return 0
+		case "local-fleet-reset":
+			if err := cli.RunLocalFleetReset(args[1:], stdout, stderr); err != nil {
+				fmt.Fprintln(stderr, "clipfan local-fleet-reset:", err)
 				return 1
 			}
 			return 0
