@@ -110,7 +110,17 @@ func (c Checker) checkRoot(root Root) (Result, error) {
 		return result, ErrStorageCheckInconclusive
 	}
 
-	if isCloudSyncPath(normalized, c.homeDir()) {
+	effectivePath := normalized
+	if resolved, err := filepath.EvalSymlinks(normalized); err == nil {
+		effectivePath = normalizePath(resolved)
+		result.NormalizedPath = effectivePath
+	} else if !errors.Is(err, os.ErrNotExist) {
+		result.Reason = "symlink_resolution_failed"
+		return result, ErrStorageCheckInconclusive
+	}
+
+	home := c.homeDir()
+	if isCloudSyncPathForHome(normalized, home) || isCloudSyncPathForHome(effectivePath, home) {
 		result.Code = CodeUnsupportedRuntimeStorage
 		result.StorageClass = ClassCloudSync
 		result.Reason = "cloud_sync_root"
@@ -121,7 +131,7 @@ func (c Checker) checkRoot(root Root) (Result, error) {
 	if probe == nil {
 		probe = DefaultProbe
 	}
-	fact, err := probe(normalized)
+	fact, err := probe(effectivePath)
 	if err != nil {
 		result.Reason = "probe_failed"
 		return result, ErrStorageCheckInconclusive
@@ -145,7 +155,7 @@ func (c Checker) checkRoot(root Root) (Result, error) {
 	if smoke == nil {
 		smoke = LocalSmokeCheck
 	}
-	if err := smoke(normalized); err != nil {
+	if err := smoke(effectivePath); err != nil {
 		result.Code = CodeStorageCheckInconclusive
 		result.StorageClass = ClassInconclusive
 		result.Reason = "local_smoke_failed"
@@ -242,6 +252,16 @@ func isCloudSyncPath(path string, home string) bool {
 		return true
 	}
 	return cloudName(parts[0])
+}
+
+func isCloudSyncPathForHome(path string, home string) bool {
+	if isCloudSyncPath(path, home) {
+		return true
+	}
+	if resolvedHome, err := filepath.EvalSymlinks(home); err == nil {
+		return isCloudSyncPath(path, resolvedHome)
+	}
+	return false
 }
 
 func cloudName(name string) bool {

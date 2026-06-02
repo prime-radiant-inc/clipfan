@@ -103,6 +103,43 @@ func TestClassifyCloudSyncRootsUnsupported(t *testing.T) {
 	}
 }
 
+func TestCloudSyncDetectionResolvesIntermediateSymlinks(t *testing.T) {
+	home := t.TempDir()
+	dropbox := filepath.Join(home, "Dropbox")
+	target := filepath.Join(dropbox, "clipfan")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runtimeLink := filepath.Join(home, "runtime")
+	if err := os.Symlink(dropbox, runtimeLink); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(runtimeLink, "clipfan")
+
+	checker := Checker{
+		HomeDir: home,
+		Probe:   fakeProbe(Fact{FilesystemType: "apfs", Local: boolPtr(true), MountPoint: home}),
+		Smoke: func(string) error {
+			t.Fatal("smoke check should not run for cloud storage reached through symlink")
+			return nil
+		},
+	}
+	results, err := checker.CheckRoots([]Root{{Role: RootState, Path: root}})
+	if err == nil || !errors.Is(err, ErrUnsupportedRuntimeStorage) {
+		t.Fatalf("CheckRoots error = %v, want ErrUnsupportedRuntimeStorage", err)
+	}
+	if results[0].StorageClass != ClassCloudSync {
+		t.Fatalf("StorageClass = %q, want %q", results[0].StorageClass, ClassCloudSync)
+	}
+	resolvedTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].NormalizedPath != resolvedTarget {
+		t.Fatalf("NormalizedPath = %q, want resolved %q", results[0].NormalizedPath, resolvedTarget)
+	}
+}
+
 func TestUnsupportedStorageHasNoUserOverride(t *testing.T) {
 	t.Setenv("CLIPFAN_ALLOW_UNSUPPORTED_RUNTIME_STORAGE", "1")
 	t.Setenv("CLIPFAN_STORAGE_LOCAL_OVERRIDE", "1")
@@ -158,8 +195,12 @@ func TestLocalClassifiedRootRequiresSmokeCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if smoked != root {
-		t.Fatalf("smoked = %q, want %q", smoked, root)
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if smoked != resolvedRoot {
+		t.Fatalf("smoked = %q, want %q", smoked, resolvedRoot)
 	}
 	if results[0].Code != CodeOK || results[0].StorageClass != ClassLocal {
 		t.Fatalf("result = %#v, want local ok", results[0])
@@ -219,7 +260,15 @@ func TestCheckRuntimeRootsCoversConfigAndStateOnly(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("len(results) = %d, want 2", len(results))
 	}
-	if !calls[configRoot] || !calls[stateRoot] {
+	resolvedConfigRoot, err := filepath.EvalSymlinks(configRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedStateRoot, err := filepath.EvalSymlinks(stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !calls[resolvedConfigRoot] || !calls[resolvedStateRoot] {
 		t.Fatalf("smoke calls = %#v, want config and state roots only", calls)
 	}
 }
