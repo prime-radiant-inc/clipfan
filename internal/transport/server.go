@@ -75,6 +75,7 @@ type Server struct {
 	configFn              func(maxHistory int) error
 	listenerRepairReadFn  ListenerRepairReadFunc
 	listenerRepairPatchFn ListenerRepairPatchFunc
+	localRequiredAuthVer  string
 	safeMode              bool
 	safeInfo              SafeModeInfo
 	nonces                *nonceCache
@@ -133,6 +134,10 @@ func (s *Server) SetVersionFunc(fn VersionFunc) { s.versionFn = fn }
 func (s *Server) SetListenerRepair(readFn ListenerRepairReadFunc, patchFn ListenerRepairPatchFunc) {
 	s.listenerRepairReadFn = readFn
 	s.listenerRepairPatchFn = patchFn
+}
+
+func (s *Server) SetRequiredLocalAuthVersion(authVersion string) {
+	s.localRequiredAuthVer = authVersion
 }
 
 func (s *Server) SetSafeMode(enabled bool) { s.safeMode = enabled }
@@ -649,7 +654,7 @@ func (s *Server) writeSignedError(w http.ResponseWriter, signed *signedPayload, 
 }
 
 func (s *Server) readSignedLocal(w http.ResponseWriter, r *http.Request) *signedPayload {
-	return s.readSignedLocalWithRequiredAuthVersion(w, r, "")
+	return s.readSignedLocalWithRequiredAuthVersion(w, r, s.localRequiredAuthVer)
 }
 
 func (s *Server) readSignedLocalRequiredAuthVersion(w http.ResponseWriter, r *http.Request, requiredAuthVersion string) *signedPayload {
@@ -710,7 +715,14 @@ func (s *Server) readSignedWithRequiredAuthVersion(w http.ResponseWriter, r *htt
 		verifyErr = s.auth.VerifyRequestRequiredAuthVersion(r.Method, r.URL.RequestURI(), ts, nonce, body, sig, authVersion, requiredAuthVersion)
 	}
 	if verifyErr != nil {
-		http.Error(w, "bad signature", http.StatusUnauthorized)
+		switch {
+		case errors.Is(verifyErr, ErrAuthVersionMismatch):
+			http.Error(w, ErrAuthVersionMismatch.Error(), http.StatusUnauthorized)
+		case errors.Is(verifyErr, ErrBadSignature):
+			http.Error(w, ErrBadSignature.Error(), http.StatusUnauthorized)
+		default:
+			http.Error(w, "bad signature", http.StatusUnauthorized)
+		}
 		return nil
 	}
 	if !s.nonces.accept(nonce, now) {

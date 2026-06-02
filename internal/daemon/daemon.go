@@ -128,6 +128,9 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 	}
 	d.cl = transport.NewClient(auth, origin)
 	d.sv = transport.NewServer(listenerPlan.BindListen, auth, d.onReceive, d.peersHandler)
+	if runtimeCfg.ConfigVersion != nil && *runtimeCfg.ConfigVersion >= 2 {
+		d.sv.SetRequiredLocalAuthVersion(transport.AuthVersionRequestHMAC)
+	}
 	d.sv.SetSafeMode(listenerPlan.SafeMode)
 	d.sv.SetSafeModeInfo(transport.SafeModeInfo{
 		Origin:                origin,

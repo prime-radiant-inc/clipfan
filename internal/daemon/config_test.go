@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -116,7 +115,7 @@ func TestPostConfigRejectsConfigV2WithSignedFailureWhenWritesDisabled(t *testing
 	}
 	body := []byte(`{"max_history":300}`)
 	nonce := "config-v2-disabled"
-	req := signedDaemonRequest(t, auth, http.MethodPost, "/v1/config", nonce, body)
+	req := signedDaemonRequestWithAuthVersion(t, auth, http.MethodPost, "/v1/config", nonce, body, transport.AuthVersionRequestHMAC)
 	rec := httptest.NewRecorder()
 
 	d.sv.Handler().ServeHTTP(rec, req)
@@ -130,7 +129,7 @@ func TestPostConfigRejectsConfigV2WithSignedFailureWhenWritesDisabled(t *testing
 	}
 	if sig := rec.Header().Get("X-Clipfan-Response-Sig"); sig == "" {
 		t.Fatal("missing signed response header")
-	} else if err := auth.VerifyResponse(nonce, responseBody, sig); err != nil {
+	} else if err := auth.VerifyResponseWithAuthVersion(nonce, responseBody, sig, transport.AuthVersionRequestHMAC); err != nil {
 		t.Fatalf("bad response signature: %v", err)
 	}
 	if d.cfg.MaxHistory != 50 {
@@ -162,12 +161,23 @@ func readSavedMax(t *testing.T) int {
 }
 
 func signedDaemonRequest(t *testing.T, auth *transport.Auth, method, target, nonce string, body []byte) *http.Request {
+	return signedDaemonRequestWithAuthVersion(t, auth, method, target, nonce, body, "")
+}
+
+func signedDaemonRequestWithAuthVersion(t *testing.T, auth *transport.Auth, method, target, nonce string, body []byte, authVersion string) *http.Request {
 	t.Helper()
-	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	headers, err := auth.SignedRequestHeaders(method, target, body, transport.SignedRequestOptions{
+		Timestamp:   time.Now(),
+		Nonce:       nonce,
+		AuthVersion: authVersion,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	req := httptest.NewRequest(method, target, bytes.NewReader(body))
 	req.RemoteAddr = "127.0.0.1:1234"
-	req.Header.Set("X-Clipfan-Ts", ts)
-	req.Header.Set("X-Clipfan-Nonce", nonce)
-	req.Header.Set("X-Clipfan-Sig", auth.SignRequest(method, target, ts, nonce, body))
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
 	return req
 }

@@ -217,6 +217,49 @@ func TestServerAcceptsHKDFRequestAuthWithoutRejectingRawKeyClients(t *testing.T)
 	}
 }
 
+func TestServerRequiredLocalAuthVersionRejectsRawKeyClients(t *testing.T) {
+	auth := fixtureAuth(t)
+	s := NewServer(":0", auth, func(c clipboard.Content, origin string) {}, func() any {
+		return map[string]any{"origin": "m4"}
+	})
+	s.SetVersionFunc(func() any { return map[string]string{"version": "test"} })
+	s.SetRequiredLocalAuthVersion(AuthVersionRequestHMAC)
+	setFixedServerTime(s)
+
+	versioned := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodGet, "/v1/peers", "1780257600", "hkdf-peers", nil, AuthVersionRequestHMAC)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, versioned)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("versioned peers status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get(HeaderAuthVersion) != AuthVersionRequestHMAC {
+		t.Fatalf("response auth version = %q", rec.Header().Get(HeaderAuthVersion))
+	}
+
+	raw := signedRequestWithTimestampAndNonce(t, auth, http.MethodGet, "/v1/peers", "1780257600", "raw-peers", nil)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, raw)
+	if rec.Code != http.StatusUnauthorized || !bytes.Contains(rec.Body.Bytes(), []byte("auth_version_mismatch")) {
+		t.Fatalf("raw local peers status/body = %d %q, want auth_version_mismatch", rec.Code, rec.Body.String())
+	}
+
+	wrongKey := signedRequestWithTimestampAndNonce(t, auth, http.MethodGet, "/v1/peers", "1780257600", "raw-key-with-version", nil)
+	wrongKey.Header.Set(HeaderAuthVersion, AuthVersionRequestHMAC)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, wrongKey)
+	if rec.Code != http.StatusUnauthorized || !bytes.Contains(rec.Body.Bytes(), []byte("bad_signature")) {
+		t.Fatalf("raw-key-with-version status/body = %d %q, want bad_signature", rec.Code, rec.Body.String())
+	}
+
+	rawVersion := signedRequestWithTimestampAndNonce(t, auth, http.MethodGet, "/v1/version", "1780257600", "raw-version", nil)
+	rawVersion.RemoteAddr = "192.0.2.1:1234"
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, rawVersion)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("raw remote version status/body = %d %q, want 200", rec.Code, rec.Body.String())
+	}
+}
+
 func TestNonceCacheRejectsReplayAndExpiresOldEntries(t *testing.T) {
 	cache := newNonceCache(2 * time.Minute)
 	now := time.Unix(1780257600, 0)

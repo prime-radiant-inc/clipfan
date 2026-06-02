@@ -138,6 +138,23 @@ final class SigningTests: XCTestCase {
         XCTAssertNotNil(headers["X-Clipfan-Sig"])
     }
 
+    func testLocalDaemonSignatureHeadersUseVersionedAuth() throws {
+        let body = Data(#"{"id":"abc"}"#.utf8)
+        let headers = localDaemonSignatureHeaders(
+            method: "POST",
+            requestURI: "/v1/restore",
+            body: body,
+            sharedKey: rawKey
+        )
+        XCTAssertEqual(headers["X-Clipfan-Auth-Version"], clipfanRequestAuthVersion)
+        let timestamp = try XCTUnwrap(headers["X-Clipfan-Ts"])
+        let nonce = try XCTUnwrap(headers["X-Clipfan-Nonce"])
+        XCTAssertEqual(
+            headers["X-Clipfan-Sig"],
+            clipfanVersionedSign(method: "POST", requestURI: "/v1/restore", timestamp: timestamp, nonce: nonce, body: body, sharedKey: rawKey)
+        )
+    }
+
     func testLoadKeyDecodesBase64() throws {
         // Write a temp config with the base64 of rawKey and confirm it decodes to rawKey.
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

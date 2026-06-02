@@ -19,6 +19,10 @@ func skippedPeerHTTPVersionVerification(host: String) -> PeerUpdateVerificationR
     )
 }
 
+func localDaemonSignatureHeaders(method: String, requestURI: String, body: Data, sharedKey: Data) -> [String: String] {
+    clipfanVersionedSignatureHeaders(method: method, requestURI: requestURI, body: body, sharedKey: sharedKey)
+}
+
 @MainActor
 final class DaemonClient: ObservableObject {
     static let shared = DaemonClient()
@@ -261,7 +265,7 @@ final class DaemonClient: ObservableObject {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         req.timeoutInterval = 2
-        let headers = clipfanSignatureHeaders(method: method, requestURI: path, body: body, key: key)
+        let headers = localDaemonSignatureHeaders(method: method, requestURI: path, body: body, sharedKey: key)
         for (header, value) in headers {
             req.setValue(value, forHTTPHeaderField: header)
         }
