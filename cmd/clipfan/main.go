@@ -77,7 +77,7 @@ func runDaemon() {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl})))
 
-	cfg, err := config.Load()
+	cfg, err := config.LoadForDaemonStart()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
 		os.Exit(1)

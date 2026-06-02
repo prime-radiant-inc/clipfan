@@ -27,13 +27,17 @@ type Config struct {
 	MaxHistory int `json:"max_history,omitempty"`
 }
 
-// withDefaults fills zero-valued fields with their defaults.
+// withDefaults fills zero-valued fields with the current release defaults.
 func withDefaults(c Config) Config {
+	return withDefaultsForGeneratedListen(c, GeneratedLoopbackDefaultsEnabled())
+}
+
+func withDefaultsForGeneratedListen(c Config, loopbackDefault bool) Config {
 	if c.Port == 0 {
 		c.Port = 7853
 	}
 	if c.Listen == "" {
-		c.Listen = ":7853"
+		c.Listen = DefaultListen(loopbackDefault, c.Port)
 	}
 	if c.Discovery == "" {
 		c.Discovery = "tailscale"
@@ -61,31 +65,76 @@ func StateDir() string {
 }
 
 func Load() (*Config, error) {
-	path := Path()
-	if err := ensureConfigDir(filepath.Dir(path)); err != nil {
+	return load(Path(), GeneratedLoopbackDefaultsEnabled())
+}
+
+func LoadForDaemonStart() (*Config, error) {
+	return loadForDaemonStart(Path(), ListenerMigrationPolicy{
+		GeneratedLoopbackListenEnabled: GeneratedLoopbackDefaultsEnabled(),
+		ConfigV2WriteEnabled:           releaseflags.ConfigV2WriteEnabled,
+	})
+}
+
+func loadForDaemonStart(path string, policy ListenerMigrationPolicy) (*Config, error) {
+	cfg, doc, err := loadDocument(path, policy.GeneratedLoopbackListenEnabled)
+	if err != nil {
 		return nil, err
+	}
+	if !ApplyGeneratedListenMigration(cfg, policy.GeneratedLoopbackListenEnabled) {
+		return cfg, nil
+	}
+	if doc.RevisionState != RevisionStateVersioned || !policy.ConfigV2WriteEnabled {
+		return cfg, nil
+	}
+	expected := RevisionExpectation{
+		State:    RevisionStateVersioned,
+		Revision: doc.ConfigRevision,
+	}
+	if err := updateConfigV2ScopedWithGate(path, true, expected, func(c *Config) error {
+		ApplyGeneratedListenMigration(c, true)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	cfg, _, err = loadDocument(path, policy.GeneratedLoopbackListenEnabled)
+	return cfg, err
+}
+
+func load(path string, loopbackDefault bool) (*Config, error) {
+	cfg, _, err := loadDocument(path, loopbackDefault)
+	return cfg, err
+}
+
+func loadDocument(path string, loopbackDefault bool) (*Config, *configDocument, error) {
+	if err := ensureConfigDir(filepath.Dir(path)); err != nil {
+		return nil, nil, err
 	}
 	if err := repairConfigFile(path); errors.Is(err, os.ErrNotExist) {
-		cfg := withDefaults(Config{SharedKey: NewSharedKey()})
+		cfg := withDefaultsForGeneratedListen(Config{SharedKey: NewSharedKey()}, loopbackDefault)
 		c := &cfg
-		if err := Save(c); err != nil {
-			return nil, fmt.Errorf("save initial config: %w", err)
+		if err := saveAtPath(path, c); err != nil {
+			return nil, nil, fmt.Errorf("save initial config: %w", err)
 		}
-		return c, nil
+		doc, err := parseConfigDocumentFromPath(path)
+		return c, doc, err
 	} else if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	doc, err := parseConfigDocumentFromPath(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	c := &doc.Config
+	*c = withDefaultsForGeneratedListen(*c, loopbackDefault)
+	return c, doc, nil
+}
+
+func parseConfigDocumentFromPath(path string) (*configDocument, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	doc, err := parseConfigDocument(data)
-	if err != nil {
-		return nil, err
-	}
-	c := &doc.Config
-	*c = withDefaults(*c)
-	return c, nil
+	return parseConfigDocument(data)
 }
 
 func Save(c *Config) error {
@@ -101,6 +150,10 @@ func Save(c *Config) error {
 	if err := ensureConfigDir(filepath.Dir(path)); err != nil {
 		return err
 	}
+	return saveAtPath(path, c)
+}
+
+func saveAtPath(path string, c *Config) error {
 	data, _ := json.MarshalIndent(c, "", "  ")
 	return writeConfigAtomic(path, data, 0o600)
 }

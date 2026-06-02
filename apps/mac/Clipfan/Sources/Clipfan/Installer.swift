@@ -94,6 +94,26 @@ actor Installer {
         """
     }
 
+    static func generatedListenDefault(loopbackDefault: Bool = GeneratedSSHTransportGates.peerHTTPRuntimeDisabled &&
+                                       GeneratedSSHTransportGates.configV2WriteEnabled) -> String {
+        loopbackDefault ? "127.0.0.1:7853" : ":7853"
+    }
+
+    static func remoteInstallConfigJSON(sharedKey: String,
+                                        selfShort: String,
+                                        loopbackDefault: Bool = GeneratedSSHTransportGates.peerHTTPRuntimeDisabled &&
+                                            GeneratedSSHTransportGates.configV2WriteEnabled) -> String {
+        """
+        {
+          "listen": \(jsonString(generatedListenDefault(loopbackDefault: loopbackDefault))),
+          "shared_key": \(jsonString(sharedKey)),
+          "discovery": "static",
+          "static_peers": [\(jsonString(selfShort))],
+          "port": 7853
+        }
+        """
+    }
+
     static func remoteUpdateCommand(stage: String) -> String {
         remoteUpdateCommand(stage: stage,
                             payloadBinaryName: nil,
@@ -219,15 +239,8 @@ actor Installer {
         await MainActor.run { onProgress(.init(step: "Config", detail: "reading shared key")) }
         let localCfg = try await readLocalConfig()
         let selfShort = shortName(Host.current().localizedName ?? Host.current().name ?? "")
-        let remoteConfigJSON = """
-        {
-          "listen": ":7853",
-          "shared_key": \(jsonString(localCfg["shared_key"] as? String ?? "")),
-          "discovery": "static",
-          "static_peers": [\(jsonString(selfShort))],
-          "port": 7853
-        }
-        """
+        let remoteConfigJSON = remoteInstallConfigJSON(sharedKey: localCfg["shared_key"] as? String ?? "",
+                                                       selfShort: selfShort)
 
         // Stage payload in a tmpdir for scp.
         let stage = FileManager.default.temporaryDirectory

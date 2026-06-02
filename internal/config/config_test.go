@@ -25,6 +25,37 @@ func TestMaxHistoryDefault(t *testing.T) {
 	}
 }
 
+func TestGeneratedListenDefaultFollowsGate(t *testing.T) {
+	publicDefault := withDefaultsForGeneratedListen(Config{}, false)
+	if publicDefault.Listen != ":7853" {
+		t.Fatalf("public default listen = %q, want :7853", publicDefault.Listen)
+	}
+
+	loopbackDefault := withDefaultsForGeneratedListen(Config{}, true)
+	if loopbackDefault.Listen != "127.0.0.1:7853" {
+		t.Fatalf("loopback default listen = %q, want 127.0.0.1:7853", loopbackDefault.Listen)
+	}
+}
+
+func TestLoadCreatesLoopbackDefaultConfigWhenGeneratedListenEnabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "clipfan", "config.json")
+
+	cfg, err := load(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Listen != "127.0.0.1:7853" {
+		t.Fatalf("Listen = %q, want loopback generated default", cfg.Listen)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"listen": "127.0.0.1:7853"`) {
+		t.Fatalf("generated config did not persist loopback listen: %s", data)
+	}
+}
+
 func TestMaxHistoryRespectsExplicit(t *testing.T) {
 	c := withDefaults(Config{MaxHistory: 50})
 	if c.MaxHistory != 50 {
@@ -55,6 +86,38 @@ func TestLoadCreatesDefaultConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "shared_key") {
 		t.Fatal("config file missing shared_key field")
+	}
+}
+
+func TestLoadForDaemonStartCurrentPublicGatesKeepLegacyGeneratedListen(t *testing.T) {
+	if GeneratedLoopbackDefaultsEnabled() {
+		t.Fatal("current public gates unexpectedly enable loopback defaults")
+	}
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	dir := filepath.Join(root, "clipfan")
+	path := filepath.Join(dir, "config.json")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before := []byte(`{"shared_key":"` + NewSharedKey() + `","listen":":7853","max_history":50}`)
+	if err := os.WriteFile(path, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadForDaemonStart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Listen != ":7853" {
+		t.Fatalf("Listen = %q, want current public legacy listen", cfg.Listen)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("current public daemon-start load rewrote config\nbefore: %s\nafter: %s", before, after)
 	}
 }
 

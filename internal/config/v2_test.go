@@ -415,6 +415,115 @@ func TestUpdateConfigV2ScopedPrivateModeAndOwnTempCleanup(t *testing.T) {
 	}
 }
 
+func TestLoadForDaemonStartMigratesGeneratedLegacyListensInMemory(t *testing.T) {
+	cases := []string{`:7853`, `0.0.0.0:7853`, `[::]:7853`}
+
+	for _, listen := range cases {
+		t.Run(listen, func(t *testing.T) {
+			path := writeConfigForV2Test(t, `{"shared_key":"k","listen":"`+listen+`","max_history":50}`)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			cfg, err := loadForDaemonStart(path, ListenerMigrationPolicy{
+				GeneratedLoopbackListenEnabled: true,
+				ConfigV2WriteEnabled:           false,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Listen != "127.0.0.1:7853" {
+				t.Fatalf("Listen = %q, want loopback migration", cfg.Listen)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Fatalf("pre-v2 daemon-start migration wrote file\nbefore: %s\nafter: %s", before, after)
+			}
+		})
+	}
+}
+
+func TestLoadForDaemonStartLeavesExplicitNonDefaultWildcardListenUnchanged(t *testing.T) {
+	path := writeConfigForV2Test(t, `{"shared_key":"k","listen":":9000","max_history":50}`)
+
+	cfg, err := loadForDaemonStart(path, ListenerMigrationPolicy{
+		GeneratedLoopbackListenEnabled: true,
+		ConfigV2WriteEnabled:           true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Listen != ":9000" {
+		t.Fatalf("Listen = %q, want explicit non-default wildcard unchanged", cfg.Listen)
+	}
+	after := readJSONMap(t, path)
+	if _, ok := after["config_version"]; ok {
+		t.Fatalf("explicit non-default wildcard migration wrote config_version: %#v", after["config_version"])
+	}
+}
+
+func TestLoadForDaemonStartPersistsVersionedGeneratedListenMigrationWhenGateEnabled(t *testing.T) {
+	path := writeConfigForV2Test(t, `{
+		"config_version": 2,
+		"config_revision": 7,
+		"shared_key": "k",
+		"listen": "0.0.0.0:7853",
+		"max_history": 50,
+		"future_listener": {"keep": true}
+	}`)
+
+	cfg, err := loadForDaemonStart(path, ListenerMigrationPolicy{
+		GeneratedLoopbackListenEnabled: true,
+		ConfigV2WriteEnabled:           true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Listen != "127.0.0.1:7853" {
+		t.Fatalf("Listen = %q, want loopback migration", cfg.Listen)
+	}
+	if cfg.ConfigRevision == nil || *cfg.ConfigRevision != 8 {
+		t.Fatalf("ConfigRevision = %v, want 8", revisionString(cfg.ConfigRevision))
+	}
+	after := readJSONMap(t, path)
+	assertJSONNumber(t, after["config_revision"], 8)
+	assertJSONValueEqual(t, "127.0.0.1:7853", after["listen"])
+	assertJSONValueEqual(t, map[string]any{"keep": true}, after["future_listener"])
+}
+
+func TestLoadForDaemonStartDoesNotPersistVersionedGeneratedListenMigrationWhenWriteGateDisabled(t *testing.T) {
+	path := writeConfigForV2Test(t, `{"config_version":2,"config_revision":7,"shared_key":"k","listen":"[::]:7853","max_history":50}`)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadForDaemonStart(path, ListenerMigrationPolicy{
+		GeneratedLoopbackListenEnabled: true,
+		ConfigV2WriteEnabled:           false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Listen != "127.0.0.1:7853" {
+		t.Fatalf("Listen = %q, want loopback in-memory migration", cfg.Listen)
+	}
+	if cfg.ConfigRevision == nil || *cfg.ConfigRevision != 7 {
+		t.Fatalf("ConfigRevision = %v, want 7", revisionString(cfg.ConfigRevision))
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("disabled write gate changed file\nbefore: %s\nafter: %s", before, after)
+	}
+}
+
 func TestUpdateConfigV2ScopedRejectsSymlinkedConfigFile(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "clipfan")

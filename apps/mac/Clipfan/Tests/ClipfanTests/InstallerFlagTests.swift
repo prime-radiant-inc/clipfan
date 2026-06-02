@@ -34,6 +34,29 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertTrue(command.contains("cd \"$stage\" && bash install.sh --no-tmux"))
     }
 
+    func testRemoteInstallConfigUsesLegacyPublicListenDefault() {
+        XCTAssertFalse(GeneratedSSHTransportGates.peerHTTPRuntimeDisabled)
+        XCTAssertFalse(GeneratedSSHTransportGates.configV2WriteEnabled)
+
+        let body = Installer.remoteInstallConfigJSON(sharedKey: "secret", selfShort: "m4")
+
+        XCTAssertTrue(body.contains(#""listen": ":7853""#))
+        XCTAssertTrue(body.contains(#""shared_key": "secret""#))
+        XCTAssertTrue(body.contains(#""static_peers": ["m4"]"#))
+        XCTAssertFalse(body.contains("config_version"))
+        XCTAssertFalse(body.contains("config_revision"))
+    }
+
+    func testRemoteInstallConfigCanUseLoopbackGeneratedListen() {
+        let body = Installer.remoteInstallConfigJSON(sharedKey: "secret",
+                                                     selfShort: "m4",
+                                                     loopbackDefault: true)
+
+        XCTAssertTrue(body.contains(#""listen": "127.0.0.1:7853""#))
+        XCTAssertFalse(body.contains("config_version"))
+        XCTAssertFalse(body.contains("config_revision"))
+    }
+
     func testRemoteUpdateCommandPreservesConfigAndSkipsTmux() {
         let command = Installer.remoteUpdateCommand(stage: "/tmp/clipfan-install.ABC123")
 
