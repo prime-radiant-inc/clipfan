@@ -11,7 +11,7 @@ final class SSHTransportGatePolicyTests: XCTestCase {
     }
 
     func testAddPeerProvisioningRequiresEveryTransportAndRuntimeGate() {
-        var policy = SSHTransportGatePolicy(
+        let enabledPolicy = SSHTransportGatePolicy(
             peerHTTPRuntimeDisabled: true,
             configV2WriteEnabled: true,
             remoteSecretWriteReleaseEnabled: true,
@@ -19,14 +19,28 @@ final class SSHTransportGatePolicyTests: XCTestCase {
             receivePrimitiveEnabled: true,
             syncStreamEnabled: true,
             persistentCurrentEnabled: true,
-            syncKeyRotationEnabled: false
+            syncKeyRotationEnabled: true
         )
 
-        XCTAssertFalse(policy.addPeerProvisioningEnabled)
+        XCTAssertTrue(enabledPolicy.addPeerProvisioningEnabled)
 
-        policy.syncKeyRotationEnabled = true
+        let requiredGates: [(String, WritableKeyPath<SSHTransportGatePolicy, Bool>)] = [
+            ("peerHTTPRuntimeDisabled", \.peerHTTPRuntimeDisabled),
+            ("configV2WriteEnabled", \.configV2WriteEnabled),
+            ("remoteSecretWriteReleaseEnabled", \.remoteSecretWriteReleaseEnabled),
+            ("publicAddPeerSuccessEnabled", \.publicAddPeerSuccessEnabled),
+            ("receivePrimitiveEnabled", \.receivePrimitiveEnabled),
+            ("syncStreamEnabled", \.syncStreamEnabled),
+            ("persistentCurrentEnabled", \.persistentCurrentEnabled),
+            ("syncKeyRotationEnabled", \.syncKeyRotationEnabled),
+        ]
 
-        XCTAssertTrue(policy.addPeerProvisioningEnabled)
+        for (gateName, keyPath) in requiredGates {
+            var policy = enabledPolicy
+            policy[keyPath: keyPath] = false
+
+            XCTAssertFalse(policy.addPeerProvisioningEnabled, "\(gateName) must be required")
+        }
     }
 
     func testPeerHTTPVersionProbeFollowsRuntimeDisableGate() {
