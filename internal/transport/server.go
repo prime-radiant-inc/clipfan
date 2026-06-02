@@ -133,7 +133,7 @@ func (s *Server) safeModeRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getSafeModeVersion(w http.ResponseWriter, r *http.Request) {
-	signed := s.readSignedLocal(w, r)
+	signed := s.readSignedLocalRequiredAuthVersion(w, r, AuthVersionRequestHMAC)
 	if signed == nil {
 		return
 	}
@@ -145,7 +145,7 @@ func (s *Server) getSafeModeVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) safeModeSignedUnavailable(w http.ResponseWriter, r *http.Request, code string) {
-	signed := s.readSignedLocal(w, r)
+	signed := s.readSignedLocalRequiredAuthVersion(w, r, AuthVersionRequestHMAC)
 	if signed == nil {
 		return
 	}
@@ -375,16 +375,28 @@ func (s *Server) writeSignedError(w http.ResponseWriter, signed *signedPayload, 
 }
 
 func (s *Server) readSignedLocal(w http.ResponseWriter, r *http.Request) *signedPayload {
+	return s.readSignedLocalWithRequiredAuthVersion(w, r, "")
+}
+
+func (s *Server) readSignedLocalRequiredAuthVersion(w http.ResponseWriter, r *http.Request, requiredAuthVersion string) *signedPayload {
+	return s.readSignedLocalWithRequiredAuthVersion(w, r, requiredAuthVersion)
+}
+
+func (s *Server) readSignedLocalWithRequiredAuthVersion(w http.ResponseWriter, r *http.Request, requiredAuthVersion string) *signedPayload {
 	if !isLoopbackRemote(r.RemoteAddr) {
 		http.Error(w, "loopback required", http.StatusForbidden)
 		return nil
 	}
-	return s.readSigned(w, r, 1<<20)
+	return s.readSignedWithRequiredAuthVersion(w, r, 1<<20, requiredAuthVersion)
 }
 
 // readSigned reads the body and verifies the canonical request HMAC signature.
 // Returns nil after writing an error response on failure.
 func (s *Server) readSigned(w http.ResponseWriter, r *http.Request, maxBody int64) *signedPayload {
+	return s.readSignedWithRequiredAuthVersion(w, r, maxBody, "")
+}
+
+func (s *Server) readSignedWithRequiredAuthVersion(w http.ResponseWriter, r *http.Request, maxBody int64, requiredAuthVersion string) *signedPayload {
 	sig := r.Header.Get(HeaderSignature)
 	if sig == "" {
 		http.Error(w, "missing X-Clipfan-Sig", http.StatusUnauthorized)
@@ -417,7 +429,13 @@ func (s *Server) readSigned(w http.ResponseWriter, r *http.Request, maxBody int6
 		return nil
 	}
 	authVersion := r.Header.Get(HeaderAuthVersion)
-	if err := s.auth.VerifyRequestWithAuthVersion(r.Method, r.URL.RequestURI(), ts, nonce, body, sig, authVersion); err != nil {
+	var verifyErr error
+	if requiredAuthVersion == "" {
+		verifyErr = s.auth.VerifyRequestWithAuthVersion(r.Method, r.URL.RequestURI(), ts, nonce, body, sig, authVersion)
+	} else {
+		verifyErr = s.auth.VerifyRequestRequiredAuthVersion(r.Method, r.URL.RequestURI(), ts, nonce, body, sig, authVersion, requiredAuthVersion)
+	}
+	if verifyErr != nil {
 		http.Error(w, "bad signature", http.StatusUnauthorized)
 		return nil
 	}
