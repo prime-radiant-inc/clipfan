@@ -1,6 +1,8 @@
 package releaseflags
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -154,6 +156,40 @@ func TestValidateGateBundleAccepts17d3aLocalCutoverBundle(t *testing.T) {
 	}
 	if err := ValidateGateBundle(transport, RuntimeGates{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestInternalTestLocalCutoverManifestEnablesOnlyConfigV2AndPeerHTTPGates(t *testing.T) {
+	transportFile, err := os.Open(filepath.Join("..", "..", "release", "internal-test", "ssh-transport-gates.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transportFile.Close()
+	runtimeFile, err := os.Open(filepath.Join("..", "..", "release", "internal-test", "ssh-runtime-gates.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtimeFile.Close()
+
+	transport, err := ReadTransportGates(transportFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := ReadRuntimeGates(runtimeFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateGateBundle(transport, runtime); err != nil {
+		t.Fatal(err)
+	}
+	if !transport.PeerHTTPRuntimeDisabled || !transport.ConfigV2WriteEnabled {
+		t.Fatalf("internal-test local gates = peerHTTP:%v configV2:%v, want both true", transport.PeerHTTPRuntimeDisabled, transport.ConfigV2WriteEnabled)
+	}
+	if transport.RemoteSecretWriteReleaseEnabled || transport.SSHPublicAddPeerSuccessEnabled {
+		t.Fatalf("internal-test exposed remote secret/add-peer gates: %+v", transport)
+	}
+	if runtime.SSHReceivePrimitiveEnabled || runtime.SSHSyncStreamEnabled || runtime.SSHPersistentCurrentEnabled || runtime.SSHSyncKeyRotationEnabled {
+		t.Fatalf("internal-test runtime gates enabled early: %+v", runtime)
 	}
 }
 

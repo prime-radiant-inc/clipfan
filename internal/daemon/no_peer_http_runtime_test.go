@@ -6,6 +6,7 @@ import (
 
 	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
 	"github.com/prime-radiant-inc/clipfan/internal/config"
+	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
 )
 
 func TestPeerHTTPRuntimeDisabledSkipsFanoutForLegacyStaticConfig(t *testing.T) {
@@ -52,6 +53,32 @@ func TestPeerHTTPRuntimeDisabledSkipsFanoutForGeneratedWildcardListener(t *testi
 	}
 	if d.listenerPlan.BindListen != "127.0.0.1:7853" {
 		t.Fatalf("BindListen = %q, want generated loopback repair", d.listenerPlan.BindListen)
+	}
+	assertPeerHTTPRuntimeDisabledStopsFanout(t, d)
+}
+
+func TestGeneratedPeerHTTPRuntimeGateSkipsFanout(t *testing.T) {
+	if !releaseflags.PeerHTTPRuntimeDisabled {
+		t.Skip("requires internal/test generated peer HTTP runtime gate")
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	d, err := NewWithOptions(&config.Config{
+		Listen:      ":7853",
+		SharedKey:   config.NewSharedKey(),
+		Discovery:   "static",
+		StaticPeers: []string{"peer-host"},
+		Port:        7853,
+	}, Options{ListenerBoundaryEnabled: boolPtr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.peerHTTPDisabled {
+		t.Fatal("daemon did not consume generated PeerHTTPRuntimeDisabled gate")
+	}
+	if d.listenerPlan.SafeMode {
+		t.Fatal("setup entered safe mode; generated wildcard listener should be repaired without safe mode")
 	}
 	assertPeerHTTPRuntimeDisabledStopsFanout(t, d)
 }

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
 )
 
 func TestNewSharedKeyUnique(t *testing.T) {
@@ -119,6 +121,47 @@ func TestLoadForDaemonStartCurrentPublicGatesKeepLegacyGeneratedListen(t *testin
 	if string(after) != string(before) {
 		t.Fatalf("current public daemon-start load rewrote config\nbefore: %s\nafter: %s", before, after)
 	}
+}
+
+func TestGeneratedConfigV2WriteGatePersistsDaemonStartMigration(t *testing.T) {
+	if !releaseflags.PeerHTTPRuntimeDisabled || !releaseflags.ConfigV2WriteEnabled {
+		t.Skip("requires internal/test generated local cutover gates")
+	}
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	dir := filepath.Join(root, "clipfan")
+	path := filepath.Join(dir, "config.json")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before := []byte(`{
+		"config_version": 2,
+		"config_revision": 7,
+		"shared_key": "` + NewSharedKey() + `",
+		"listen": "0.0.0.0:7853",
+		"max_history": 50,
+		"future_generated_gate_field": {"keep": true}
+	}`)
+	if err := os.WriteFile(path, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadForDaemonStart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Listen != "127.0.0.1:7853" {
+		t.Fatalf("Listen = %q, want generated loopback migration", cfg.Listen)
+	}
+	if cfg.ConfigRevision == nil || *cfg.ConfigRevision != 8 {
+		t.Fatalf("ConfigRevision = %v, want 8", revisionString(cfg.ConfigRevision))
+	}
+
+	after := readJSONMap(t, path)
+	assertJSONNumber(t, after["config_version"], 2)
+	assertJSONNumber(t, after["config_revision"], 8)
+	assertJSONValueEqual(t, "127.0.0.1:7853", after["listen"])
+	assertJSONValueEqual(t, map[string]any{"keep": true}, after["future_generated_gate_field"])
 }
 
 func TestLoadRepairsExistingConfigDirectoryPermissions(t *testing.T) {

@@ -1,0 +1,6 @@
+{
+  "PeerHTTPRuntimeDisabled": true,
+  "ConfigV2WriteEnabled": true,
+  "RemoteSecretWriteReleaseEnabled": false,
+  "ssh_public_add_peer_success_enabled": false
+}

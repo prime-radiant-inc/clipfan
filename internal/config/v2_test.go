@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
 )
 
 func TestParseConfigDocumentRevisionStates(t *testing.T) {
@@ -495,6 +497,47 @@ func TestLoadForDaemonStartPersistsVersionedGeneratedListenMigrationWhenGateEnab
 	assertJSONValueEqual(t, map[string]any{"keep": true}, after["future_listener"])
 }
 
+func TestInternalTestProfilePersistsConfigV2GeneratedListenMigration(t *testing.T) {
+	transport, runtime := readInternalTestGateBundle(t)
+	if err := releaseflags.ValidateGateBundle(transport, runtime); err != nil {
+		t.Fatal(err)
+	}
+	if !transport.PeerHTTPRuntimeDisabled || !transport.ConfigV2WriteEnabled {
+		t.Fatalf("internal-test local gates = peerHTTP:%v configV2:%v, want both true", transport.PeerHTTPRuntimeDisabled, transport.ConfigV2WriteEnabled)
+	}
+	if transport.RemoteSecretWriteReleaseEnabled || transport.SSHPublicAddPeerSuccessEnabled {
+		t.Fatalf("internal-test remote gates enabled early: %+v", transport)
+	}
+
+	path := writeConfigForV2Test(t, `{
+		"config_version": 2,
+		"config_revision": 11,
+		"shared_key": "k",
+		"listen": ":7853",
+		"max_history": 50,
+		"future_profile_field": {"keep": true}
+	}`)
+
+	cfg, err := loadForDaemonStart(path, ListenerMigrationPolicy{
+		GeneratedLoopbackListenEnabled: transport.PeerHTTPRuntimeDisabled && transport.ConfigV2WriteEnabled,
+		ConfigV2WriteEnabled:           transport.ConfigV2WriteEnabled,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Listen != "127.0.0.1:7853" {
+		t.Fatalf("Listen = %q, want loopback migration", cfg.Listen)
+	}
+	if cfg.ConfigRevision == nil || *cfg.ConfigRevision != 12 {
+		t.Fatalf("ConfigRevision = %v, want 12", revisionString(cfg.ConfigRevision))
+	}
+	after := readJSONMap(t, path)
+	assertJSONNumber(t, after["config_version"], 2)
+	assertJSONNumber(t, after["config_revision"], 12)
+	assertJSONValueEqual(t, "127.0.0.1:7853", after["listen"])
+	assertJSONValueEqual(t, map[string]any{"keep": true}, after["future_profile_field"])
+}
+
 func TestLoadForDaemonStartDoesNotPersistVersionedGeneratedListenMigrationWhenWriteGateDisabled(t *testing.T) {
 	path := writeConfigForV2Test(t, `{"config_version":2,"config_revision":7,"shared_key":"k","listen":"[::]:7853","max_history":50}`)
 	before, err := os.ReadFile(path)
@@ -619,6 +662,30 @@ func writeConfigForV2Test(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func readInternalTestGateBundle(t *testing.T) (releaseflags.TransportGates, releaseflags.RuntimeGates) {
+	t.Helper()
+	transportFile, err := os.Open(filepath.Join("..", "..", "release", "internal-test", "ssh-transport-gates.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transportFile.Close()
+	runtimeFile, err := os.Open(filepath.Join("..", "..", "release", "internal-test", "ssh-runtime-gates.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtimeFile.Close()
+
+	transport, err := releaseflags.ReadTransportGates(transportFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := releaseflags.ReadRuntimeGates(runtimeFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return transport, runtime
 }
 
 func readJSONMap(t *testing.T, path string) map[string]any {

@@ -119,6 +119,40 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertFalse(command.contains("config_version"))
     }
 
+    func testGeneratedConfigV2WriteGateEnablesDefaultDowngradeBlock() throws {
+        guard GeneratedSSHTransportGates.configV2WriteEnabled else {
+            throw XCTSkip("requires internal/test generated config v2 write gate")
+        }
+        XCTAssertTrue(GeneratedSSHTransportGates.peerHTTPRuntimeDisabled)
+        XCTAssertFalse(GeneratedSSHTransportGates.remoteSecretWriteReleaseEnabled)
+        XCTAssertFalse(GeneratedSSHTransportGates.publicAddPeerSuccessEnabled)
+
+        let command = Installer.remoteUpdateCommand(
+            stage: "/tmp/clipfan-install.ABC123",
+            payloadBinaryName: "clipfan-linux-arm64",
+            enforceStorageAbort: GeneratedSSHTransportGates.peerHTTPRuntimeDisabled ||
+                GeneratedSSHTransportGates.configV2WriteEnabled
+        )
+
+        let storagePreflight = try XCTUnwrap(command.range(of: "\"$preflight_bin\" storage-preflight"))
+        let stagedVersion = try XCTUnwrap(command.range(of: "\"$payload_bin\" version --json"))
+        let install = try XCTUnwrap(command.range(of: "cd \"$stage\" && bash install.sh --no-tmux --no-restart >&2"))
+        let stop = try XCTUnwrap(command.range(of: "systemctl --user stop clipfan.service",
+                                               range: install.upperBound..<command.endIndex))
+        let installedVersion = try XCTUnwrap(command.range(of: "\"$bin\" version --json"))
+        let restart = try XCTUnwrap(command.range(of: "systemctl --user restart clipfan.service"))
+
+        XCTAssertLessThan(storagePreflight.lowerBound, install.lowerBound)
+        XCTAssertLessThan(stagedVersion.lowerBound, install.lowerBound)
+        XCTAssertLessThan(install.lowerBound, stop.lowerBound)
+        XCTAssertLessThan(stop.lowerBound, installedVersion.lowerBound)
+        XCTAssertLessThan(installedVersion.lowerBound, restart.lowerBound)
+        XCTAssertTrue(command.contains("pre_ssh_binary_unsupported"))
+        XCTAssertTrue(command.contains("public_listener_service_still_active"))
+        XCTAssertFalse(command.contains("config.json"))
+        XCTAssertFalse(command.contains("config_version"))
+    }
+
     func testRemoteUpdateCommandDowngradeBlockRejectsPreSSHStagedBinaryBeforeInstall() throws {
         let fixture = try makeRemoteUpdateShellFixture(systemctlIsActive: false)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
