@@ -1,5 +1,9 @@
 import SwiftUI
 
+func isAddPeerInstallDisabled(installCount: Int, installing: Bool, policy: SSHTransportGatePolicy = .current) -> Bool {
+    installCount == 0 || installing || !policy.addPeerProvisioningEnabled
+}
+
 struct AddPeerSheet: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -52,7 +56,7 @@ struct AddPeerSheet: View {
                 Button("Cancel") { dismiss() }
                 Button(installing ? "Installing…" : installLabel) { install() }
                     .keyboardShortcut(.return)
-                    .disabled(installCount == 0 || installing)
+                    .disabled(isAddPeerInstallDisabled(installCount: installCount, installing: installing))
             }
         }
         .padding(20)

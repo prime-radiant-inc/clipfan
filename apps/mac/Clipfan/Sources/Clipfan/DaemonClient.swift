@@ -1,6 +1,24 @@
 import Foundation
 import SwiftUI
 
+func shouldProbePeerHTTPVersions(policy: SSHTransportGatePolicy = .current,
+                                 localVersion: String?,
+                                 sharedKeyLoaded: Bool) -> Bool {
+    policy.peerHTTPVersionProbeEnabled && localVersion != nil && sharedKeyLoaded
+}
+
+func shouldVerifyPeerHTTPVersionAfterUpdate(policy: SSHTransportGatePolicy = .current,
+                                            expectedVersion: String?) -> Bool {
+    policy.peerHTTPVersionProbeEnabled && expectedVersion != nil
+}
+
+func skippedPeerHTTPVersionVerification(host: String) -> PeerUpdateVerificationResult {
+    PeerUpdateVerificationResult(
+        status: nil,
+        detail: "\(host) peer HTTP version verification is disabled by SSH transport gates"
+    )
+}
+
 @MainActor
 final class DaemonClient: ObservableObject {
     static let shared = DaemonClient()
@@ -13,6 +31,9 @@ final class DaemonClient: ObservableObject {
     @Published var connected: Bool = false
     @Published var history: [HistoryEntry] = []
     @Published var historyLoaded: Bool = false
+
+    var transportGatePolicy: SSHTransportGatePolicy = .current
+    var peerVersionFetch: PeerUpdateVerifier.Fetch = PeerVersionProbe.fetch
 
     private let base = URL(string: "http://127.0.0.1:7853")!
     private var timer: Timer?
@@ -98,6 +119,10 @@ final class DaemonClient: ObservableObject {
     }
 
     func refreshPeerVersions() async {
+        guard transportGatePolicy.peerHTTPVersionProbeEnabled else {
+            peerVersions = [:]
+            return
+        }
         guard let key = loadSharedKey(), let localVersion = version else {
             peerVersions = [:]
             return
@@ -109,13 +134,12 @@ final class DaemonClient: ObservableObject {
         }
 
         var statuses: [String: PeerVersionStatus] = [:]
+        let fetch = peerVersionFetch
         await withTaskGroup(of: (String, PeerVersionStatus?).self) { group in
             for peer in currentPeers {
                 group.addTask {
                     do {
-                        let remoteVersion = try await PeerVersionProbe.fetch(host: peer.hostname,
-                                                                             port: peer.port,
-                                                                             key: key)
+                        let remoteVersion = try await fetch(peer.hostname, peer.port, key)
                         return (peer.hostname, PeerUpdateAdvisor.status(remoteVersion: remoteVersion,
                                                                         localVersion: localVersion))
                     } catch {
@@ -135,6 +159,7 @@ final class DaemonClient: ObservableObject {
     func refreshPeerVersion(hostname: String,
                             attempts: Int = 1,
                             delayNanoseconds: UInt64 = 0) async -> PeerVersionStatus? {
+        guard transportGatePolicy.peerHTTPVersionProbeEnabled else { return nil }
         guard let localVersion = version else { return nil }
         return await verifyPeerVersion(hostname: hostname,
                                        expectedVersion: localVersion,
@@ -146,6 +171,10 @@ final class DaemonClient: ObservableObject {
                            expectedVersion: String,
                            attempts: Int = 1,
                            delayNanoseconds: UInt64 = 0) async -> PeerUpdateVerificationResult? {
+        guard transportGatePolicy.peerHTTPVersionProbeEnabled else {
+            peerVersions.removeValue(forKey: hostname)
+            return skippedPeerHTTPVersionVerification(host: hostname)
+        }
         guard let key = loadSharedKey(),
               let peer = peers.first(where: { $0.hostname == hostname }) else { return nil }
 
@@ -154,7 +183,8 @@ final class DaemonClient: ObservableObject {
                                                      key: key,
                                                      expectedVersion: expectedVersion,
                                                      attempts: attempts,
-                                                     delayNanoseconds: delayNanoseconds)
+                                                     delayNanoseconds: delayNanoseconds,
+                                                     fetch: peerVersionFetch)
         if let status = result.status {
             peerVersions[peer.hostname] = status
         } else {

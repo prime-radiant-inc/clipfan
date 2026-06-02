@@ -60,7 +60,8 @@ struct FleetRowModel: Identifiable {
 func fleetRows(origin: String,
                connected: Bool,
                peers: [Peer],
-               peerVersions: [String: PeerVersionStatus] = [:]) -> [FleetRowModel] {
+               peerVersions: [String: PeerVersionStatus] = [:],
+               policy: SSHTransportGatePolicy = .current) -> [FleetRowModel] {
     let selfRow = FleetRowModel(
         id: origin,
         name: origin,
@@ -72,7 +73,7 @@ func fleetRows(origin: String,
         peer: nil
     )
     let peerRows = peers.map { p in
-        let versionStatus = peerVersions[p.hostname]
+        let versionStatus = policy.peerHTTPVersionProbeEnabled ? peerVersions[p.hostname] : nil
         return FleetRowModel(
             id: p.hostname,
             name: p.hostname,
