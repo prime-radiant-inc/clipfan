@@ -170,20 +170,28 @@ func (l *daemonLock) release() {
 }
 
 func WaitForDaemonLockRelease(ctx context.Context, stateDir string) error {
+	lock, err := waitForDaemonLock(ctx, stateDir)
+	if err != nil {
+		return err
+	}
+	lock.release()
+	return nil
+}
+
+func waitForDaemonLock(ctx context.Context, stateDir string) (*daemonLock, error) {
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		lock, err := acquireDaemonLock(stateDir)
 		if err == nil {
-			lock.release()
-			return nil
+			return lock, nil
 		}
 		if !errors.Is(err, ErrDaemonAlreadyRunning) {
-			return err
+			return nil, err
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%w: %s", ErrDaemonLockTimeout, filepath.Join(stateDir, "daemon.lock"))
+			return nil, fmt.Errorf("%w: %s", ErrDaemonLockTimeout, filepath.Join(stateDir, "daemon.lock"))
 		case <-ticker.C:
 		}
 	}

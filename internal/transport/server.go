@@ -40,22 +40,46 @@ type PinFunc func(id string, pinned bool) error
 // DeleteHistoryFunc removes a single entry, or all unpinned entries.
 type DeleteHistoryFunc func(id string, allUnpinned bool) error
 
+type ListenerRepairReadFunc func() (any, *HandlerError)
+type ListenerRepairPatchFunc func(body []byte) (any, *HandlerError)
+
+type HandlerError struct {
+	Status int
+	Code   string
+}
+
+func (e *HandlerError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Code
+}
+
+func (e *HandlerError) httpStatus() int {
+	if e == nil || e.Status == 0 {
+		return http.StatusInternalServerError
+	}
+	return e.Status
+}
+
 type Server struct {
-	auth      *Auth
-	listen    string
-	onRecv    ReceiveFunc
-	peersFn   PeersFunc
-	versionFn VersionFunc
-	historyFn HistoryFunc
-	restoreFn RestoreFunc
-	pinFn     PinFunc
-	deleteFn  DeleteHistoryFunc
-	configFn  func(maxHistory int) error
-	safeMode  bool
-	safeInfo  SafeModeInfo
-	nonces    *nonceCache
-	now       func() time.Time
-	recipient string
+	auth                  *Auth
+	listen                string
+	onRecv                ReceiveFunc
+	peersFn               PeersFunc
+	versionFn             VersionFunc
+	historyFn             HistoryFunc
+	restoreFn             RestoreFunc
+	pinFn                 PinFunc
+	deleteFn              DeleteHistoryFunc
+	configFn              func(maxHistory int) error
+	listenerRepairReadFn  ListenerRepairReadFunc
+	listenerRepairPatchFn ListenerRepairPatchFunc
+	safeMode              bool
+	safeInfo              SafeModeInfo
+	nonces                *nonceCache
+	now                   func() time.Time
+	recipient             string
 }
 
 type SafeModeInfo struct {
@@ -106,6 +130,11 @@ func (s *Server) SetConfigFunc(fn func(maxHistory int) error) { s.configFn = fn 
 // SetVersionFunc wires the signed network version endpoint. Called by the daemon.
 func (s *Server) SetVersionFunc(fn VersionFunc) { s.versionFn = fn }
 
+func (s *Server) SetListenerRepair(readFn ListenerRepairReadFunc, patchFn ListenerRepairPatchFunc) {
+	s.listenerRepairReadFn = readFn
+	s.listenerRepairPatchFn = patchFn
+}
+
 func (s *Server) SetSafeMode(enabled bool) { s.safeMode = enabled }
 
 func (s *Server) SetSafeModeInfo(info SafeModeInfo) {
@@ -145,7 +174,7 @@ func (s *Server) safeModeRoute(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && (r.URL.Path == "/v1/status" || r.URL.Path == "/v1/peers" || r.URL.Path == "/v1/ssh/logs"):
 		s.getSafeModeReadOnly(w, r)
 	case (r.Method == http.MethodGet || r.Method == http.MethodPatch) && r.URL.Path == "/v1/config/listener":
-		s.safeModeSignedUnavailable(w, r, "listener_repair_unavailable")
+		s.handleSafeModeListenerRepair(w, r)
 	default:
 		writeSafeModeError(w, http.StatusConflict, "public_listen_requires_confirmation")
 	}
@@ -343,6 +372,39 @@ func (s *Server) safeModeSignedUnavailable(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.writeSignedError(w, signed, http.StatusServiceUnavailable, code)
+}
+
+func (s *Server) handleSafeModeListenerRepair(w http.ResponseWriter, r *http.Request) {
+	signed := s.readSignedLocalRequiredAuthVersion(w, r, AuthVersionRequestHMAC)
+	if signed == nil {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		if s.listenerRepairReadFn == nil {
+			s.writeSignedError(w, signed, http.StatusServiceUnavailable, "listener_repair_unavailable")
+			return
+		}
+		payload, handlerErr := s.listenerRepairReadFn()
+		if handlerErr != nil {
+			s.writeSignedError(w, signed, handlerErr.httpStatus(), handlerErr.Code)
+			return
+		}
+		s.writeSignedJSON(w, signed, payload)
+	case http.MethodPatch:
+		if s.listenerRepairPatchFn == nil {
+			s.writeSignedError(w, signed, http.StatusServiceUnavailable, "listener_repair_unavailable")
+			return
+		}
+		payload, handlerErr := s.listenerRepairPatchFn(signed.body)
+		if handlerErr != nil {
+			s.writeSignedError(w, signed, handlerErr.httpStatus(), handlerErr.Code)
+			return
+		}
+		s.writeSignedJSON(w, signed, payload)
+	default:
+		s.writeSignedError(w, signed, http.StatusMethodNotAllowed, "method_not_allowed")
+	}
 }
 
 func writeSafeModeError(w http.ResponseWriter, status int, code string) {

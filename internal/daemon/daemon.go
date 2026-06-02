@@ -155,6 +155,7 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 		},
 	)
 	d.sv.SetConfigFunc(d.setMaxHistory)
+	d.sv.SetListenerRepair(d.listenerRepairStatusHandler, d.listenerRepairPatchHandler)
 	d.serveListener = d.sv.ServeListener
 	return d, nil
 }

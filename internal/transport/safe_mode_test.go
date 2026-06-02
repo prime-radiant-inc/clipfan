@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -248,7 +249,7 @@ func TestSafeModeLogsExposeGlobalEntriesAndRejectPeerScopedLogs(t *testing.T) {
 	}
 }
 
-func TestSafeModeListenerRepairRoutesAreUnavailableUntilRepairMilestone(t *testing.T) {
+func TestSafeModeListenerRepairRoutesAreUnavailableWhenUnwired(t *testing.T) {
 	auth := testAuth(t)
 	srv := NewServer(":0", auth, nil, nil)
 	setFixedServerTime(srv)
@@ -266,6 +267,100 @@ func TestSafeModeListenerRepairRoutesAreUnavailableUntilRepairMilestone(t *testi
 		srv.Handler().ServeHTTP(rec, req)
 		requireSignedSafeModeError(t, auth, rec, "safe-listener-"+tc.method, http.StatusServiceUnavailable, "listener_repair_unavailable")
 	}
+}
+
+func TestSafeModeListenerRepairRoutesUseSignedHandlerSeam(t *testing.T) {
+	auth := testAuth(t)
+	srv := NewServer(":0", auth, nil, nil)
+	setFixedServerTime(srv)
+	srv.SetSafeMode(true)
+	patchBody := []byte(`{"expected_revision_state":"versioned","expected_config_revision":7,"listen":"127.0.0.1:9000","port":9000}`)
+	patchCalled := false
+	srv.SetListenerRepair(
+		func() (any, *HandlerError) {
+			return map[string]any{
+				"listen":                  "0.0.0.0:9000",
+				"port":                    9000,
+				"configured_listen":       "0.0.0.0:9000",
+				"effective_repair_listen": "127.0.0.1:9000",
+				"parse_error":             "",
+				"safe_mode":               true,
+				"config_version":          2,
+				"config_revision":         7,
+				"revision_state":          "versioned",
+			}, nil
+		},
+		func(body []byte) (any, *HandlerError) {
+			patchCalled = true
+			if !bytes.Equal(body, patchBody) {
+				t.Fatalf("patch body = %q, want %q", body, patchBody)
+			}
+			return map[string]any{
+				"listen":                  "127.0.0.1:9000",
+				"port":                    9000,
+				"previous_listen":         "0.0.0.0:9000",
+				"configured_listen":       "127.0.0.1:9000",
+				"effective_repair_listen": "127.0.0.1:9000",
+				"parse_error":             "",
+				"safe_mode":               false,
+				"config_version":          2,
+				"config_revision":         8,
+				"revision_state":          "versioned",
+			}, nil
+		},
+	)
+
+	getReq := signedSafeModeRequest(t, auth, http.MethodGet, "/v1/config/listener", "safe-listener-get", nil)
+	getRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET listener repair = %d %q, want 200", getRec.Code, getRec.Body.String())
+	}
+	requireVersionedSignedResponse(t, auth, getRec, "safe-listener-get")
+	getPayload := decodeJSONMap(t, getRec)
+	if getPayload["listen"] != "0.0.0.0:9000" || getPayload["effective_repair_listen"] != "127.0.0.1:9000" || getPayload["revision_state"] != "versioned" {
+		t.Fatalf("GET listener repair payload = %#v", getPayload)
+	}
+
+	patchReq := signedSafeModeRequest(t, auth, http.MethodPatch, "/v1/config/listener", "safe-listener-patch", patchBody)
+	patchRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("PATCH listener repair = %d %q, want 200", patchRec.Code, patchRec.Body.String())
+	}
+	requireVersionedSignedResponse(t, auth, patchRec, "safe-listener-patch")
+	if !patchCalled {
+		t.Fatal("PATCH listener repair handler was not called")
+	}
+	patchPayload := decodeJSONMap(t, patchRec)
+	if patchPayload["listen"] != "127.0.0.1:9000" || patchPayload["previous_listen"] != "0.0.0.0:9000" || patchPayload["config_revision"] != float64(8) {
+		t.Fatalf("PATCH listener repair payload = %#v", patchPayload)
+	}
+}
+
+func TestSafeModeListenerRepairHandlerErrorsAreSigned(t *testing.T) {
+	auth := testAuth(t)
+	srv := NewServer(":0", auth, nil, nil)
+	setFixedServerTime(srv)
+	srv.SetSafeMode(true)
+	srv.SetListenerRepair(
+		func() (any, *HandlerError) {
+			return nil, &HandlerError{Status: http.StatusConflict, Code: "config_revision_conflict"}
+		},
+		func([]byte) (any, *HandlerError) {
+			return nil, &HandlerError{Status: http.StatusBadRequest, Code: "unknown_field"}
+		},
+	)
+
+	getReq := signedSafeModeRequest(t, auth, http.MethodGet, "/v1/config/listener", "safe-listener-get-error", nil)
+	getRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(getRec, getReq)
+	requireSignedSafeModeError(t, auth, getRec, "safe-listener-get-error", http.StatusConflict, "config_revision_conflict")
+
+	patchReq := signedSafeModeRequest(t, auth, http.MethodPatch, "/v1/config/listener", "safe-listener-patch-error", []byte(`{"shared_key":"secret"}`))
+	patchRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(patchRec, patchReq)
+	requireSignedSafeModeError(t, auth, patchRec, "safe-listener-patch-error", http.StatusBadRequest, "unknown_field")
 }
 
 func TestSafeModeSignedEndpointsRequireHKDFAuthVersion(t *testing.T) {

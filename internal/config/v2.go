@@ -19,6 +19,7 @@ import (
 var (
 	ErrConfigV2WritesDisabled = errors.New("config_v2_writes_disabled")
 	ErrConfigRevisionConflict = errors.New("config_revision_conflict")
+	ErrConfigFileUnsafe       = errors.New("config_file_unsafe")
 )
 
 type RevisionState string
@@ -154,6 +155,19 @@ func UpdateConfigV2Scoped(path string, expected RevisionExpectation, mutate func
 }
 
 func updateConfigV2ScopedWithGate(path string, gateEnabled bool, expected RevisionExpectation, mutate func(*Config) error) error {
+	if mutate == nil {
+		return fmt.Errorf("missing scoped config mutation")
+	}
+	return updateConfigV2ScopedRawWithBackup(path, gateEnabled, expected, "", func(cfg *Config, _ map[string]json.RawMessage) error {
+		return mutate(cfg)
+	})
+}
+
+func updateConfigV2ScopedRawWithGate(path string, gateEnabled bool, expected RevisionExpectation, mutate func(*Config, map[string]json.RawMessage) error) error {
+	return updateConfigV2ScopedRawWithBackup(path, gateEnabled, expected, "", mutate)
+}
+
+func updateConfigV2ScopedRawWithBackup(path string, gateEnabled bool, expected RevisionExpectation, backupPath string, mutate func(*Config, map[string]json.RawMessage) error) error {
 	if !gateEnabled {
 		return ErrConfigV2WritesDisabled
 	}
@@ -162,11 +176,7 @@ func updateConfigV2ScopedWithGate(path string, gateEnabled bool, expected Revisi
 	}
 
 	return withConfigFileLock(path, func() error {
-		if err := removeStaleConfigV2Temps(path); err != nil {
-			return err
-		}
-
-		data, err := os.ReadFile(path)
+		data, err := readConfigFileSafe(path)
 		if err != nil {
 			return err
 		}
@@ -177,10 +187,18 @@ func updateConfigV2ScopedWithGate(path string, gateEnabled bool, expected Revisi
 		if err := validateRevisionExpectation(doc, expected); err != nil {
 			return err
 		}
+		if err := removeStaleConfigV2Temps(path); err != nil {
+			return err
+		}
 
 		cfg := doc.Config
-		if err := mutate(&cfg); err != nil {
+		if err := mutate(&cfg, doc.raw); err != nil {
 			return err
+		}
+		if backupPath != "" {
+			if err := writeConfigV2Backup(backupPath, data, 0o600); err != nil {
+				return err
+			}
 		}
 		nextRevision, err := nextConfigRevision(doc)
 		if err != nil {
@@ -194,6 +212,44 @@ func updateConfigV2ScopedWithGate(path string, gateEnabled bool, expected Revisi
 	})
 }
 
+func writeConfigV2Backup(path string, data []byte, mode os.FileMode) error {
+	if err := ensureConfigDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(path)
+		}
+	}()
+	n, err := file.Write(data)
+	if err != nil {
+		_ = file.Close()
+		return err
+	}
+	if n != len(data) {
+		_ = file.Close()
+		return fmt.Errorf("short write to %s", path)
+	}
+	if err := file.Chmod(mode); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := syncBestEffort(file); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	cleanup = false
+	return syncDirBestEffort(filepath.Dir(path))
+}
+
 func withConfigFileLock(path string, fn func() error) error {
 	dir := filepath.Dir(path)
 	if err := ensureConfigDir(dir); err != nil {
@@ -203,15 +259,22 @@ func withConfigFileLock(path string, fn func() error) error {
 	if err != nil {
 		return err
 	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("config file %s is not a regular file", path)
+	if err := validateConfigFileInfo(path, info); err != nil {
+		return err
 	}
 
-	lockFile, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	lockPath := path + ".lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return fmt.Errorf("%w: config lock is symlink: %s", ErrConfigFileUnsafe, lockPath)
+		}
 		return err
 	}
 	defer lockFile.Close()
+	if err := validateConfigLockFile(lockPath, lockFile); err != nil {
+		return err
+	}
 	if err := lockFile.Chmod(0o600); err != nil {
 		return err
 	}
@@ -221,6 +284,153 @@ func withConfigFileLock(path string, fn func() error) error {
 	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 
 	return fn()
+}
+
+func readConfigDocumentLocked(path string) (*configDocument, error) {
+	var doc *configDocument
+	if err := withConfigFileLock(path, func() error {
+		data, err := readConfigFileSafe(path)
+		if err != nil {
+			return err
+		}
+		parsed, err := parseConfigDocument(data)
+		if err != nil {
+			return err
+		}
+		doc = parsed
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return doc, nil
+}
+
+func readConfigFileSafe(path string) ([]byte, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, fmt.Errorf("%w: config file is symlink: %s", ErrConfigFileUnsafe, path)
+		}
+		return nil, err
+	}
+	defer file.Close()
+	if err := validateConfigOpenedFile(path, file); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(file)
+}
+
+func validateConfigOpenedFile(path string, file *os.File) error {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if err := validateConfigFileInfo(path, info); err != nil {
+		return err
+	}
+	openedIdentity, err := configFileIdentity(info)
+	if err != nil {
+		return err
+	}
+	pathInfo, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if err := validateConfigFileInfo(path, pathInfo); err != nil {
+		return err
+	}
+	pathIdentity, err := configFileIdentity(pathInfo)
+	if err != nil {
+		return err
+	}
+	if openedIdentity.device != pathIdentity.device || openedIdentity.inode != pathIdentity.inode {
+		return fmt.Errorf("%w: config file changed during open: %s", ErrConfigFileUnsafe, path)
+	}
+	return nil
+}
+
+func validateConfigFileInfo(path string, info os.FileInfo) error {
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: config file is symlink: %s", ErrConfigFileUnsafe, path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: config file is not a regular file: %s", ErrConfigFileUnsafe, path)
+	}
+	identity, err := configFileIdentity(info)
+	if err != nil {
+		return err
+	}
+	if identity.uid != uint32(os.Getuid()) {
+		return fmt.Errorf("%w: config file owner uid %d does not match current uid %d: %s", ErrConfigFileUnsafe, identity.uid, os.Getuid(), path)
+	}
+	if identity.linkCount > 1 {
+		return fmt.Errorf("%w: config file has multiple links: %s", ErrConfigFileUnsafe, path)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("%w: config file permissions are too open: %s", ErrConfigFileUnsafe, path)
+	}
+	return nil
+}
+
+func validateConfigLockFile(lockPath string, file *os.File) error {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: config lock is not a regular file: %s", ErrConfigFileUnsafe, lockPath)
+	}
+	openedIdentity, err := configFileIdentity(info)
+	if err != nil {
+		return err
+	}
+	if openedIdentity.uid != uint32(os.Getuid()) {
+		return fmt.Errorf("%w: config lock owner uid %d does not match current uid %d: %s", ErrConfigFileUnsafe, openedIdentity.uid, os.Getuid(), lockPath)
+	}
+	if openedIdentity.linkCount > 1 {
+		return fmt.Errorf("%w: config lock has multiple links: %s", ErrConfigFileUnsafe, lockPath)
+	}
+	pathInfo, err := os.Lstat(lockPath)
+	if err != nil {
+		return err
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: config lock is symlink: %s", ErrConfigFileUnsafe, lockPath)
+	}
+	if !pathInfo.Mode().IsRegular() {
+		return fmt.Errorf("%w: config lock is not a regular file: %s", ErrConfigFileUnsafe, lockPath)
+	}
+	pathIdentity, err := configFileIdentity(pathInfo)
+	if err != nil {
+		return err
+	}
+	if openedIdentity.device != pathIdentity.device || openedIdentity.inode != pathIdentity.inode {
+		return fmt.Errorf("%w: config lock changed during open: %s", ErrConfigFileUnsafe, lockPath)
+	}
+	if pathInfo.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("%w: config lock permissions are too open: %s", ErrConfigFileUnsafe, lockPath)
+	}
+	return nil
+}
+
+type configFileIdentityInfo struct {
+	device    uint64
+	inode     uint64
+	linkCount uint64
+	uid       uint32
+}
+
+func configFileIdentity(info os.FileInfo) (configFileIdentityInfo, error) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return configFileIdentityInfo{}, fmt.Errorf("%w: could not inspect file identity", ErrConfigFileUnsafe)
+	}
+	return configFileIdentityInfo{
+		device:    uint64(stat.Dev),
+		inode:     uint64(stat.Ino),
+		linkCount: uint64(stat.Nlink),
+		uid:       uint32(stat.Uid),
+	}, nil
 }
 
 func nextConfigRevision(doc *configDocument) (uint64, error) {
