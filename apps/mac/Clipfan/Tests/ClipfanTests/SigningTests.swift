@@ -95,6 +95,24 @@ final class SigningTests: XCTestCase {
         XCTAssertThrowsError(try authenticatedClipfanData(Data(#"{"origin":"evil"}"#.utf8), response: response, requestNonce: "nonce-1", key: rawKey))
     }
 
+    func testAuthenticatedResponseAcceptsVersionedSignature() throws {
+        let url = URL(string: "http://127.0.0.1:7853/v1/peers")!
+        let body = Data(#"{"origin":"m4"}"#.utf8)
+        let sig = clipfanVersionedResponseSignature(requestNonce: "nonce-1", body: body, sharedKey: rawKey)
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: [
+                "X-Clipfan-Auth-Version": clipfanRequestAuthVersion,
+                "X-Clipfan-Response-Sig": sig,
+            ]
+        ))
+
+        XCTAssertNoThrow(try authenticatedClipfanData(body, response: response, requestNonce: "nonce-1", key: rawKey))
+        XCTAssertThrowsError(try authenticatedClipfanData(body, response: response, requestNonce: "nonce-2", key: rawKey))
+    }
+
     func testSignatureHeadersIncludeFreshnessFields() {
         let headers = clipfanSignatureHeaders(
             method: "GET",

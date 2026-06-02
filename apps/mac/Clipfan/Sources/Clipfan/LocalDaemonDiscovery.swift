@@ -35,8 +35,8 @@ enum LocalDaemonDiscovery {
         let derivedPort = listenEndpoint?.port ?? validPort(portValue) ?? defaultPort
 
         var signed: [LocalDaemonEndpoint] = []
-        if listenEndpoint?.isLoopback == true {
-            signed.append(endpoint(port: derivedPort, purpose: .signed))
+        if let listenEndpoint, listenEndpoint.isLoopback {
+            signed.append(endpoint(host: listenEndpoint.host, port: derivedPort, purpose: .signed))
         }
         if derivedPort != defaultPort, identityProof != nil {
             signed.append(endpoint(port: defaultPort, purpose: .signedCompatibility))
@@ -56,11 +56,21 @@ enum LocalDaemonDiscovery {
     }
 
     private static func endpoint(port: Int, purpose: LocalDaemonEndpoint.Purpose) -> LocalDaemonEndpoint {
-        var components = URLComponents()
-        components.scheme = "http"
-        components.host = "127.0.0.1"
-        components.port = port
-        return LocalDaemonEndpoint(url: components.url!, port: port, purpose: purpose)
+        endpoint(host: "127.0.0.1", port: port, purpose: purpose)
+    }
+
+    private static func endpoint(host: String, port: Int, purpose: LocalDaemonEndpoint.Purpose) -> LocalDaemonEndpoint {
+        let url: URL
+        if host.contains(":") {
+            url = URL(string: "http://[\(host)]:\(port)")!
+        } else {
+            var components = URLComponents()
+            components.scheme = "http"
+            components.host = host
+            components.port = port
+            url = components.url!
+        }
+        return LocalDaemonEndpoint(url: url, port: port, purpose: purpose)
     }
 
     private static func validPort(_ port: Int?) -> Int? {
@@ -68,10 +78,10 @@ enum LocalDaemonDiscovery {
         return port
     }
 
-    private static func parseListen(_ listen: String?) -> (port: Int, isLoopback: Bool)? {
+    private static func parseListen(_ listen: String?) -> (host: String, port: Int, isLoopback: Bool)? {
         guard let listen, !listen.isEmpty else { return nil }
         if listen.hasPrefix(":") {
-            return validPort(Int(listen.dropFirst())).map { ($0, false) }
+            return validPort(Int(listen.dropFirst())).map { ("", $0, false) }
         }
         if listen.hasPrefix("[") {
             guard let close = listen.firstIndex(of: "]") else { return nil }
@@ -79,12 +89,12 @@ enum LocalDaemonDiscovery {
             let remainder = listen[listen.index(after: close)...]
             guard remainder.hasPrefix(":") else { return nil }
             let portText = remainder.dropFirst()
-            return validPort(Int(portText)).map { ($0, isLoopbackHost(host)) }
+            return validPort(Int(portText)).map { (host, $0, isLoopbackHost(host)) }
         }
         guard let colon = listen.lastIndex(of: ":") else { return nil }
         let host = String(listen[..<colon])
         let portText = listen[listen.index(after: colon)...]
-        return validPort(Int(portText)).map { ($0, isLoopbackHost(host)) }
+        return validPort(Int(portText)).map { (host, $0, isLoopbackHost(host)) }
     }
 
     private static func isLoopbackHost(_ host: String) -> Bool {

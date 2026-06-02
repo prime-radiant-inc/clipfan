@@ -11,6 +11,14 @@ final class LocalDaemonDiscoveryTests: XCTestCase {
         XCTAssertEqual(plan.healthOnlyEndpoints.map(\.port), [49123, 7853])
     }
 
+    func testConfigDerivedIPv6LoopbackListenIsPreservedForSignedEndpoints() throws {
+        let plan = LocalDaemonDiscovery.plan(configData: data(#"{"listen":"[::1]:49123","port":7853}"#))
+
+        XCTAssertEqual(plan.signedEndpoints, [
+            LocalDaemonEndpoint(url: try XCTUnwrap(URL(string: "http://[::1]:49123")), port: 49123, purpose: .signed),
+        ])
+    }
+
     func testUnsafeListenDoesNotAuthorizeSignedEndpoints() {
         let wildcard = LocalDaemonDiscovery.plan(configData: data(#"{"listen":":49123","port":7853}"#))
         XCTAssertEqual(wildcard.signedEndpoints, [])

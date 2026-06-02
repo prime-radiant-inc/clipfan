@@ -96,8 +96,14 @@ func authenticatedClipfanData(_ data: Data, response: URLResponse, requestNonce:
     guard let sig = http.value(forHTTPHeaderField: "X-Clipfan-Response-Sig") else {
         throw ClipfanAuthenticationError.missingResponseSignature
     }
-    guard clipfanVerifyResponseSignature(sig, requestNonce: requestNonce, body: data, key: key) else {
-        throw ClipfanAuthenticationError.badResponseSignature
+    if http.value(forHTTPHeaderField: "X-Clipfan-Auth-Version") == clipfanRequestAuthVersion {
+        guard clipfanVerifyVersionedResponseSignature(sig, requestNonce: requestNonce, body: data, sharedKey: key) else {
+            throw ClipfanAuthenticationError.badResponseSignature
+        }
+    } else {
+        guard clipfanVerifyResponseSignature(sig, requestNonce: requestNonce, body: data, key: key) else {
+            throw ClipfanAuthenticationError.badResponseSignature
+        }
     }
     return data
 }
@@ -105,6 +111,12 @@ func authenticatedClipfanData(_ data: Data, response: URLResponse, requestNonce:
 private func clipfanVerifyResponseSignature(_ sig: String, requestNonce: String, body: Data, key: Data) -> Bool {
     guard let got = hexData(sig) else { return false }
     guard let expect = hexData(clipfanResponseSignature(requestNonce: requestNonce, body: body, key: key)) else { return false }
+    return constantTimeEqual(got, expect)
+}
+
+private func clipfanVerifyVersionedResponseSignature(_ sig: String, requestNonce: String, body: Data, sharedKey: Data) -> Bool {
+    guard let got = hexData(sig) else { return false }
+    guard let expect = hexData(clipfanVersionedResponseSignature(requestNonce: requestNonce, body: body, sharedKey: sharedKey)) else { return false }
     return constantTimeEqual(got, expect)
 }
 
