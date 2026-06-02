@@ -13,7 +13,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -140,14 +139,13 @@ func pushToDaemon(kind string, body []byte) error {
 
 	req, _ := http.NewRequest("POST", localURL+"/v1/clip", bytes.NewReader(raw))
 	req.Header.Set("Content-Type", "application/json")
-	nonce := transport.NewClipID()
-	if nonce == "" {
-		return errors.New("generate request nonce")
+	headers, err := auth.SignedRequestHeaders(req.Method, req.URL.RequestURI(), raw, transport.SignedRequestOptions{})
+	if err != nil {
+		return err
 	}
-	ts := strconv.FormatInt(time.Now().Unix(), 10)
-	req.Header.Set("X-Clipfan-Ts", ts)
-	req.Header.Set("X-Clipfan-Nonce", nonce)
-	req.Header.Set("X-Clipfan-Sig", auth.SignRequest(req.Method, req.URL.RequestURI(), ts, nonce, raw))
+	for header, value := range headers {
+		req.Header.Set(header, value)
+	}
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {

@@ -59,14 +59,13 @@ func (c *Client) PushAs(ctx context.Context, host string, port int, content clip
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	requestNonce := NewClipID()
-	if requestNonce == "" {
-		return fmt.Errorf("generate request nonce")
+	headers, err := c.auth.SignedRequestHeaders(req.Method, req.URL.RequestURI(), raw, SignedRequestOptions{})
+	if err != nil {
+		return err
 	}
-	ts := strconv.FormatInt(time.Now().Unix(), 10)
-	req.Header.Set("X-Clipfan-Ts", ts)
-	req.Header.Set("X-Clipfan-Nonce", requestNonce)
-	req.Header.Set("X-Clipfan-Sig", c.auth.SignRequest(req.Method, req.URL.RequestURI(), ts, requestNonce, raw))
+	for header, value := range headers {
+		req.Header.Set(header, value)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err

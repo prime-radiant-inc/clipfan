@@ -9,6 +9,23 @@ enum ClipfanAuthenticationError: Error {
     case badResponseSignature
 }
 
+let clipfanRequestAuthVersion = "clipfan-v1/request-hmac"
+private let clipfanHKDFSalt = "clipfan-v1/hkdf-salt"
+
+func clipfanHKDFSHA256(rawKey: Data, info: String, outputByteCount: Int = 32) -> Data {
+    let key = HKDF<SHA256>.deriveKey(
+        inputKeyMaterial: SymmetricKey(data: rawKey),
+        salt: Data(clipfanHKDFSalt.utf8),
+        info: Data(info.utf8),
+        outputByteCount: outputByteCount
+    )
+    return key.withUnsafeBytes { Data($0) }
+}
+
+func clipfanRequestHMACKey(sharedKey: Data) -> Data {
+    clipfanHKDFSHA256(rawKey: sharedKey, info: clipfanRequestAuthVersion)
+}
+
 func clipfanSign(method: String, requestURI: String, timestamp: String, nonce: String, body: Data, key: Data) -> String {
     var canonical = Data()
     canonical.append(Data(method.utf8))
@@ -25,6 +42,25 @@ func clipfanSign(method: String, requestURI: String, timestamp: String, nonce: S
     return mac.map { String(format: "%02x", $0) }.joined()
 }
 
+func clipfanVersionedSign(method: String, requestURI: String, timestamp: String, nonce: String, body: Data, sharedKey: Data) -> String {
+    var canonical = Data()
+    canonical.append(Data(method.utf8))
+    canonical.append(Data("\n".utf8))
+    canonical.append(Data(requestURI.utf8))
+    canonical.append(Data("\n".utf8))
+    canonical.append(Data(timestamp.utf8))
+    canonical.append(Data("\n".utf8))
+    canonical.append(Data(nonce.utf8))
+    canonical.append(Data("\n".utf8))
+    canonical.append(Data("auth_version=\(clipfanRequestAuthVersion)".utf8))
+    canonical.append(Data("\n".utf8))
+    canonical.append(body)
+
+    let requestKey = clipfanRequestHMACKey(sharedKey: sharedKey)
+    let mac = HMAC<SHA256>.authenticationCode(for: canonical, using: SymmetricKey(data: requestKey))
+    return mac.map { String(format: "%02x", $0) }.joined()
+}
+
 func clipfanResponseSignature(requestNonce: String, body: Data, key: Data) -> String {
     var canonical = Data()
     canonical.append(Data("response\n".utf8))
@@ -33,6 +69,20 @@ func clipfanResponseSignature(requestNonce: String, body: Data, key: Data) -> St
     canonical.append(body)
 
     let mac = HMAC<SHA256>.authenticationCode(for: canonical, using: SymmetricKey(data: key))
+    return mac.map { String(format: "%02x", $0) }.joined()
+}
+
+func clipfanVersionedResponseSignature(requestNonce: String, body: Data, sharedKey: Data) -> String {
+    var canonical = Data()
+    canonical.append(Data("response\n".utf8))
+    canonical.append(Data(requestNonce.utf8))
+    canonical.append(Data("\n".utf8))
+    canonical.append(Data("auth_version=\(clipfanRequestAuthVersion)".utf8))
+    canonical.append(Data("\n".utf8))
+    canonical.append(body)
+
+    let requestKey = clipfanRequestHMACKey(sharedKey: sharedKey)
+    let mac = HMAC<SHA256>.authenticationCode(for: canonical, using: SymmetricKey(data: requestKey))
     return mac.map { String(format: "%02x", $0) }.joined()
 }
 
@@ -88,6 +138,17 @@ func clipfanSignatureHeaders(method: String, requestURI: String, body: Data, key
         "X-Clipfan-Ts": timestamp,
         "X-Clipfan-Nonce": nonce,
         "X-Clipfan-Sig": clipfanSign(method: method, requestURI: requestURI, timestamp: timestamp, nonce: nonce, body: body, key: key),
+    ]
+}
+
+func clipfanVersionedSignatureHeaders(method: String, requestURI: String, body: Data, sharedKey: Data) -> [String: String] {
+    let timestamp = String(Int(Date().timeIntervalSince1970))
+    let nonce = UUID().uuidString
+    return [
+        "X-Clipfan-Auth-Version": clipfanRequestAuthVersion,
+        "X-Clipfan-Ts": timestamp,
+        "X-Clipfan-Nonce": nonce,
+        "X-Clipfan-Sig": clipfanVersionedSign(method: method, requestURI: requestURI, timestamp: timestamp, nonce: nonce, body: body, sharedKey: sharedKey),
     ]
 }
 
