@@ -199,29 +199,38 @@ final class InstallerFlagTests: XCTestCase {
     func testAddPeerToLocalConfigRejectsConfigV2WhenGateDisabled() async throws {
         XCTAssertFalse(GeneratedSSHTransportGates.configV2WriteEnabled)
 
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("clipfan-config-v2-\(UUID().uuidString)")
-        let configURL = root.appendingPathComponent("clipfan/config.json")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let bodies = [
+            #"{"config_version":2,"config_revision":1,"shared_key":"secret","static_peers":["existing"],"future":{"keep":true}}"#,
+            #"{"config_version":3,"shared_key":"secret","static_peers":["existing"]}"#,
+            #"{"config_version":"2","shared_key":"secret","static_peers":["existing"]}"#,
+            #"{"config_version":2.1,"shared_key":"secret","static_peers":["existing"]}"#,
+            #"{"config_version":null,"shared_key":"secret","static_peers":["existing"]}"#
+        ]
 
-        try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(),
-                                                withIntermediateDirectories: true)
-        let before = #"{"config_version":2,"config_revision":1,"shared_key":"secret","static_peers":["existing"],"future":{"keep":true}}"#
-            .data(using: .utf8)!
-        try before.write(to: configURL)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                              ofItemAtPath: configURL.path)
+        for body in bodies {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("clipfan-config-v2-\(UUID().uuidString)")
+            let configURL = root.appendingPathComponent("clipfan/config.json")
+            defer { try? FileManager.default.removeItem(at: root) }
 
-        do {
-            try await Installer.addPeerToLocalConfig("new-peer", configURL: configURL)
-            XCTFail("expected config_v2_writes_disabled")
-        } catch {
-            XCTAssertTrue(String(describing: error).contains("config_v2_writes_disabled"),
-                          "error \(error) should include stable code")
+            try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            let before = body.data(using: .utf8)!
+            try before.write(to: configURL)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                  ofItemAtPath: configURL.path)
+
+            do {
+                try await Installer.addPeerToLocalConfig("new-peer", configURL: configURL)
+                XCTFail("expected config_v2_writes_disabled for \(body)")
+            } catch {
+                XCTAssertTrue(String(describing: error).contains("config_v2_writes_disabled"),
+                              "error \(error) should include stable code")
+            }
+
+            let after = try Data(contentsOf: configURL)
+            XCTAssertEqual(after, before)
         }
-
-        let after = try Data(contentsOf: configURL)
-        XCTAssertEqual(after, before)
     }
 
     private func posixMode(_ url: URL) throws -> Int {

@@ -89,8 +89,13 @@ func Load() (*Config, error) {
 }
 
 func Save(c *Config) error {
-	if c != nil && c.ConfigVersion != nil && *c.ConfigVersion == 2 && !releaseflags.ConfigV2WriteEnabled {
-		return ErrConfigV2WritesDisabled
+	if c != nil {
+		if c.ConfigVersion != nil && *c.ConfigVersion != 2 {
+			return fmt.Errorf("unsupported_config_version: %d", *c.ConfigVersion)
+		}
+		if !releaseflags.ConfigV2WriteEnabled && (c.ConfigVersion != nil || c.ConfigRevision != nil) {
+			return ErrConfigV2WritesDisabled
+		}
 	}
 	path := Path()
 	if err := ensureConfigDir(filepath.Dir(path)); err != nil {

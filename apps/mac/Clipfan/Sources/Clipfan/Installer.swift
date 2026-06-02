@@ -358,8 +358,7 @@ actor Installer {
     static func addPeerToLocalConfig(_ host: String, configURL: URL? = nil) async throws {
         let p = configURL ?? localConfigURL()
         var cfg = (try? await readLocalConfig(configURL: p)) ?? [:]
-        if let version = cfg["config_version"] as? NSNumber,
-           version.intValue == 2,
+        if cfg.keys.contains("config_version"),
            !GeneratedSSHTransportGates.configV2WriteEnabled {
             throw InstallError.configIO("config_v2_writes_disabled")
         }

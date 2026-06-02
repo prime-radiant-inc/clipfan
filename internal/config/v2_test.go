@@ -144,6 +144,42 @@ func TestSaveRejectsConstructedConfigV2WhenGeneratedGateFalse(t *testing.T) {
 	}
 }
 
+func TestSaveRejectsConstructedConfigRevisionWithoutVersionWhenGeneratedGateFalse(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	revision := uint64(1)
+
+	err := Save(&Config{
+		ConfigRevision: &revision,
+		SharedKey:      NewSharedKey(),
+		MaxHistory:     75,
+	})
+	if !errors.Is(err, ErrConfigV2WritesDisabled) {
+		t.Fatalf("Save error = %v, want ErrConfigV2WritesDisabled", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "clipfan", "config.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("config file stat error = %v, want not exist", statErr)
+	}
+}
+
+func TestSaveRejectsUnsupportedConstructedConfigVersion(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	version := 3
+
+	err := Save(&Config{
+		ConfigVersion: &version,
+		SharedKey:     NewSharedKey(),
+		MaxHistory:    75,
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported_config_version") {
+		t.Fatalf("Save error = %v, want unsupported_config_version", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "clipfan", "config.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("config file stat error = %v, want not exist", statErr)
+	}
+}
+
 func TestUpdateConfigV2ScopedPreservesUnknownFieldsAndIncrementsRevision(t *testing.T) {
 	path := writeConfigForV2Test(t, `{
 		"config_version": 2,
