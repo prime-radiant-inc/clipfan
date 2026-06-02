@@ -161,6 +161,40 @@ func updateConfigV2ScopedWithGate(path string, gateEnabled bool, expected Revisi
 		return fmt.Errorf("missing scoped config mutation")
 	}
 
+	return withConfigFileLock(path, func() error {
+		if err := removeStaleConfigV2Temps(path); err != nil {
+			return err
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		doc, err := parseConfigDocument(data)
+		if err != nil {
+			return err
+		}
+		if err := validateRevisionExpectation(doc, expected); err != nil {
+			return err
+		}
+
+		cfg := doc.Config
+		if err := mutate(&cfg); err != nil {
+			return err
+		}
+		nextRevision, err := nextConfigRevision(doc)
+		if err != nil {
+			return err
+		}
+		out, err := marshalConfigDocument(doc, cfg, nextRevision)
+		if err != nil {
+			return err
+		}
+		return writeConfigV2Atomic(path, out, 0o600)
+	})
+}
+
+func withConfigFileLock(path string, fn func() error) error {
 	dir := filepath.Dir(path)
 	if err := ensureConfigDir(dir); err != nil {
 		return err
@@ -186,38 +220,17 @@ func updateConfigV2ScopedWithGate(path string, gateEnabled bool, expected Revisi
 	}
 	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 
-	if err := removeStaleConfigV2Temps(path); err != nil {
-		return err
-	}
+	return fn()
+}
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
+func nextConfigRevision(doc *configDocument) (uint64, error) {
+	if doc.RevisionState != RevisionStateVersioned {
+		return 1, nil
 	}
-	doc, err := parseConfigDocument(data)
-	if err != nil {
-		return err
+	if *doc.ConfigRevision == ^uint64(0) {
+		return 0, fmt.Errorf("invalid_config_revision: cannot increment max uint64")
 	}
-	if err := validateRevisionExpectation(doc, expected); err != nil {
-		return err
-	}
-
-	cfg := doc.Config
-	if err := mutate(&cfg); err != nil {
-		return err
-	}
-	nextRevision := uint64(1)
-	if doc.RevisionState == RevisionStateVersioned {
-		if *doc.ConfigRevision == ^uint64(0) {
-			return fmt.Errorf("invalid_config_revision: cannot increment max uint64")
-		}
-		nextRevision = *doc.ConfigRevision + 1
-	}
-	out, err := marshalConfigDocument(doc, cfg, nextRevision)
-	if err != nil {
-		return err
-	}
-	return writeConfigV2Atomic(path, out, 0o600)
+	return *doc.ConfigRevision + 1, nil
 }
 
 func validateRevisionExpectation(doc *configDocument, expected RevisionExpectation) error {
