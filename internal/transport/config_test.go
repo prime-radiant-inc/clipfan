@@ -2,8 +2,10 @@ package transport
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
@@ -36,5 +38,26 @@ func TestPostConfigDispatchesMaxHistory(t *testing.T) {
 	s.Handler().ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusUnauthorized {
 		t.Fatalf("unsigned status = %d, want 401", rec2.Code)
+	}
+}
+
+func TestPostConfigPropagatesConfigErrorCode(t *testing.T) {
+	auth, err := NewAuth("dGVzdC1rZXktMDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(":0", auth, func(clipboard.Content, string) {}, func() any { return nil })
+	setFixedServerTime(s)
+	s.SetConfigFunc(func(int) error { return errors.New("config_v2_writes_disabled") })
+
+	body := []byte(`{"max_history":123}`)
+	req := signedRequestWithNonce(t, auth, http.MethodPost, "/v1/config", "config", body)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("signed POST status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "config_v2_writes_disabled") {
+		t.Fatalf("response body = %q, want stable code", rec.Body.String())
 	}
 }

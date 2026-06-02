@@ -8,17 +8,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
 )
 
 const defaultMaxHistory = 200
 
 type Config struct {
-	Listen      string   `json:"listen"`
-	SharedKey   string   `json:"shared_key"`
-	Discovery   string   `json:"discovery"`
-	StaticPeers []string `json:"static_peers,omitempty"`
-	Hostname    string   `json:"hostname,omitempty"`
-	Port        int      `json:"port,omitempty"`
+	ConfigVersion  *int     `json:"config_version,omitempty"`
+	ConfigRevision *uint64  `json:"config_revision,omitempty"`
+	Listen         string   `json:"listen"`
+	SharedKey      string   `json:"shared_key"`
+	Discovery      string   `json:"discovery"`
+	StaticPeers    []string `json:"static_peers,omitempty"`
+	Hostname       string   `json:"hostname,omitempty"`
+	Port           int      `json:"port,omitempty"`
 	// MaxHistory caps the number of retained clipboard history entries.
 	MaxHistory int `json:"max_history,omitempty"`
 }
@@ -75,15 +79,19 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Config{}
-	if err := json.Unmarshal(data, c); err != nil {
+	doc, err := parseConfigDocument(data)
+	if err != nil {
 		return nil, err
 	}
+	c := &doc.Config
 	*c = withDefaults(*c)
 	return c, nil
 }
 
 func Save(c *Config) error {
+	if c != nil && c.ConfigVersion != nil && *c.ConfigVersion == 2 && !releaseflags.ConfigV2WriteEnabled {
+		return ErrConfigV2WritesDisabled
+	}
 	path := Path()
 	if err := ensureConfigDir(filepath.Dir(path)); err != nil {
 		return err
