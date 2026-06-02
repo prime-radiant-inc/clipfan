@@ -103,6 +103,14 @@ cleanup() {
 trap 'cleanup || true' EXIT
 
 json_escape() {
+  if command -v perl >/dev/null 2>&1; then
+    printf '%s' "$1" | perl -0pe 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g; s/\r/\\r/g; s/\t/\\t/g; s/([\x00-\x08\x0b\x0c\x0e-\x1f])/sprintf("\\u%04x", ord($1))/ge'
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    JSON_ESCAPE_VALUE="$1" python3 -c 'import json, os; print(json.dumps(os.environ["JSON_ESCAPE_VALUE"])[1:-1], end="")'
+    return 0
+  fi
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 

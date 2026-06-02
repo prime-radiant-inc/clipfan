@@ -33,6 +33,9 @@ if ! grep -q "\"status\": \"$sentinel\"" "$artifact"; then
   cat "$artifact" >&2 || true
   exit 1
 fi
+if command -v python3 >/dev/null 2>&1; then
+  python3 -m json.tool "$artifact" >/dev/null
+fi
 
 if CLIPFAN_OPENSSH_FIXTURE_REQUIRED=1 \
   CLIPFAN_OPENSSH_FIXTURE_ARTIFACT="$tmp/required.json" \
@@ -45,4 +48,7 @@ if ! grep -q "\"status\": \"$sentinel\"" "$tmp/required.json"; then
   echo "expected required artifact status $sentinel" >&2
   cat "$tmp/required.json" >&2 || true
   exit 1
+fi
+if command -v python3 >/dev/null 2>&1; then
+  python3 -m json.tool "$tmp/required.json" >/dev/null
 fi
