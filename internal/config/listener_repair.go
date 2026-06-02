@@ -142,6 +142,8 @@ func repairListenerWithBackupAndGate(path string, gateEnabled bool, req Listener
 
 		if expected.State != RevisionStateVersioned {
 			pruneRawForListenerRepairPromotion(raw)
+			cfg.Transport = ""
+			cfg.SSH = nil
 		}
 		cfg.Listen = plan.EffectiveRepairListen
 		cfg.Port = req.Port

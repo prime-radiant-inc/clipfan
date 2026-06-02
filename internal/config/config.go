@@ -15,14 +15,16 @@ import (
 const defaultMaxHistory = 200
 
 type Config struct {
-	ConfigVersion  *int     `json:"config_version,omitempty"`
-	ConfigRevision *uint64  `json:"config_revision,omitempty"`
-	Listen         string   `json:"listen"`
-	SharedKey      string   `json:"shared_key"`
-	Discovery      string   `json:"discovery"`
-	StaticPeers    []string `json:"static_peers,omitempty"`
-	Hostname       string   `json:"hostname,omitempty"`
-	Port           int      `json:"port,omitempty"`
+	ConfigVersion  *int       `json:"config_version,omitempty"`
+	ConfigRevision *uint64    `json:"config_revision,omitempty"`
+	Listen         string     `json:"listen"`
+	SharedKey      string     `json:"shared_key"`
+	Discovery      string     `json:"discovery"`
+	StaticPeers    []string   `json:"static_peers,omitempty"`
+	Hostname       string     `json:"hostname,omitempty"`
+	Transport      string     `json:"transport,omitempty"`
+	SSH            *SSHConfig `json:"ssh,omitempty"`
+	Port           int        `json:"port,omitempty"`
 	// MaxHistory caps the number of retained clipboard history entries.
 	MaxHistory int `json:"max_history,omitempty"`
 }

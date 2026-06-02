@@ -211,6 +211,257 @@ func TestUpdateConfigV2ScopedPreservesUnknownFieldsAndIncrementsRevision(t *test
 	assertJSONValueEqual(t, before["ssh"], after["ssh"])
 }
 
+func TestParseConfigDocumentAcceptsSSHTransportSchema(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	doc, err := parseConfigDocument([]byte(`{
+		"config_version": 2,
+		"config_revision": 7,
+		"shared_key": "k",
+		"hostname": "m4",
+		"transport": "ssh",
+		"static_peers": ["legacy-suggestion"],
+		"ssh": {
+			"sync_key": "~/.config/clipfan/ssh/sync_ed25519",
+			"known_hosts": "~/.config/clipfan/ssh/known_hosts",
+			"max_sessions": 16,
+			"max_sessions_per_peer": 2,
+			"log_limit_bytes": 65536,
+			"peers": [{
+				"id": "fsck",
+				"ssh_host": "fsck.com",
+				"ssh_user": "jesse",
+				"ssh_port": 22,
+				"install_path": "/home/jesse/.local/bin/clipfan",
+				"gateway_path": "/home/jesse/.local/bin/clipfan",
+				"enabled": true,
+				"accept": false,
+				"connect": true,
+				"persistent": true,
+				"on_demand": true,
+				"migration_state": "ssh_keys_ready",
+				"proof": {
+					"connect_key_id": "b5b5b5b5b5b5b5b5",
+					"connect_gateway_path": "/home/jesse/.local/bin/clipfan",
+					"connect_verified_at": "2026-06-01T12:35:10Z",
+					"connect_verified_by": "regular_ssh"
+				}
+			}]
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Config.Transport != TransportSSH {
+		t.Fatalf("Transport = %q, want ssh", doc.Config.Transport)
+	}
+	if doc.Config.SSH == nil || len(doc.Config.SSH.Peers) != 1 {
+		t.Fatalf("SSH peers = %#v, want one peer", doc.Config.SSH)
+	}
+	if doc.Config.SSH.SyncKey != filepath.Join(home, ".config/clipfan/ssh/sync_ed25519") {
+		t.Fatalf("SyncKey = %q, want expanded home path", doc.Config.SSH.SyncKey)
+	}
+	if doc.Config.SSH.KnownHosts != filepath.Join(home, ".config/clipfan/ssh/known_hosts") {
+		t.Fatalf("KnownHosts = %q, want expanded home path", doc.Config.SSH.KnownHosts)
+	}
+	if doc.Config.SSH.Peers[0].MigrationState != MigrationStateSSHKeysReady {
+		t.Fatalf("MigrationState = %q", doc.Config.SSH.Peers[0].MigrationState)
+	}
+	if len(doc.Config.StaticPeers) != 1 || doc.Config.StaticPeers[0] != "legacy-suggestion" {
+		t.Fatalf("StaticPeers = %#v, want legacy suggestion preserved separately", doc.Config.StaticPeers)
+	}
+}
+
+func TestParseConfigDocumentRejectsInvalidSSHTransportSchema(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cases := []struct {
+		name string
+		body string
+		code string
+	}{
+		{
+			name: "invalid transport",
+			body: `{"config_version":2,"config_revision":7,"transport":"http","shared_key":"k"}`,
+			code: "invalid_transport",
+		},
+		{
+			name: "non object ssh",
+			body: `{"config_version":2,"config_revision":7,"transport":"ssh","ssh":[]}`,
+			code: "cannot unmarshal",
+		},
+		{
+			name: "duplicate peer id",
+			body: `{"config_version":2,"config_revision":7,"transport":"ssh","ssh":{"peers":[{"id":"fsck"},{"id":"fsck"}]}}`,
+			code: "duplicate_ssh_peer_id",
+		},
+		{
+			name: "peer id equals host",
+			body: `{"config_version":2,"config_revision":7,"hostname":"m4","transport":"ssh","ssh":{"peers":[{"id":"m4"}]}}`,
+			code: "ssh_peer_id_is_local_host",
+		},
+		{
+			name: "unsafe sync key",
+			body: `{"config_version":2,"config_revision":7,"transport":"ssh","ssh":{"sync_key":"~/clip fan"}}`,
+			code: "invalid_sync_key",
+		},
+		{
+			name: "relative known hosts",
+			body: `{"config_version":2,"config_revision":7,"transport":"ssh","ssh":{"known_hosts":"clipfan/known_hosts"}}`,
+			code: "invalid_known_hosts",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseConfigDocument([]byte(tc.body))
+			if err == nil || !strings.Contains(err.Error(), tc.code) {
+				t.Fatalf("error = %v, want %s", err, tc.code)
+			}
+		})
+	}
+}
+
+func TestUpdateConfigV2ScopedPreservesSSHTransportFields(t *testing.T) {
+	path := writeConfigForV2Test(t, `{
+		"config_version": 2,
+		"config_revision": 7,
+		"shared_key": "k",
+		"max_history": 50,
+		"transport": "ssh",
+		"ssh": {
+			"peers": [{
+				"id": "fsck",
+				"enabled": true,
+				"accept": false,
+				"connect": true,
+				"ssh_host": "fsck.com",
+				"ssh_user": "jesse",
+				"ssh_port": 22,
+				"install_path": "/home/jesse/.local/bin/clipfan",
+				"gateway_path": "/home/jesse/.local/bin/clipfan",
+				"migration_state": "ssh_material_staged",
+				"proof": {
+					"connect_key_id": "b5b5b5b5b5b5b5b5",
+					"connect_gateway_path": "/home/jesse/.local/bin/clipfan",
+					"connect_verified_at": "2026-06-01T12:35:10Z",
+					"connect_verified_by": "regular_ssh"
+				},
+				"future_peer_field": {"keep": true}
+			}]
+		}
+	}`)
+	before := readJSONMap(t, path)
+
+	err := updateConfigV2ScopedWithGate(path, true, RevisionExpectation{
+		State:    RevisionStateVersioned,
+		Revision: uint64Ptr(7),
+	}, func(c *Config) error {
+		c.MaxHistory = 75
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after := readJSONMap(t, path)
+	assertJSONNumber(t, after["config_revision"], 8)
+	assertJSONNumber(t, after["max_history"], 75)
+	assertJSONValueEqual(t, before["transport"], after["transport"])
+	assertJSONValueEqual(t, before["ssh"], after["ssh"])
+}
+
+func TestUpdateConfigV2ScopedPersistsTypedSSHTransportChanges(t *testing.T) {
+	path := writeConfigForV2Test(t, `{
+		"config_version": 2,
+		"config_revision": 7,
+		"shared_key": "k",
+		"transport": "ssh",
+		"ssh": {"peers": [{"id": "fsck", "future_peer_field": {"keep": true}}]}
+	}`)
+
+	err := updateConfigV2ScopedWithGate(path, true, RevisionExpectation{
+		State:    RevisionStateVersioned,
+		Revision: uint64Ptr(7),
+	}, func(c *Config) error {
+		c.SSH = &SSHConfig{Peers: []SSHPeer{{
+			ID:             "fsck",
+			Enabled:        true,
+			Accept:         true,
+			MigrationState: MigrationStateLoopbackUnprovisioned,
+		}}}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after := readJSONMap(t, path)
+	assertJSONNumber(t, after["config_revision"], 8)
+	assertJSONValueEqual(t, map[string]any{"peers": []any{map[string]any{
+		"id":              "fsck",
+		"enabled":         true,
+		"accept":          true,
+		"migration_state": string(MigrationStateLoopbackUnprovisioned),
+		"proof":           map[string]any{},
+	}}}, after["ssh"])
+}
+
+func TestUpdateConfigV2ScopedPersistsInPlaceSSHMutation(t *testing.T) {
+	path := writeConfigForV2Test(t, `{
+		"config_version": 2,
+		"config_revision": 7,
+		"shared_key": "k",
+		"transport": "ssh",
+		"ssh": {"max_sessions": 1}
+	}`)
+
+	err := updateConfigV2ScopedWithGate(path, true, RevisionExpectation{
+		State:    RevisionStateVersioned,
+		Revision: uint64Ptr(7),
+	}, func(c *Config) error {
+		c.SSH.MaxSessions = 2
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after := readJSONMap(t, path)
+	assertJSONNumber(t, after["config_revision"], 8)
+	assertJSONValueEqual(t, map[string]any{"max_sessions": 2.0}, after["ssh"])
+}
+
+func TestUpdateConfigV2ScopedRejectsInvalidActiveSSHMutationWithoutWriting(t *testing.T) {
+	path := writeConfigForV2Test(t, `{
+		"config_version": 2,
+		"config_revision": 7,
+		"shared_key": "k",
+		"ssh": {"peers": [{"id": "fsck", "migration_state": "future"}]}
+	}`)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = updateConfigV2ScopedWithGate(path, true, RevisionExpectation{
+		State:    RevisionStateVersioned,
+		Revision: uint64Ptr(7),
+	}, func(c *Config) error {
+		c.Transport = TransportSSH
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid_migration_state") {
+		t.Fatalf("error = %v, want invalid_migration_state", err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("invalid ssh mutation changed config\nbefore: %s\nafter: %s", before, after)
+	}
+}
+
 func TestDormantNewClientScopedConfigUpdatePreservesConfigV2Fields(t *testing.T) {
 	path := writeConfigForV2Test(t, `{
 		"config_version": 2,
@@ -218,7 +469,7 @@ func TestDormantNewClientScopedConfigUpdatePreservesConfigV2Fields(t *testing.T)
 		"shared_key": "k",
 		"max_history": 50,
 		"future_listener": {"mode": "safe"},
-		"ssh": {"peers": [{"id": "p1", "migration_state": "future"}]}
+		"ssh": {"peers": [{"id": "p1", "migration_state": "future", "future": {"keep": true}}]}
 	}`)
 
 	err := updateConfigV2ScopedWithGate(path, true, RevisionExpectation{
@@ -239,7 +490,7 @@ func TestDormantNewClientScopedConfigUpdatePreservesConfigV2Fields(t *testing.T)
 		t.Fatal("scoped update dropped shared_key")
 	}
 	assertJSONValueEqual(t, map[string]any{"mode": "safe"}, after["future_listener"])
-	assertJSONValueEqual(t, map[string]any{"peers": []any{map[string]any{"id": "p1", "migration_state": "future"}}}, after["ssh"])
+	assertJSONValueEqual(t, map[string]any{"peers": []any{map[string]any{"id": "p1", "migration_state": "future", "future": map[string]any{"keep": true}}}}, after["ssh"])
 }
 
 func TestUpdateConfigV2ScopedFirstWritesStoreRevisionOne(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -79,6 +80,12 @@ func parseConfigDocument(data []byte) (*configDocument, error) {
 	}
 	cfg, err := unmarshalTypedConfig(raw)
 	if err != nil {
+		return nil, err
+	}
+	if err := NormalizeLocalSSHPaths(&cfg); err != nil {
+		return nil, err
+	}
+	if err := ValidateSSHTransportConfig(cfg); err != nil {
 		return nil, err
 	}
 	versionInt := 2
@@ -200,7 +207,15 @@ func updateConfigV2ScopedRawWithBackupAndLock(path string, gateEnabled bool, exp
 		}
 
 		cfg := doc.Config
+		cfg.StaticPeers = append([]string(nil), doc.Config.StaticPeers...)
+		cfg.SSH = cloneSSHConfig(doc.Config.SSH)
 		if err := mutate(&cfg, doc.raw); err != nil {
+			return err
+		}
+		if err := NormalizeLocalSSHPaths(&cfg); err != nil {
+			return err
+		}
+		if err := ValidateSSHTransportConfig(cfg); err != nil {
 			return err
 		}
 		if backupPath != "" {
@@ -501,6 +516,10 @@ func marshalConfigDocument(doc *configDocument, cfg Config, nextRevision uint64)
 	setRawIf(out, "discovery", cfg.Discovery, hasRaw(doc, "discovery") || cfg.Discovery != "")
 	setRawIf(out, "static_peers", cfg.StaticPeers, hasRaw(doc, "static_peers") || len(cfg.StaticPeers) > 0)
 	setRawIf(out, "hostname", cfg.Hostname, hasRaw(doc, "hostname") || cfg.Hostname != "")
+	setRawIf(out, "transport", cfg.Transport, hasRaw(doc, "transport") || cfg.Transport != "")
+	if !reflect.DeepEqual(cfg.SSH, doc.Config.SSH) {
+		setRawIf(out, "ssh", cfg.SSH, cfg.SSH != nil)
+	}
 	setRawIf(out, "port", cfg.Port, hasRaw(doc, "port") || cfg.Port != 0)
 	setRawIf(out, "max_history", cfg.MaxHistory, hasRaw(doc, "max_history") || cfg.MaxHistory != 0)
 	setRaw(out, "config_version", 2)
@@ -511,6 +530,15 @@ func marshalConfigDocument(doc *configDocument, cfg Config, nextRevision uint64)
 		return nil, err
 	}
 	return append(data, '\n'), nil
+}
+
+func cloneSSHConfig(in *SSHConfig) *SSHConfig {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Peers = append([]SSHPeer(nil), in.Peers...)
+	return &out
 }
 
 func hasRaw(doc *configDocument, key string) bool {

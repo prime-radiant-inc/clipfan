@@ -96,6 +96,12 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 	if opts.PeerHTTPRuntimeDisabled != nil {
 		peerHTTPDisabled = *opts.PeerHTTPRuntimeDisabled
 	}
+	if cfg.Transport == config.TransportSSH {
+		peerHTTPDisabled = true
+	}
+	if err := config.ValidateSSHTransportConfig(*cfg); err != nil {
+		return nil, err
+	}
 	stateDir := opts.StoragePreflight.StateRoot
 	if stateDir == "" {
 		stateDir = config.StateDir()
