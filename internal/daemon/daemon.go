@@ -46,6 +46,7 @@ type Daemon struct {
 	serve            func(context.Context) error
 	origin           string
 	storagePreflight StoragePreflightPolicy
+	listenerPlan     config.ListenerPlan
 
 	mu      sync.Mutex
 	seen    *seenSet
@@ -71,7 +72,8 @@ func New(cfg *config.Config) (*Daemon, error) {
 }
 
 type Options struct {
-	StoragePreflight StoragePreflightPolicy
+	StoragePreflight        StoragePreflightPolicy
+	ListenerBoundaryEnabled *bool
 }
 
 func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
@@ -79,33 +81,43 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	var disc discovery.Discoverer
-	switch cfg.Discovery {
-	case "static":
-		disc = discovery.NewStatic(cfg.StaticPeers, cfg.Port)
-	default:
-		disc = discovery.NewTailscale(cfg.Port, cfg.StaticPeers)
+	listenerBoundaryEnabled := config.GeneratedLoopbackDefaultsEnabled()
+	if opts.ListenerBoundaryEnabled != nil {
+		listenerBoundaryEnabled = *opts.ListenerBoundaryEnabled
+	}
+	listenerPlan := config.PlanListener(*cfg, listenerBoundaryEnabled)
+	runtimeCfg := *cfg
+	if !listenerPlan.SafeMode {
+		runtimeCfg.Listen = listenerPlan.BindListen
 	}
 
-	origin := cfg.Hostname
+	var disc discovery.Discoverer
+	switch runtimeCfg.Discovery {
+	case "static":
+		disc = discovery.NewStatic(runtimeCfg.StaticPeers, runtimeCfg.Port)
+	default:
+		disc = discovery.NewTailscale(runtimeCfg.Port, runtimeCfg.StaticPeers)
+	}
+
+	origin := runtimeCfg.Hostname
 	if origin == "" {
 		h, _ := os.Hostname()
 		origin = strings.TrimSuffix(strings.SplitN(h, ".", 2)[0], ".local")
 	}
 
 	d := &Daemon{
-		cfg:              cfg,
+		cfg:              &runtimeCfg,
 		cb:               clipboard.NewBackend(),
 		disc:             disc,
 		auth:             auth,
 		origin:           origin,
 		storagePreflight: opts.StoragePreflight,
+		listenerPlan:     listenerPlan,
 		peerStatus:       map[string]*PeerState{},
 		seen:             newSeenSet(),
 	}
 	d.cl = transport.NewClient(auth, origin)
-	d.sv = transport.NewServer(cfg.Listen, auth, d.onReceive, d.peersHandler)
+	d.sv = transport.NewServer(listenerPlan.BindListen, auth, d.onReceive, d.peersHandler)
 	d.sv.SetRecipientIdentity(origin)
 	d.sv.SetVersionFunc(d.versionHandler)
 	d.sv.SetHistory(
@@ -249,6 +261,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 	go func() {
 		serverErr <- d.serve(ctx)
 	}()
+	if d.listenerPlan.SafeMode {
+		select {
+		case <-ctx.Done():
+			return <-serverErr
+		case err := <-serverErr:
+			return err
+		}
+	}
 
 	if c, err := d.cb.Read(); err == nil && len(c.Bytes) > 0 {
 		d.mu.Lock()
@@ -277,6 +297,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 }
 
 func (d *Daemon) pollOnce(ctx context.Context) {
+	if d.listenerPlan.SafeMode {
+		return
+	}
 	c, err := d.cb.Read()
 	if err != nil || len(c.Bytes) == 0 {
 		return
@@ -348,6 +371,12 @@ func (d *Daemon) isEcho(c clipboard.Content) bool {
 }
 
 func (d *Daemon) onReceive(c clipboard.Content, origin string) {
+	if d.listenerPlan.SafeMode {
+		// Milestone 1b1 stops peer work while the listener needs repair. The
+		// transport-level safe-mode rejection map is added in 1b2.
+		return
+	}
+
 	// A text clip that is one of our own image-store paths is an image echoed
 	// as a path string by a host that can't hold images on its clipboard.
 	// Writing it would clobber the real image (which arrived separately as a
@@ -459,6 +488,9 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 // skipOrigin is empty this is a fresh broadcast (stamps our own origin).
 // When non-empty this is a relay (stamps the original origin).
 func (d *Daemon) fanout(ctx context.Context, c clipboard.Content, skipOrigin string) {
+	if d.listenerPlan.SafeMode {
+		return
+	}
 	peers, err := d.disc.Peers(ctx)
 	if err != nil {
 		slog.Warn("discovery", "err", err)
