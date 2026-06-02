@@ -504,32 +504,30 @@ func validateRevisionExpectation(doc *configDocument, expected RevisionExpectati
 }
 
 func marshalConfigDocument(doc *configDocument, cfg Config, nextRevision uint64) ([]byte, error) {
-	out := make(map[string]json.RawMessage, len(doc.raw)+2)
-	for key, value := range doc.raw {
-		rawCopy := make([]byte, len(value))
-		copy(rawCopy, value)
-		out[key] = rawCopy
-	}
-
-	setRawIf(out, "listen", cfg.Listen, hasRaw(doc, "listen") || cfg.Listen != "")
-	setRawIf(out, "shared_key", cfg.SharedKey, hasRaw(doc, "shared_key") || cfg.SharedKey != "")
-	setRawIf(out, "discovery", cfg.Discovery, hasRaw(doc, "discovery") || cfg.Discovery != "")
-	setRawIf(out, "static_peers", cfg.StaticPeers, hasRaw(doc, "static_peers") || len(cfg.StaticPeers) > 0)
-	setRawIf(out, "hostname", cfg.Hostname, hasRaw(doc, "hostname") || cfg.Hostname != "")
-	setRawIf(out, "transport", cfg.Transport, hasRaw(doc, "transport") || cfg.Transport != "")
+	out := cloneRawMap(doc.raw)
+	applyConfigScalars(out, doc, cfg, nextRevision)
 	if !reflect.DeepEqual(cfg.SSH, doc.Config.SSH) {
 		setRawIf(out, "ssh", cfg.SSH, cfg.SSH != nil)
 	}
-	setRawIf(out, "port", cfg.Port, hasRaw(doc, "port") || cfg.Port != 0)
-	setRawIf(out, "max_history", cfg.MaxHistory, hasRaw(doc, "max_history") || cfg.MaxHistory != 0)
-	setRaw(out, "config_version", 2)
-	setRaw(out, "config_revision", nextRevision)
 
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return nil, err
 	}
 	return append(data, '\n'), nil
+}
+
+func applyConfigScalars(out map[string]json.RawMessage, doc *configDocument, cfg Config, nextRevision uint64) {
+	setRawIf(out, "listen", cfg.Listen, hasRaw(doc, "listen") || cfg.Listen != "")
+	setRawIf(out, "shared_key", cfg.SharedKey, hasRaw(doc, "shared_key") || cfg.SharedKey != "")
+	setRawIf(out, "discovery", cfg.Discovery, hasRaw(doc, "discovery") || cfg.Discovery != "")
+	setRawIf(out, "static_peers", cfg.StaticPeers, hasRaw(doc, "static_peers") || len(cfg.StaticPeers) > 0)
+	setRawIf(out, "hostname", cfg.Hostname, hasRaw(doc, "hostname") || cfg.Hostname != "")
+	setRawIf(out, "transport", cfg.Transport, hasRaw(doc, "transport") || cfg.Transport != "")
+	setRawIf(out, "port", cfg.Port, hasRaw(doc, "port") || cfg.Port != 0)
+	setRawIf(out, "max_history", cfg.MaxHistory, hasRaw(doc, "max_history") || cfg.MaxHistory != 0)
+	setRaw(out, "config_version", 2)
+	setRaw(out, "config_revision", nextRevision)
 }
 
 func cloneSSHConfig(in *SSHConfig) *SSHConfig {

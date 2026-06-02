@@ -42,6 +42,8 @@ type DeleteHistoryFunc func(id string, allUnpinned bool) error
 
 type ListenerRepairReadFunc func() (any, *HandlerError)
 type ListenerRepairPatchFunc func(body []byte) (any, *HandlerError)
+type SSHPeerConfigReadFunc func(peerID string) (any, *HandlerError)
+type SSHPeerConfigPutFunc func(peerID string, body []byte) (any, *HandlerError)
 
 type HandlerError struct {
 	Status int
@@ -75,6 +77,8 @@ type Server struct {
 	configFn              func(maxHistory int) error
 	listenerRepairReadFn  ListenerRepairReadFunc
 	listenerRepairPatchFn ListenerRepairPatchFunc
+	sshPeerReadFn         SSHPeerConfigReadFunc
+	sshPeerPutFn          SSHPeerConfigPutFunc
 	localRequiredAuthVer  string
 	safeMode              bool
 	safeInfo              SafeModeInfo
@@ -136,6 +140,11 @@ func (s *Server) SetListenerRepair(readFn ListenerRepairReadFunc, patchFn Listen
 	s.listenerRepairPatchFn = patchFn
 }
 
+func (s *Server) SetSSHPeerConfig(readFn SSHPeerConfigReadFunc, putFn SSHPeerConfigPutFunc) {
+	s.sshPeerReadFn = readFn
+	s.sshPeerPutFn = putFn
+}
+
 func (s *Server) SetRequiredLocalAuthVersion(authVersion string) {
 	s.localRequiredAuthVer = authVersion
 }
@@ -166,6 +175,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/restore", s.postRestore)
 	mux.HandleFunc("POST /v1/history/pin", s.postPin)
 	mux.HandleFunc("POST /v1/config", s.postConfig)
+	mux.HandleFunc("GET /v1/config/ssh/peers/{peer_id}", s.getSSHPeerConfig)
+	mux.HandleFunc("PUT /v1/config/ssh/peers/{peer_id}", s.putSSHPeerConfig)
 	return mux
 }
 
@@ -631,6 +642,40 @@ func (s *Server) postConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeSignedBody(w, signed, http.StatusOK, nil)
+}
+
+func (s *Server) getSSHPeerConfig(w http.ResponseWriter, r *http.Request) {
+	signed := s.readSignedLocalRequiredAuthVersion(w, r, AuthVersionRequestHMAC)
+	if signed == nil {
+		return
+	}
+	if s.sshPeerReadFn == nil {
+		s.writeSignedError(w, signed, http.StatusServiceUnavailable, "ssh_peer_config_unavailable")
+		return
+	}
+	payload, handlerErr := s.sshPeerReadFn(r.PathValue("peer_id"))
+	if handlerErr != nil {
+		s.writeSignedError(w, signed, handlerErr.httpStatus(), handlerErr.Code)
+		return
+	}
+	s.writeSignedJSON(w, signed, payload)
+}
+
+func (s *Server) putSSHPeerConfig(w http.ResponseWriter, r *http.Request) {
+	signed := s.readSignedLocalRequiredAuthVersion(w, r, AuthVersionRequestHMAC)
+	if signed == nil {
+		return
+	}
+	if s.sshPeerPutFn == nil {
+		s.writeSignedError(w, signed, http.StatusServiceUnavailable, "ssh_peer_config_unavailable")
+		return
+	}
+	payload, handlerErr := s.sshPeerPutFn(r.PathValue("peer_id"), signed.body)
+	if handlerErr != nil {
+		s.writeSignedError(w, signed, handlerErr.httpStatus(), handlerErr.Code)
+		return
+	}
+	s.writeSignedJSON(w, signed, payload)
 }
 
 func (s *Server) writeSignedJSON(w http.ResponseWriter, signed *signedPayload, v any) {
