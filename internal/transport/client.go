@@ -4,26 +4,37 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
+	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
 )
 
+var ErrPeerHTTPRuntimeDisabled = errors.New("peer_http_runtime_disabled")
+
 type Client struct {
-	http   *http.Client
-	auth   *Auth
-	origin string
+	http                    *http.Client
+	auth                    *Auth
+	origin                  string
+	peerHTTPRuntimeDisabled bool
 }
 
 func NewClient(auth *Auth, origin string) *Client {
+	return NewClientWithPeerHTTPRuntimeDisabled(auth, origin, releaseflags.PeerHTTPRuntimeDisabled)
+}
+
+func NewClientWithPeerHTTPRuntimeDisabled(auth *Auth, origin string, disabled bool) *Client {
 	return &Client{
-		http:   &http.Client{Timeout: 5 * time.Second},
-		auth:   auth,
-		origin: origin,
+		http:                    &http.Client{Timeout: 5 * time.Second},
+		auth:                    auth,
+		origin:                  origin,
+		peerHTTPRuntimeDisabled: disabled,
 	}
 }
 
@@ -35,6 +46,9 @@ func (c *Client) Push(ctx context.Context, host string, port int, content clipbo
 // client's own origin. Used by the relay path so the original copy source is
 // preserved end-to-end and receivers can short-circuit if they're the origin.
 func (c *Client) PushAs(ctx context.Context, host string, port int, content clipboard.Content, origin string) error {
+	if c.peerHTTPRuntimeDisabled && !isLoopbackHost(host) {
+		return fmt.Errorf("%w: %s", ErrPeerHTTPRuntimeDisabled, net.JoinHostPort(host, strconv.Itoa(port)))
+	}
 	body, bodyNonce, err := c.auth.SealBody(content.Bytes)
 	if err != nil {
 		return err
@@ -75,4 +89,15 @@ func (c *Client) PushAs(ctx context.Context, host string, port int, content clip
 		return fmt.Errorf("push to %s: status %d", host, resp.StatusCode)
 	}
 	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

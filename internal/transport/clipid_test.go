@@ -3,6 +3,8 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
@@ -68,6 +70,45 @@ func TestPushCarriesIDToReceiver(t *testing.T) {
 	if got.ID != "clip-xyz" {
 		t.Fatalf("receiver Content.ID = %q, want clip-xyz", got.ID)
 	}
+}
+
+func TestPushRejectsOffHostPeerHTTPWhenRuntimeDisabled(t *testing.T) {
+	auth := testAuth(t)
+	cl := NewClientWithPeerHTTPRuntimeDisabled(auth, "m4", true)
+	cl.http.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("PushAs attempted to dial off-host peer HTTP with runtime disabled")
+		return nil, nil
+	})
+	content := clipboard.Content{Kind: clipboard.KindText, Bytes: []byte("hello"), ID: "clip-disabled"}
+
+	err := cl.PushAs(context.Background(), "peer-host", 7853, content, "m4")
+	if !errors.Is(err, ErrPeerHTTPRuntimeDisabled) {
+		t.Fatalf("PushAs error = %v, want ErrPeerHTTPRuntimeDisabled", err)
+	}
+}
+
+func TestPushAllowsLoopbackWhenPeerHTTPRuntimeDisabled(t *testing.T) {
+	auth := testAuth(t)
+	var got clipboard.Content
+	srv := NewServer("", auth, func(c clipboard.Content, origin string) { got = c }, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	_, port := splitHostPort(t, ts.URL)
+	cl := NewClientWithPeerHTTPRuntimeDisabled(auth, "m4", true)
+	content := clipboard.Content{Kind: clipboard.KindText, Bytes: []byte("hello"), ID: "clip-loopback"}
+	if err := cl.PushAs(context.Background(), "127.0.0.1", port, content, "m4"); err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "clip-loopback" {
+		t.Fatalf("receiver Content.ID = %q, want clip-loopback", got.ID)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func TestPushCarriesConcealedToReceiver(t *testing.T) {

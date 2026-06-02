@@ -14,6 +14,7 @@ import (
 	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
 	"github.com/prime-radiant-inc/clipfan/internal/config"
 	"github.com/prime-radiant-inc/clipfan/internal/discovery"
+	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
 	"github.com/prime-radiant-inc/clipfan/internal/store"
 	"github.com/prime-radiant-inc/clipfan/internal/tmux"
 	"github.com/prime-radiant-inc/clipfan/internal/transport"
@@ -51,6 +52,7 @@ type Daemon struct {
 	listenerPlan     config.ListenerPlan
 	stateDir         string
 	configPath       string
+	peerHTTPDisabled bool
 
 	mu      sync.Mutex
 	seen    *seenSet
@@ -78,6 +80,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 type Options struct {
 	StoragePreflight        StoragePreflightPolicy
 	ListenerBoundaryEnabled *bool
+	PeerHTTPRuntimeDisabled *bool
 }
 
 func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
@@ -88,6 +91,10 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 	listenerBoundaryEnabled := config.GeneratedLoopbackDefaultsEnabled()
 	if opts.ListenerBoundaryEnabled != nil {
 		listenerBoundaryEnabled = *opts.ListenerBoundaryEnabled
+	}
+	peerHTTPDisabled := releaseflags.PeerHTTPRuntimeDisabled
+	if opts.PeerHTTPRuntimeDisabled != nil {
+		peerHTTPDisabled = *opts.PeerHTTPRuntimeDisabled
 	}
 	stateDir := opts.StoragePreflight.StateRoot
 	if stateDir == "" {
@@ -123,10 +130,11 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 		listenerPlan:     listenerPlan,
 		stateDir:         stateDir,
 		configPath:       config.Path(),
+		peerHTTPDisabled: peerHTTPDisabled,
 		peerStatus:       map[string]*PeerState{},
 		seen:             newSeenSet(),
 	}
-	d.cl = transport.NewClient(auth, origin)
+	d.cl = transport.NewClientWithPeerHTTPRuntimeDisabled(auth, origin, peerHTTPDisabled)
 	d.sv = transport.NewServer(listenerPlan.BindListen, auth, d.onReceive, d.peersHandler)
 	if runtimeCfg.ConfigVersion != nil && *runtimeCfg.ConfigVersion >= 2 {
 		d.sv.SetRequiredLocalAuthVersion(transport.AuthVersionRequestHMAC)
@@ -552,7 +560,7 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 // skipOrigin is empty this is a fresh broadcast (stamps our own origin).
 // When non-empty this is a relay (stamps the original origin).
 func (d *Daemon) fanout(ctx context.Context, c clipboard.Content, skipOrigin string) {
-	if d.listenerPlan.SafeMode {
+	if d.listenerPlan.SafeMode || d.peerHTTPDisabled {
 		return
 	}
 	peers, err := d.disc.Peers(ctx)
