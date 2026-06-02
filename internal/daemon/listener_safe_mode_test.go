@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -16,6 +17,9 @@ import (
 )
 
 func TestSafeModeBindsDerivedLoopbackNotUnsafeConfiguredAddress(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
 	port := freeTCPPort(t)
 	d, err := NewWithOptions(&config.Config{
 		Listen:    "203.0.113.10:" + port,
@@ -43,6 +47,9 @@ func TestSafeModeBindsDerivedLoopbackNotUnsafeConfiguredAddress(t *testing.T) {
 }
 
 func TestSafeModeLoopbackBindConflictFailsClosed(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -62,8 +69,8 @@ func TestSafeModeLoopbackBindConflictFailsClosed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	err = d.Run(ctx)
-	if err == nil || !strings.Contains(err.Error(), "address already in use") {
-		t.Fatalf("Run error = %v, want loopback address-in-use failure", err)
+	if !errors.Is(err, ErrDaemonPortConflict) || !strings.Contains(err.Error(), "daemon_port_conflict") {
+		t.Fatalf("Run error = %v, want daemon_port_conflict", err)
 	}
 }
 

@@ -352,10 +352,18 @@ func writeSafeModeError(w http.ResponseWriter, status int, code string) {
 }
 
 func (s *Server) Serve(ctx context.Context) error {
-	srv := &http.Server{Addr: s.listen, Handler: s.Handler()}
+	ln, err := net.Listen("tcp", s.listen)
+	if err != nil {
+		return err
+	}
+	return s.ServeListener(ctx, ln)
+}
+
+func (s *Server) ServeListener(ctx context.Context, ln net.Listener) error {
+	srv := &http.Server{Handler: s.Handler()}
 	errCh := make(chan error, 1)
 	go func() {
-		err := srv.ListenAndServe()
+		err := srv.Serve(ln)
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}
@@ -363,9 +371,16 @@ func (s *Server) Serve(ctx context.Context) error {
 	}()
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithCancel(context.Background())
-		cancel()
-		return srv.Shutdown(shutdownCtx)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			_ = srv.Close()
+			if serveErr := <-errCh; serveErr != nil {
+				return serveErr
+			}
+			return err
+		}
+		return <-errCh
 	case err := <-errCh:
 		return err
 	}

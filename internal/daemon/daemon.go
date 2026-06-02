@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"sort"
 	"strings"
@@ -44,9 +45,12 @@ type Daemon struct {
 	cl               pusher
 	sv               *transport.Server
 	serve            func(context.Context) error
+	serveListener    func(context.Context, net.Listener) error
 	origin           string
 	storagePreflight StoragePreflightPolicy
 	listenerPlan     config.ListenerPlan
+	stateDir         string
+	configPath       string
 
 	mu      sync.Mutex
 	seen    *seenSet
@@ -85,6 +89,10 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 	if opts.ListenerBoundaryEnabled != nil {
 		listenerBoundaryEnabled = *opts.ListenerBoundaryEnabled
 	}
+	stateDir := opts.StoragePreflight.StateRoot
+	if stateDir == "" {
+		stateDir = config.StateDir()
+	}
 	listenerPlan := config.PlanListener(*cfg, listenerBoundaryEnabled)
 	runtimeCfg := *cfg
 	if !listenerPlan.SafeMode {
@@ -113,6 +121,8 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 		origin:           origin,
 		storagePreflight: opts.StoragePreflight,
 		listenerPlan:     listenerPlan,
+		stateDir:         stateDir,
+		configPath:       config.Path(),
 		peerStatus:       map[string]*PeerState{},
 		seen:             newSeenSet(),
 	}
@@ -145,7 +155,7 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 		},
 	)
 	d.sv.SetConfigFunc(d.setMaxHistory)
-	d.serve = d.sv.Serve
+	d.serveListener = d.sv.ServeListener
 	return d, nil
 }
 
@@ -270,10 +280,26 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := d.storagePreflight.check(); err != nil {
 		return err
 	}
-	serverErr := make(chan error, 1)
-	go func() {
-		serverErr <- d.serve(ctx)
-	}()
+	lock, err := acquireDaemonLock(d.stateDir)
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	if err := lock.writeDiagnostics(daemonLockDiagnostics{
+		PID:           os.Getpid(),
+		StartedAt:     time.Now().UTC().Format(time.RFC3339),
+		ConfigPath:    d.configPath,
+		StateDir:      d.stateDir,
+		Listen:        d.listenerPlan.BindListen,
+		DaemonVersion: version.Version,
+		Hostname:      d.origin,
+	}); err != nil {
+		return err
+	}
+	serverErr, err := d.startServer(ctx)
+	if err != nil {
+		return err
+	}
 	if d.listenerPlan.SafeMode {
 		select {
 		case <-ctx.Done():
@@ -307,6 +333,27 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.pollOnce(ctx)
 		}
 	}
+}
+
+func (d *Daemon) startServer(ctx context.Context) (<-chan error, error) {
+	serverErr := make(chan error, 1)
+	if d.serve != nil {
+		go func() {
+			serverErr <- d.normalizeRunError(d.serve(ctx))
+		}()
+		return serverErr, nil
+	}
+	if d.serveListener != nil {
+		ln, err := net.Listen("tcp", d.listenerPlan.BindListen)
+		if err != nil {
+			return nil, d.normalizeRunError(err)
+		}
+		go func() {
+			serverErr <- d.normalizeRunError(d.serveListener(ctx, ln))
+		}()
+		return serverErr, nil
+	}
+	return nil, fmt.Errorf("daemon serve function is not configured")
 }
 
 func (d *Daemon) pollOnce(ctx context.Context) {
