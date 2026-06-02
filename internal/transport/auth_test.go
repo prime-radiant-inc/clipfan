@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -158,6 +159,27 @@ func TestSignedRequestHeadersCanEmitDormantAuthVersion(t *testing.T) {
 	}
 	if headers[HeaderSignature] != "8443d8072bd22b9ab5752160293eb8a2b9f48e225adbf3b8d6d8ca5439123d24" {
 		t.Fatalf("signature header = %s", headers[HeaderSignature])
+	}
+}
+
+func TestRequiredAuthVersionAcceptsNewClientAndRejectsOldRawClient(t *testing.T) {
+	auth := fixtureAuth(t)
+	body := []byte(`{"max_history":125}`)
+
+	versionedSig, err := auth.SignRequestWithAuthVersion(http.MethodPatch, "/v1/config/listener", "1780257600", "nonce-1", body, AuthVersionRequestHMAC)
+	if err != nil {
+		t.Fatalf("SignRequestWithAuthVersion: %v", err)
+	}
+	if err := auth.VerifyRequestRequiredAuthVersion(http.MethodPatch, "/v1/config/listener", "1780257600", "nonce-1", body, versionedSig, AuthVersionRequestHMAC, AuthVersionRequestHMAC); err != nil {
+		t.Fatalf("new client strict verify: %v", err)
+	}
+
+	rawSig := auth.SignRequest(http.MethodPatch, "/v1/config/listener", "1780257600", "nonce-2", body)
+	if err := auth.VerifyRequestRequiredAuthVersion(http.MethodPatch, "/v1/config/listener", "1780257600", "nonce-2", body, rawSig, "", AuthVersionRequestHMAC); !errors.Is(err, ErrAuthVersionMismatch) {
+		t.Fatalf("old raw client error = %v, want ErrAuthVersionMismatch", err)
+	}
+	if err := auth.VerifyRequestRequiredAuthVersion(http.MethodPatch, "/v1/config/listener", "1780257600", "nonce-2", body, rawSig, AuthVersionRequestHMAC, AuthVersionRequestHMAC); !errors.Is(err, ErrBadSignature) {
+		t.Fatalf("wrong-key versioned client error = %v, want ErrBadSignature", err)
 	}
 }
 

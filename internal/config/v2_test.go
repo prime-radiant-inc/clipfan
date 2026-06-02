@@ -209,6 +209,37 @@ func TestUpdateConfigV2ScopedPreservesUnknownFieldsAndIncrementsRevision(t *test
 	assertJSONValueEqual(t, before["ssh"], after["ssh"])
 }
 
+func TestDormantNewClientScopedConfigUpdatePreservesConfigV2Fields(t *testing.T) {
+	path := writeConfigForV2Test(t, `{
+		"config_version": 2,
+		"config_revision": 9,
+		"shared_key": "k",
+		"max_history": 50,
+		"future_listener": {"mode": "safe"},
+		"ssh": {"peers": [{"id": "p1", "migration_state": "future"}]}
+	}`)
+
+	err := updateConfigV2ScopedWithGate(path, true, RevisionExpectation{
+		State:    RevisionStateVersioned,
+		Revision: uint64Ptr(9),
+	}, func(c *Config) error {
+		c.MaxHistory = 75
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after := readJSONMap(t, path)
+	assertJSONNumber(t, after["config_revision"], 10)
+	assertJSONNumber(t, after["max_history"], 75)
+	if _, ok := after["shared_key"]; !ok {
+		t.Fatal("scoped update dropped shared_key")
+	}
+	assertJSONValueEqual(t, map[string]any{"mode": "safe"}, after["future_listener"])
+	assertJSONValueEqual(t, map[string]any{"peers": []any{map[string]any{"id": "p1", "migration_state": "future"}}}, after["ssh"])
+}
+
 func TestUpdateConfigV2ScopedFirstWritesStoreRevisionOne(t *testing.T) {
 	cases := []struct {
 		name     string

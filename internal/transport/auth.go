@@ -22,6 +22,11 @@ const (
 	HeaderSignature   = "X-Clipfan-Sig"
 )
 
+var (
+	ErrAuthVersionMismatch = errors.New("auth_version_mismatch")
+	ErrBadSignature        = errors.New("bad_signature")
+)
+
 type Auth struct{ key []byte }
 
 func NewAuth(b64Key string) (*Auth, error) {
@@ -93,6 +98,16 @@ func (a *Auth) VerifyRequestWithAuthVersion(method, requestURI, timestamp, nonce
 	writeCanonicalRequestWithAuthVersion(got, method, requestURI, timestamp, nonce, body, authVersion)
 	if !hmac.Equal(expect, got.Sum(nil)) {
 		return errors.New("bad signature")
+	}
+	return nil
+}
+
+func (a *Auth) VerifyRequestRequiredAuthVersion(method, requestURI, timestamp, nonce string, body []byte, sig, authVersion, requiredAuthVersion string) error {
+	if authVersion != requiredAuthVersion {
+		return ErrAuthVersionMismatch
+	}
+	if err := a.VerifyRequestWithAuthVersion(method, requestURI, timestamp, nonce, body, sig, authVersion); err != nil {
+		return ErrBadSignature
 	}
 	return nil
 }
