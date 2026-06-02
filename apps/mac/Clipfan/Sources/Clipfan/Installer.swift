@@ -95,11 +95,78 @@ actor Installer {
     }
 
     static func remoteUpdateCommand(stage: String) -> String {
+        remoteUpdateCommand(stage: stage,
+                            payloadBinaryName: nil,
+                            enforceStorageAbort: GeneratedSSHTransportGates.peerHTTPRuntimeDisabled ||
+                                GeneratedSSHTransportGates.configV2WriteEnabled)
+    }
+
+    static func remoteUpdateCommand(stage: String,
+                                    payloadBinaryName: String?,
+                                    enforceStorageAbort: Bool) -> String {
         let quotedStage = shellSingleQuote(stage)
+        if enforceStorageAbort, payloadBinaryName == nil {
+            return """
+            set -e
+            stage=\(quotedStage)
+            trap 'rm -rf "$stage"' EXIT
+            printf '%s\\n' 'storage_check_inconclusive: missing staged storage preflight binary' >&2
+            exit 1
+            """
+        }
+
+        let storageAbortPrelude: String
+        if enforceStorageAbort, let payloadBinaryName {
+            storageAbortPrelude = """
+            preflight_bin="$stage/\(payloadBinaryName)"
+            if [ ! -x "$preflight_bin" ]; then
+                chmod 700 "$preflight_bin" 2>/dev/null || true
+            fi
+            if [ ! -x "$preflight_bin" ]; then
+                printf '%s\\n' 'storage_check_inconclusive: staged storage preflight binary is not executable' >&2
+                exit 1
+            fi
+            preflight_status=0
+            preflight_output="$("$preflight_bin" storage-preflight 2>&1)" || preflight_status=$?
+            if [ "$preflight_status" -ne 0 ]; then
+                printf '%s\\n' "$preflight_output" >&2
+                if printf '%s\\n' "$preflight_output" | grep -Eq 'unsupported_runtime_storage|storage_check_inconclusive'; then
+                    service_still_active=0
+                    user_uid="$(id -u 2>/dev/null || printf '%s' "${UID:-}")"
+                    if command -v launchctl >/dev/null 2>&1; then
+                        plist="$HOME/Library/LaunchAgents/com.primeradiant.clipfan.plist"
+                        launchctl bootout "gui/$user_uid/com.primeradiant.clipfan" >/dev/null 2>&1 || \
+                            launchctl bootout "gui/$user_uid" "$plist" >/dev/null 2>&1 || \
+                            launchctl unload "$plist" >/dev/null 2>&1 || true
+                        launchctl disable "gui/$user_uid/com.primeradiant.clipfan" >/dev/null 2>&1 || true
+                        if launchctl print "gui/$user_uid/com.primeradiant.clipfan" >/dev/null 2>&1; then
+                            service_still_active=1
+                        fi
+                    fi
+                    if command -v systemctl >/dev/null 2>&1; then
+                        systemctl --user stop clipfan.service >/dev/null 2>&1 || true
+                        systemctl --user disable clipfan.service >/dev/null 2>&1 || true
+                        if systemctl --user is-active --quiet clipfan.service; then
+                            service_still_active=1
+                        fi
+                    fi
+                    if [ "$service_still_active" -ne 0 ]; then
+                        printf '%s\\n' 'public_listener_service_still_active' >&2
+                        exit 1
+                    fi
+                fi
+                exit "$preflight_status"
+            fi
+            """
+        } else {
+            storageAbortPrelude = ""
+        }
+
         return """
         set -e
         stage=\(quotedStage)
         trap 'rm -rf "$stage"' EXIT
+        \(storageAbortPrelude)
         cd "$stage" && bash install.sh --no-tmux >&2
         bin="${DEST:-$HOME/.local/bin}/clipfan"
         "$bin" version
@@ -323,6 +390,8 @@ actor Installer {
 
     static func uploadAndUpdateRemoteStage(target: String, sshArgs: [String], scpArgs: [String],
                                            stage: URL, stagedFiles: [String],
+                                           enforceStorageAbort: Bool = GeneratedSSHTransportGates.peerHTTPRuntimeDisabled ||
+                                               GeneratedSSHTransportGates.configV2WriteEnabled,
                                            runCommand: CommandRunner,
                                            onInstall: @MainActor @escaping () -> Void = {}) async throws -> String {
         let remoteStageOutput = try await runCommand("/usr/bin/ssh", sshArgs + [target, remoteStageCommand()])
@@ -334,7 +403,9 @@ actor Installer {
             _ = try await runCommand("/usr/bin/scp", scpFull)
 
             await onInstall()
-            let cmd = remoteUpdateCommand(stage: remoteStage)
+            let cmd = remoteUpdateCommand(stage: remoteStage,
+                                          payloadBinaryName: updatePayloadBinaryName(from: stagedFiles),
+                                          enforceStorageAbort: enforceStorageAbort)
             let output = try await runCommand("/usr/bin/ssh", sshArgs + [target, cmd])
             let remoteVersion = output.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !remoteVersion.isEmpty else {
@@ -344,6 +415,15 @@ actor Installer {
         } catch {
             _ = try? await runCommand("/usr/bin/ssh", sshArgs + [target, remoteCleanupCommand(stage: remoteStage)])
             throw error
+        }
+    }
+
+    static func updatePayloadBinaryName(from stagedFiles: [String]) -> String? {
+        stagedFiles.first { name in
+            let parts = name.split(separator: "-").map(String.init)
+            guard parts.count == 3, parts[0] == "clipfan" else { return false }
+            return (parts[1] == "darwin" || parts[1] == "linux") &&
+                (parts[2] == "amd64" || parts[2] == "arm64")
         }
     }
 

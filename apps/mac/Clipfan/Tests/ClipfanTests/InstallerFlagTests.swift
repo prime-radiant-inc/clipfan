@@ -41,9 +41,79 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertTrue(command.contains("trap 'rm -rf \"$stage\"' EXIT"))
         XCTAssertTrue(command.contains("cd \"$stage\" && bash install.sh --no-tmux >&2"))
         XCTAssertTrue(command.contains("\"$bin\" version"))
+        XCTAssertFalse(command.contains("storage-preflight"))
         XCTAssertFalse(command.contains("config.json"))
         XCTAssertFalse(command.contains("~/.config/clipfan"))
+        XCTAssertFalse(command.contains("config_version"))
         XCTAssertFalse(command.contains("--with-tmux"))
+    }
+
+    func testRemoteUpdateCommandStorageAbortPreflightsBeforeInstall() {
+        let command = Installer.remoteUpdateCommand(stage: "/tmp/clipfan-install.ABC123",
+                                                    payloadBinaryName: "clipfan-linux-arm64",
+                                                    enforceStorageAbort: true)
+
+        let preflight = try! XCTUnwrap(command.range(of: "\"$preflight_bin\" storage-preflight"))
+        let install = try! XCTUnwrap(command.range(of: "cd \"$stage\" && bash install.sh --no-tmux >&2"))
+
+        XCTAssertLessThan(preflight.lowerBound, install.lowerBound)
+        XCTAssertTrue(command.contains("preflight_bin=\"$stage/clipfan-linux-arm64\""))
+        XCTAssertTrue(command.contains("unsupported_runtime_storage"))
+        XCTAssertTrue(command.contains("storage_check_inconclusive"))
+        XCTAssertTrue(command.contains("systemctl --user stop clipfan.service"))
+        XCTAssertTrue(command.contains("systemctl --user disable clipfan.service"))
+        XCTAssertTrue(command.contains("user_uid=\"$(id -u 2>/dev/null || printf '%s' \"${UID:-}\")\""))
+        XCTAssertTrue(command.contains("launchctl disable \"gui/$user_uid/com.primeradiant.clipfan\""))
+        XCTAssertTrue(command.contains("public_listener_service_still_active"))
+        XCTAssertTrue(command.contains("exit \"$preflight_status\""))
+        XCTAssertFalse(command.contains("config.json"))
+        XCTAssertFalse(command.contains("~/.config/clipfan"))
+        XCTAssertFalse(command.contains("config_version"))
+    }
+
+    func testRemoteUpdateCommandStorageAbortFailsClosedWithoutPayloadBinary() {
+        let command = Installer.remoteUpdateCommand(stage: "/tmp/clipfan-install.ABC123",
+                                                    payloadBinaryName: nil,
+                                                    enforceStorageAbort: true)
+
+        XCTAssertTrue(command.contains("storage_check_inconclusive"))
+        XCTAssertTrue(command.contains("missing staged storage preflight binary"))
+        XCTAssertFalse(command.contains("bash install.sh"))
+        XCTAssertFalse(command.contains("\"$bin\" version"))
+    }
+
+    func testRemoteUpdateCommandStorageAbortRunsStopDisableAndSkipsInstall() throws {
+        let fixture = try makeRemoteUpdateShellFixture(systemctlIsActive: false)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let command = Installer.remoteUpdateCommand(stage: fixture.stage.path,
+                                                    payloadBinaryName: "clipfan-linux-arm64",
+                                                    enforceStorageAbort: true)
+        let result = try runBash(command, environment: fixture.environment)
+
+        XCTAssertEqual(result.status, 37)
+        XCTAssertTrue(result.stderr.contains("unsupported_runtime_storage"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.installMarker.path))
+
+        let systemctlLog = try String(contentsOf: fixture.systemctlLog, encoding: .utf8)
+        XCTAssertTrue(systemctlLog.contains("--user stop clipfan.service"))
+        XCTAssertTrue(systemctlLog.contains("--user disable clipfan.service"))
+        XCTAssertTrue(systemctlLog.contains("--user is-active --quiet clipfan.service"))
+    }
+
+    func testRemoteUpdateCommandStorageAbortFailsIfServiceStillActive() throws {
+        let fixture = try makeRemoteUpdateShellFixture(systemctlIsActive: true)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let command = Installer.remoteUpdateCommand(stage: fixture.stage.path,
+                                                    payloadBinaryName: "clipfan-linux-arm64",
+                                                    enforceStorageAbort: true)
+        let result = try runBash(command, environment: fixture.environment)
+
+        XCTAssertEqual(result.status, 1)
+        XCTAssertTrue(result.stderr.contains("unsupported_runtime_storage"))
+        XCTAssertTrue(result.stderr.contains("public_listener_service_still_active"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.installMarker.path))
     }
 
     func testValidatedRemoteStagePathAcceptsPrivateMktempOutput() throws {
@@ -151,6 +221,53 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertEqual(commands[2].1.last, Installer.remoteUpdateCommand(stage: "/tmp/clipfan-install.ABC123"))
     }
 
+    func testUploadAndUpdateRemoteStagePropagatesStorageAbortAndCleansUp() async throws {
+        let stage = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-update-abort-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: stage) }
+
+        var commands: [(String, [String])] = []
+        do {
+            _ = try await Installer.uploadAndUpdateRemoteStage(
+                target: "remote.example",
+                sshArgs: ["-o", "ConnectTimeout=5"],
+                scpArgs: ["-q"],
+                stage: stage,
+                stagedFiles: ["clipfan-linux-arm64", "install.sh", "clipfan.service"],
+                enforceStorageAbort: true,
+                runCommand: { exe, args in
+                    commands.append((exe, args))
+                    if exe == "/usr/bin/ssh", args.last == Installer.remoteStageCommand() {
+                        return "/tmp/clipfan-install.ABC123\n"
+                    }
+                    if exe == "/usr/bin/ssh",
+                       args.last == Installer.remoteUpdateCommand(stage: "/tmp/clipfan-install.ABC123",
+                                                                   payloadBinaryName: "clipfan-linux-arm64",
+                                                                   enforceStorageAbort: true) {
+                        throw InstallCommandFailure(executable: exe,
+                                                    arguments: args,
+                                                    exitStatus: 1,
+                                                    stdout: "",
+                                                    stderr: "code: unsupported_runtime_storage\n")
+                    }
+                    return ""
+                })
+            XCTFail("expected storage abort")
+        } catch let failure as InstallCommandFailure {
+            XCTAssertEqual(failure.exitStatus, 1)
+            XCTAssertTrue(failure.stderr.contains("unsupported_runtime_storage"))
+        }
+
+        XCTAssertEqual(commands.count, 4)
+        XCTAssertEqual(commands[1].0, "/usr/bin/scp")
+        XCTAssertEqual(commands[2].0, "/usr/bin/ssh")
+        XCTAssertEqual(commands[2].1.last, Installer.remoteUpdateCommand(stage: "/tmp/clipfan-install.ABC123",
+                                                                         payloadBinaryName: "clipfan-linux-arm64",
+                                                                         enforceStorageAbort: true))
+        XCTAssertEqual(commands[3].1.last, Installer.remoteCleanupCommand(stage: "/tmp/clipfan-install.ABC123"))
+    }
+
     func testLocalConfigURLHonorsXDGConfigHome() {
         let home = URL(fileURLWithPath: "/tmp/home")
         let xdg = URL(fileURLWithPath: "/tmp/xdg-config")
@@ -236,5 +353,99 @@ final class InstallerFlagTests: XCTestCase {
     private func posixMode(_ url: URL) throws -> Int {
         let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
         return (attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0
+    }
+
+    private struct ShellResult {
+        let status: Int32
+        let stdout: String
+        let stderr: String
+    }
+
+    private struct RemoteUpdateShellFixture {
+        let root: URL
+        let stage: URL
+        let systemctlLog: URL
+        let installMarker: URL
+        let environment: [String: String]
+    }
+
+    private func makeRemoteUpdateShellFixture(systemctlIsActive: Bool) throws -> RemoteUpdateShellFixture {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-update-shell-\(UUID().uuidString)")
+        let stage = root.appendingPathComponent("stage")
+        let fakebin = root.appendingPathComponent("fakebin")
+        let home = root.appendingPathComponent("home")
+        let systemctlLog = root.appendingPathComponent("systemctl.log")
+        let launchctlLog = root.appendingPathComponent("launchctl.log")
+        let installMarker = root.appendingPathComponent("install-ran")
+        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: fakebin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+
+        try writeExecutableScript(stage.appendingPathComponent("clipfan-linux-arm64"), """
+        #!/usr/bin/env bash
+        if [[ "$1" == "storage-preflight" ]]; then
+          echo "code: unsupported_runtime_storage" >&2
+          exit 37
+        fi
+        echo "unexpected staged binary command: $*" >&2
+        exit 99
+        """)
+        try writeExecutableScript(stage.appendingPathComponent("install.sh"), """
+        #!/usr/bin/env bash
+        touch "$INSTALL_MARKER"
+        exit 0
+        """)
+        try writeExecutableScript(fakebin.appendingPathComponent("launchctl"), """
+        #!/usr/bin/env bash
+        printf '%s\\n' "$*" >> "$LAUNCHCTL_LOG"
+        exit 1
+        """)
+        try writeExecutableScript(fakebin.appendingPathComponent("systemctl"), """
+        #!/usr/bin/env bash
+        printf '%s\\n' "$*" >> "$SYSTEMCTL_LOG"
+        if [[ "$1" == "--user" && "$2" == "is-active" && "$3" == "--quiet" ]]; then
+          \(systemctlIsActive ? "exit 0" : "exit 1")
+        fi
+        exit 0
+        """)
+
+        return RemoteUpdateShellFixture(
+            root: root,
+            stage: stage,
+            systemctlLog: systemctlLog,
+            installMarker: installMarker,
+            environment: [
+                "HOME": home.path,
+                "PATH": "\(fakebin.path):/usr/bin:/bin:/usr/sbin:/sbin",
+                "SYSTEMCTL_LOG": systemctlLog.path,
+                "LAUNCHCTL_LOG": launchctlLog.path,
+                "INSTALL_MARKER": installMarker.path
+            ]
+        )
+    }
+
+    private func writeExecutableScript(_ url: URL, _ body: String) throws {
+        try body.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                              ofItemAtPath: url.path)
+    }
+
+    private func runBash(_ command: String, environment: [String: String]) throws -> ShellResult {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = ["-lc", command]
+        proc.environment = environment
+        let out = Pipe()
+        let err = Pipe()
+        proc.standardOutput = out
+        proc.standardError = err
+        try proc.run()
+        proc.waitUntilExit()
+        return ShellResult(
+            status: proc.terminationStatus,
+            stdout: String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self),
+            stderr: String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        )
     }
 }
