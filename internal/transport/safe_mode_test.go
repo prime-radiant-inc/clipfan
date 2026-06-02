@@ -221,6 +221,17 @@ func TestSafeModeLogsExposeGlobalEntriesAndRejectPeerScopedLogs(t *testing.T) {
 	if global["peer_id"] != "local" || global["safe_mode"] != true || global["truncated"] != false {
 		t.Fatalf("global log metadata = %#v", global)
 	}
+	if global["safe_mode_schema"] != "safe_mode_v1" ||
+		global["listener_repair_status"] != "needs_repair" ||
+		global["last_failure_phase"] != "listener_safe_mode" ||
+		global["safe_mode_logs_available"] != true {
+		t.Fatalf("global log app-facing status fields = %#v", global)
+	}
+	for _, forbidden := range []string{"ssh", "transport_health", "ssh_peers", "runtime_health", "peer_health", "remote_shared_key", "shared_key"} {
+		if _, ok := global[forbidden]; ok {
+			t.Fatalf("safe-mode logs exposed forbidden field %s: %#v", forbidden, global)
+		}
+	}
 	entries := global["entries"].([]any)
 	if len(entries) < 2 {
 		t.Fatalf("entries = %#v, want listener and legacy static peer entries", entries)
@@ -244,6 +255,12 @@ func TestSafeModeLogsExposeGlobalEntriesAndRejectPeerScopedLogs(t *testing.T) {
 	srv.Handler().ServeHTTP(peerRec, peerReq)
 	requireSignedSafeModeError(t, auth, peerRec, "safe-peer-logs", http.StatusServiceUnavailable, "ssh_peer_logs_unavailable_before_schema")
 	peerPayload := decodeJSONMap(t, peerRec)
+	if peerPayload["safe_mode_schema"] != "safe_mode_v1" ||
+		peerPayload["listener_repair_status"] != "needs_repair" ||
+		peerPayload["last_failure_phase"] != "listener_safe_mode" ||
+		peerPayload["safe_mode_logs_available"] != true {
+		t.Fatalf("peer log app-facing status fields = %#v", peerPayload)
+	}
 	if entries := peerPayload["entries"].([]any); len(entries) != 0 {
 		t.Fatalf("peer-scoped entries = %#v, want none", entries)
 	}
@@ -436,6 +453,9 @@ func requireSafeModeError(t *testing.T, rec *httptest.ResponseRecorder, status i
 func assertMinimalSafeModeStatus(t *testing.T, payload map[string]any) {
 	t.Helper()
 	if payload["status"] != "safe_mode_signed_repair" ||
+		payload["listener_repair_status"] != "needs_repair" ||
+		payload["last_failure_phase"] != "listener_safe_mode" ||
+		payload["safe_mode_logs_available"] != true ||
 		payload["hostname"] != "m4" ||
 		payload["configured_listen"] != "0.0.0.0:9000" ||
 		payload["effective_repair_listen"] != "127.0.0.1:9000" ||
@@ -447,7 +467,7 @@ func assertMinimalSafeModeStatus(t *testing.T, payload map[string]any) {
 		payload["config_revision"] != float64(9) {
 		t.Fatalf("safe-mode status payload = %#v", payload)
 	}
-	for _, forbidden := range []string{"ssh", "transport_health", "ssh_peers", "runtime_health"} {
+	for _, forbidden := range []string{"ssh", "transport_health", "ssh_peers", "runtime_health", "peer_health", "remote_shared_key", "shared_key"} {
 		if _, ok := payload[forbidden]; ok {
 			t.Fatalf("safe-mode payload exposed forbidden field %s: %#v", forbidden, payload)
 		}

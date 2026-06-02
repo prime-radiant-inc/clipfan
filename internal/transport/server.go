@@ -235,7 +235,8 @@ func (s *Server) safeModeVersionPayload() map[string]any {
 }
 
 func (s *Server) safeModeStatusPayload() map[string]any {
-	return map[string]any{
+	payload := s.safeModeListenerStatusFields()
+	for key, value := range map[string]any{
 		"status":                  "safe_mode_signed_repair",
 		"hostname":                s.safeInfo.Hostname,
 		"configured_listen":       s.safeInfo.ConfiguredListen,
@@ -248,7 +249,10 @@ func (s *Server) safeModeStatusPayload() map[string]any {
 		"config_revision":         s.safeInfo.ConfigRevision,
 		"legacy_peer_suggestions": s.safeModeLegacyPeerSuggestions(),
 		"log_ids":                 s.safeModeLogIDs(),
+	} {
+		payload[key] = value
 	}
+	return payload
 }
 
 func (s *Server) safeModePeersPayload() map[string]any {
@@ -308,6 +312,15 @@ func (s *Server) safeModeLegacyPeerRows() []map[string]any {
 	return rows
 }
 
+func (s *Server) safeModeListenerStatusFields() map[string]any {
+	return map[string]any{
+		"listener_repair_status":   "needs_repair",
+		"last_failure_phase":       "listener_safe_mode",
+		"safe_mode_logs_available": true,
+		"safe_mode_schema":         "safe_mode_v1",
+	}
+}
+
 func (s *Server) safeModeLogIDs() []string {
 	ids := []string{"safe-mode-listener"}
 	for i, peer := range s.safeInfo.StaticPeers {
@@ -322,22 +335,29 @@ func (s *Server) safeModeLogIDs() []string {
 func (s *Server) getSafeModeLogs(w http.ResponseWriter, r *http.Request, signed *signedPayload) {
 	peerID := r.URL.Query().Get("peer")
 	if peerID != "" && peerID != "local" {
-		body := map[string]any{
+		body := s.safeModeListenerStatusFields()
+		for key, value := range map[string]any{
 			"type":      "error",
 			"code":      "ssh_peer_logs_unavailable_before_schema",
 			"peer_id":   peerID,
 			"safe_mode": true,
 			"entries":   []any{},
+		} {
+			body[key] = value
 		}
 		s.writeSignedJSONStatus(w, signed, http.StatusServiceUnavailable, body)
 		return
 	}
-	s.writeSignedJSON(w, signed, map[string]any{
+	payload := s.safeModeListenerStatusFields()
+	for key, value := range map[string]any{
 		"peer_id":   "local",
 		"safe_mode": true,
 		"entries":   s.safeModeLogEntries(),
 		"truncated": false,
-	})
+	} {
+		payload[key] = value
+	}
+	s.writeSignedJSON(w, signed, payload)
 }
 
 func (s *Server) safeModeLogEntries() []map[string]any {

@@ -35,6 +35,10 @@ final class DaemonClient: ObservableObject {
     @Published var connected: Bool = false
     @Published var history: [HistoryEntry] = []
     @Published var historyLoaded: Bool = false
+    @Published var safeModeStatus: LocalDaemonSafeModeStatus?
+    @Published var safeModeLog: String = ""
+    @Published var listenerRepairInProgress: Bool = false
+    @Published var safeModeRepairMessage: String?
 
     var transportGatePolicy: SSHTransportGatePolicy = .current
     var peerVersionFetch: PeerUpdateVerifier.Fetch = PeerVersionProbe.fetch
@@ -67,6 +71,12 @@ final class DaemonClient: ObservableObject {
         do {
             let resp = try await fetchPeers(key: key)
             applyPeers(resp)
+            if safeModeStatus?.active == true {
+                await refreshSafeModeStatus(key: key)
+                await refreshSafeModeLog(key: key)
+            } else {
+                safeModeLog = ""
+            }
             self.connected = true
         } catch {
             self.connected = false
@@ -81,6 +91,36 @@ final class DaemonClient: ObservableObject {
         kick.arguments = ["kickstart", "-k", "gui/\(uid)/com.primeradiant.clipfan"]
         try? kick.run()
         kick.waitUntilExit()
+    }
+
+    func moveDaemonListenerToLoopback() async {
+        guard let key = loadSharedKey(),
+              safeModeStatus?.repairable == true else {
+            safeModeRepairMessage = "Safe mode listener repair is unavailable."
+            return
+        }
+
+        listenerRepairInProgress = true
+        defer { listenerRepairInProgress = false }
+        do {
+            let endpoint = LocalDaemonEndpoint(url: base, port: base.port ?? LocalDaemonDiscovery.defaultPort, purpose: .signedCompatibility)
+            let statusRequest = try LocalDaemonRequestBuilder.listenerRepairStatusRequest(endpoint: endpoint, sharedKey: key)
+            let statusData = try await authenticatedData(for: statusRequest, key: key)
+            let repairStatus = try JSONDecoder.clipfan.decode(LocalDaemonListenerRepairStatus.self, from: statusData)
+            let repairRequest = try LocalDaemonRequestBuilder.listenerRepairRequest(endpoint: endpoint,
+                                                                                    status: repairStatus,
+                                                                                    sharedKey: key)
+            _ = try await authenticatedData(for: repairRequest, key: key)
+            restartDaemon()
+            if await verifyListenerRepairCleared() {
+                safeModeRepairMessage = "Listener repair applied."
+            } else {
+                safeModeRepairMessage = "Listener repair applied, but safe mode is still active."
+            }
+        } catch {
+            connected = false
+            safeModeRepairMessage = "Listener repair failed: \(error.localizedDescription)"
+        }
     }
 
     /// Shell-launch the daemon if it isn't already answering on the local port.
@@ -105,8 +145,10 @@ final class DaemonClient: ObservableObject {
     }
 
     func refreshHistory() async {
+        guard safeModeStatus?.active != true else { return }
         guard let key = loadSharedKey(),
               await verifyDaemon(key: key) else { return }
+        guard safeModeStatus?.active != true else { return }
         let requestURI = "/v1/history?limit=\(maxHistory)"
         do {
             let data = try await signedData(method: "GET", path: requestURI, body: Data(), key: key)
@@ -123,6 +165,10 @@ final class DaemonClient: ObservableObject {
     }
 
     func refreshPeerVersions() async {
+        guard safeModeStatus?.active != true else {
+            peerVersions = [:]
+            return
+        }
         guard transportGatePolicy.peerHTTPVersionProbeEnabled else {
             peerVersions = [:]
             return
@@ -163,6 +209,7 @@ final class DaemonClient: ObservableObject {
     func refreshPeerVersion(hostname: String,
                             attempts: Int = 1,
                             delayNanoseconds: UInt64 = 0) async -> PeerVersionStatus? {
+        guard safeModeStatus?.active != true else { return nil }
         guard transportGatePolicy.peerHTTPVersionProbeEnabled else { return nil }
         guard let localVersion = version else { return nil }
         return await verifyPeerVersion(hostname: hostname,
@@ -175,6 +222,7 @@ final class DaemonClient: ObservableObject {
                            expectedVersion: String,
                            attempts: Int = 1,
                            delayNanoseconds: UInt64 = 0) async -> PeerUpdateVerificationResult? {
+        guard safeModeStatus?.active != true else { return nil }
         guard transportGatePolicy.peerHTTPVersionProbeEnabled else {
             peerVersions.removeValue(forKey: hostname)
             return skippedPeerHTTPVersionVerification(host: hostname)
@@ -224,6 +272,7 @@ final class DaemonClient: ObservableObject {
     }
 
     private func signedRequest(method: String, path: String, body: [String: Any]) async {
+        guard safeModeStatus?.active != true else { return }
         guard let key = loadSharedKey(),
               await verifyDaemon(key: key),
               let payload = try? JSONSerialization.data(withJSONObject: body) else { return }
@@ -233,6 +282,29 @@ final class DaemonClient: ObservableObject {
     private func fetchPeers(key: Data) async throws -> PeersResponse {
         let data = try await signedData(method: "GET", path: "/v1/peers", body: Data(), key: key)
         return try JSONDecoder.clipfan.decode(PeersResponse.self, from: data)
+    }
+
+    private func refreshSafeModeStatus(key: Data) async {
+        do {
+            let data = try await signedData(method: "GET", path: LocalDaemonRequestBuilder.safeModeStatusPath, body: Data(), key: key)
+            let resp = try JSONDecoder.clipfan.decode(LocalDaemonStatusResponse.self, from: data)
+            self.safeModeStatus = resp.safeMode
+        } catch {
+            // Compatibility daemons may only expose safe_mode_v1 on /v1/peers.
+        }
+    }
+
+    private func refreshSafeModeLog(key: Data) async {
+        guard safeModeStatus?.active == true else {
+            safeModeLog = ""
+            return
+        }
+        do {
+            let data = try await signedData(method: "GET", path: LocalDaemonRequestBuilder.safeModeLogPath, body: Data(), key: key)
+            safeModeLog = try JSONDecoder.clipfan.decode(LocalDaemonSafeModeLogResponse.self, from: data).formattedLog
+        } catch {
+            // Leave the last log visible if the daemon is between restarts.
+        }
     }
 
     private func verifyDaemon(key: Data) async -> Bool {
@@ -251,28 +323,41 @@ final class DaemonClient: ObservableObject {
         self.origin = resp.origin
         self.version = resp.version
         if let m = resp.max_history { self.maxHistory = m }
-        self.peers = resp.peers
+        self.safeModeStatus = resp.safeMode
+        if safeModeStatus?.active == true {
+            self.peers = []
+            self.peerVersions = [:]
+        } else {
+            self.peers = resp.peers
+        }
+    }
+
+    private func verifyListenerRepairCleared() async -> Bool {
+        for _ in 0..<5 {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            await refresh()
+            if safeModeStatus?.active != true {
+                return true
+            }
+            if safeModeStatus?.listenerIsLoopback == true {
+                return true
+            }
+        }
+        return false
     }
 
     private func signedData(method: String, path: String, body: Data, key: Data) async throws -> Data {
-        guard let url = URL(string: "\(base.absoluteString)\(path)") else {
-            throw URLError(.badURL)
-        }
-        var req = URLRequest(url: url)
-        req.httpMethod = method
-        if !body.isEmpty {
-            req.httpBody = body
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        }
-        req.timeoutInterval = 2
-        let headers = localDaemonSignatureHeaders(method: method, requestURI: path, body: body, sharedKey: key)
-        for (header, value) in headers {
-            req.setValue(value, forHTTPHeaderField: header)
-        }
-        guard let requestNonce = headers["X-Clipfan-Nonce"] else {
-            throw ClipfanAuthenticationError.missingRequestNonce
-        }
-        let (data, response) = try await URLSession.shared.data(for: req)
-        return try authenticatedClipfanData(data, response: response, requestNonce: requestNonce, key: key)
+        let endpoint = LocalDaemonEndpoint(url: base, port: base.port ?? LocalDaemonDiscovery.defaultPort, purpose: .signed)
+        let prepared = try LocalDaemonRequestBuilder.signedRequest(endpoint: endpoint,
+                                                                   method: method,
+                                                                   requestURI: path,
+                                                                   body: body,
+                                                                   sharedKey: key)
+        return try await authenticatedData(for: prepared, key: key)
+    }
+
+    private func authenticatedData(for prepared: LocalDaemonPreparedRequest, key: Data) async throws -> Data {
+        let (data, response) = try await URLSession.shared.data(for: prepared.request)
+        return try authenticatedClipfanData(data, response: response, requestNonce: prepared.requestNonce, key: key)
     }
 }

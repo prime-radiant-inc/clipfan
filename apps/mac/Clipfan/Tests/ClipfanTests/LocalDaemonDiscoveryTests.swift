@@ -11,6 +11,15 @@ final class LocalDaemonDiscoveryTests: XCTestCase {
         XCTAssertEqual(plan.healthOnlyEndpoints.map(\.port), [49123, 7853])
     }
 
+    func testConfigDerived127RangeListenIsUsedForSignedEndpoints() throws {
+        let plan = LocalDaemonDiscovery.plan(configData: data(#"{"listen":"127.2.3.4:49123","port":7853}"#))
+
+        XCTAssertEqual(plan.signedEndpoints, [
+            LocalDaemonEndpoint(url: try XCTUnwrap(URL(string: "http://127.2.3.4:49123")), port: 49123, purpose: .signed),
+        ])
+        XCTAssertEqual(plan.healthOnlyEndpoints.map(\.port), [49123, 7853])
+    }
+
     func testConfigDerivedIPv6LoopbackListenIsPreservedForSignedEndpoints() throws {
         let plan = LocalDaemonDiscovery.plan(configData: data(#"{"listen":"[::1]:49123","port":7853}"#))
 
@@ -27,6 +36,25 @@ final class LocalDaemonDiscoveryTests: XCTestCase {
         let publicHost = LocalDaemonDiscovery.plan(configData: data(#"{"listen":"0.0.0.0:49124","port":7853}"#))
         XCTAssertEqual(publicHost.signedEndpoints, [])
         XCTAssertEqual(publicHost.healthOnlyEndpoints.map(\.port), [49124, 7853])
+    }
+
+    func testUnsafeNonDefaultListenOnlyAllowsSignedCompatibilityWithIdentityProof() throws {
+        let proof = LocalDaemonIdentityProof(
+            configPath: "/Users/j/.config/clipfan/config.json",
+            stateDirectory: "/Users/j/.local/state/clipfan",
+            authVersion: clipfanRequestAuthVersion,
+            hostID: "host-1"
+        )
+
+        let plan = LocalDaemonDiscovery.plan(
+            configData: data(#"{"listen":"0.0.0.0:49123","port":7853}"#),
+            identityProof: proof
+        )
+
+        XCTAssertEqual(plan.signedEndpoints, [
+            LocalDaemonEndpoint(url: try XCTUnwrap(URL(string: "http://127.0.0.1:7853")), port: 7853, purpose: .signedCompatibility),
+        ])
+        XCTAssertEqual(plan.healthOnlyEndpoints.map(\.purpose), [.healthOnly, .healthOnly])
     }
 
     func testSignedFallbackTo7853RequiresExplicitIdentityProof() {

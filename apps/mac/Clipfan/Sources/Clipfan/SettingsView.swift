@@ -58,11 +58,21 @@ struct FleetTab: View {
             if shouldPromptLocalNetwork(peers: daemon.peers) {
                 LocalNetworkNudge()
             }
+            if let safeMode = daemon.safeModeStatus, safeMode.active {
+                SafeModeWarningPanel(
+                    status: safeMode,
+                    repairMessage: daemon.safeModeRepairMessage,
+                    repairAction: {
+                        Task { await daemon.moveDaemonListenerToLoopback() }
+                    }
+                )
+            }
             ScrollView {
                 VStack(spacing: 10) {
                     ForEach(fleetRows(origin: daemon.origin,
                                       connected: daemon.connected,
                                       peers: daemon.peers,
+                                      safeMode: daemon.safeModeStatus,
                                       peerVersions: daemon.peerVersions)) { row in
                         HStack(spacing: 8) {
                             FleetRow(model: row)
@@ -113,6 +123,49 @@ struct FleetTab: View {
         .onAppear {
             Task { await daemon.refreshPeerVersions() }
         }
+    }
+}
+
+struct SafeModeWarningPanel: View {
+    let status: LocalDaemonSafeModeStatus
+    let repairMessage: String?
+    let repairAction: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.shield")
+                .font(.system(size: 16))
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Daemon listener is in safe mode")
+                    .font(.system(size: 12.5, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Button("Move daemon listener to loopback") {
+                    repairAction()
+                }
+                .disabled(!status.repairable)
+                .font(.system(size: 11))
+                .padding(.top, 2)
+                if let repairMessage, !repairMessage.isEmpty {
+                    Text(repairMessage)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.08))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.25)))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var detail: String {
+        let listen = status.listen ?? "unknown listener"
+        let repair = status.effectiveRepairListen ?? "loopback"
+        return "The daemon reported \(listen). Repair will set the local listener to \(repair)."
     }
 }
 
@@ -233,6 +286,37 @@ struct DiagnosticsTab: View {
                 }
                 Text("Reinstalls and restarts the background service.")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+
+            if let safeMode = daemon.safeModeStatus, safeMode.active {
+                Section("Safe Mode") {
+                    LabeledContent("Reason") { Text(safeMode.reason ?? "—") }
+                    LabeledContent("Listener") { Text(safeMode.listen ?? "—").font(.system(.caption, design: .monospaced)) }
+                    LabeledContent("Repair listener") {
+                        Text(safeMode.effectiveRepairListen ?? "—")
+                            .font(.system(.caption, design: .monospaced))
+                    }
+                    if let state = safeMode.expectedRevisionState,
+                       let revision = safeMode.expectedRevision {
+                        LabeledContent("Expected revision") {
+                            Text("\(state) \(revision)")
+                                .font(.system(.caption, design: .monospaced))
+                        }
+                    }
+                    Button("Move daemon listener to loopback") {
+                        Task { await daemon.moveDaemonListenerToLoopback() }
+                    }
+                    .disabled(!safeMode.repairable || daemon.listenerRepairInProgress)
+                    if !daemon.safeModeLog.isEmpty {
+                        Button("Copy Log") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(daemon.safeModeLog, forType: .string)
+                        }
+                        TextEditor(text: .constant(daemon.safeModeLog))
+                            .font(.system(.caption, design: .monospaced))
+                            .frame(minHeight: 120)
+                    }
+                }
             }
 
             Section("Developer") {

@@ -29,6 +29,33 @@ extension FleetRowTests {
         let resp = try JSONDecoder.clipfan.decode(PeersResponse.self, from: json)
         XCTAssertEqual(resp.max_history, 350)
     }
+
+    func testDecodePeersResponseSafeModeCompatibilityPayload() throws {
+        let json = """
+        {
+          "origin":"paradise-park",
+          "version":"v1.2.3",
+          "peers":[],
+          "status":"safe_mode_signed_repair",
+          "safe_mode":true,
+          "safe_mode_schema":"safe_mode_v1",
+          "listener_repair_status":"needs_repair",
+          "last_failure_phase":"listener_safe_mode",
+          "safe_mode_logs_available":true,
+          "configured_listen":"0.0.0.0:49123",
+          "effective_repair_listen":"127.0.0.1:49123",
+          "peer_sync_started":false,
+          "config_revision":17
+        }
+        """.data(using: .utf8)!
+
+        let resp = try JSONDecoder.clipfan.decode(PeersResponse.self, from: json)
+
+        XCTAssertTrue(resp.safeMode?.active == true)
+        XCTAssertEqual(resp.safeMode?.listenerRepairStatus, "needs_repair")
+        XCTAssertEqual(resp.safeMode?.effectiveRepairListen, "127.0.0.1:49123")
+        XCTAssertEqual(resp.safeMode?.configRevision, 17)
+    }
 }
 
 extension FleetRowTests {
@@ -59,6 +86,32 @@ extension FleetRowTests {
         let down = fleetRows(origin: "me", connected: false, peers: [])
         XCTAssertEqual(down[0].health, .down)
         XCTAssertEqual(down[0].subtitle, "this Mac · daemon not running")
+    }
+
+    func testSafeModeCompatibilityDoesNotGreenSelfRow() {
+        let safeMode = LocalDaemonSafeModeStatus.fromPayload(
+            status: "safe_mode_signed_repair",
+            hostname: "me",
+            configuredListen: "0.0.0.0:49123",
+            effectiveRepairListen: "127.0.0.1:49123",
+            parseError: nil,
+            safeMode: true,
+            safeModeSchema: "safe_mode_v1",
+            listenerRepairStatus: "needs_repair",
+            lastFailurePhase: "listener_safe_mode",
+            safeModeLogsAvailable: true,
+            peerSyncStarted: false,
+            configVersion: 2,
+            configRevision: 17,
+            revisionState: "versioned",
+            port: 49123
+        )
+
+        let rows = fleetRows(origin: "me", connected: true, peers: [peer("remote")], safeMode: safeMode)
+
+        XCTAssertEqual(rows[0].health, .attention)
+        XCTAssertEqual(rows[0].subtitle, "this Mac · listener repair required")
+        XCTAssertEqual(rows.count, 1)
     }
 
     func testPeerRowsCarryPeer() {

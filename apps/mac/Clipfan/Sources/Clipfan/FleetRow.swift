@@ -60,18 +60,23 @@ struct FleetRowModel: Identifiable {
 func fleetRows(origin: String,
                connected: Bool,
                peers: [Peer],
+               safeMode: LocalDaemonSafeModeStatus? = nil,
                peerVersions: [String: PeerVersionStatus] = [:],
                policy: SSHTransportGatePolicy = .current) -> [FleetRowModel] {
+    let safeModeActive = safeMode?.active == true
     let selfRow = FleetRowModel(
         id: origin,
         name: origin,
-        subtitle: connected ? "this Mac · running" : "this Mac · daemon not running",
-        health: connected ? .healthy : .down,
+        subtitle: safeModeActive ? "this Mac · listener repair required" : (connected ? "this Mac · running" : "this Mac · daemon not running"),
+        health: safeModeActive ? .attention : (connected ? .healthy : .down),
         isSelf: true,
         pushTS: nil,
         recvTS: nil,
         peer: nil
     )
+    if safeModeActive {
+        return [selfRow]
+    }
     let peerRows = peers.map { p in
         let versionStatus = policy.peerHTTPVersionProbeEnabled ? peerVersions[p.hostname] : nil
         return FleetRowModel(

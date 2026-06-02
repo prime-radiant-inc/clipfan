@@ -81,6 +81,97 @@ final class LocalDaemonRequestTests: XCTestCase {
         }
     }
 
+    func testBuildsSafeModeStatusAndLogRequestsOnlyForSignedEndpoints() throws {
+        let signed = LocalDaemonEndpoint(
+            url: try XCTUnwrap(URL(string: "http://127.0.0.1:7853")),
+            port: 7853,
+            purpose: .signedCompatibility
+        )
+        let healthOnly = LocalDaemonEndpoint(
+            url: try XCTUnwrap(URL(string: "http://127.0.0.1:7853")),
+            port: 7853,
+            purpose: .healthOnly
+        )
+
+        let status = try LocalDaemonRequestBuilder.safeModeStatusRequest(endpoint: signed, sharedKey: rawKey)
+        XCTAssertEqual(status.request.url?.absoluteString, "http://127.0.0.1:7853/v1/status")
+        XCTAssertEqual(status.request.httpMethod, "GET")
+
+        let log = try LocalDaemonRequestBuilder.safeModeLogRequest(endpoint: signed, sharedKey: rawKey)
+        XCTAssertEqual(log.request.url?.absoluteString, "http://127.0.0.1:7853/v1/ssh/logs?limit=50")
+        XCTAssertEqual(log.request.httpMethod, "GET")
+
+        XCTAssertThrowsError(try LocalDaemonRequestBuilder.safeModeStatusRequest(endpoint: healthOnly, sharedKey: rawKey)) { error in
+            XCTAssertEqual(error as? LocalDaemonRequestError, .healthOnlyEndpoint)
+        }
+        XCTAssertThrowsError(try LocalDaemonRequestBuilder.safeModeLogRequest(endpoint: healthOnly, sharedKey: rawKey)) { error in
+            XCTAssertEqual(error as? LocalDaemonRequestError, .healthOnlyEndpoint)
+        }
+    }
+
+    func testBuildsListenerRepairPatchFromSafeModeStatus() throws {
+        let endpoint = LocalDaemonEndpoint(
+            url: try XCTUnwrap(URL(string: "http://127.0.0.1:7853")),
+            port: 7853,
+            purpose: .signedCompatibility
+        )
+        let status = LocalDaemonListenerRepairStatus(
+            listen: "0.0.0.0:49123",
+            port: 49123,
+            previous_listen: nil,
+            configured_listen: "0.0.0.0:49123",
+            effective_repair_listen: "127.0.0.1:49123",
+            parse_error: "public_listen_requires_confirmation",
+            safe_mode: true,
+            config_version: 2,
+            config_revision: 17,
+            revision_state: "versioned"
+        )
+
+        let prepared = try LocalDaemonRequestBuilder.listenerRepairRequest(
+            endpoint: endpoint,
+            status: status,
+            sharedKey: rawKey
+        )
+
+        XCTAssertEqual(prepared.request.url?.absoluteString, "http://127.0.0.1:7853/v1/config/listener")
+        XCTAssertEqual(prepared.request.httpMethod, "PATCH")
+        XCTAssertEqual(prepared.request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        let body = try XCTUnwrap(prepared.request.httpBody)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(obj["listen"] as? String, "127.0.0.1:49123")
+        XCTAssertEqual(obj["port"] as? Int, 49123)
+        XCTAssertNil(obj["previous_listen"])
+        XCTAssertEqual(obj["expected_revision_state"] as? String, "versioned")
+        XCTAssertEqual(obj["expected_config_revision"] as? Int, 17)
+    }
+
+    func testListenerRepairRequiresActiveSafeModeRepairMetadata() throws {
+        let endpoint = LocalDaemonEndpoint(
+            url: try XCTUnwrap(URL(string: "http://127.0.0.1:7853")),
+            port: 7853,
+            purpose: .signedCompatibility
+        )
+        let inactive = LocalDaemonListenerRepairStatus(
+            listen: "127.0.0.1:49123",
+            port: 49123,
+            previous_listen: nil,
+            configured_listen: "127.0.0.1:49123",
+            effective_repair_listen: "127.0.0.1:49123",
+            parse_error: nil,
+            safe_mode: false,
+            config_version: 2,
+            config_revision: 17,
+            revision_state: "versioned"
+        )
+
+        XCTAssertThrowsError(
+            try LocalDaemonRequestBuilder.listenerRepairRequest(endpoint: endpoint, status: inactive, sharedKey: rawKey)
+        ) { error in
+            XCTAssertEqual(error as? LocalDaemonRequestError, .safeModeRepairUnavailable)
+        }
+    }
+
     func testBuiltRequestNonceVerifiesVersionedResponse() throws {
         let endpoint = LocalDaemonEndpoint(
             url: try XCTUnwrap(URL(string: "http://127.0.0.1:49123")),
