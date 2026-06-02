@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/prime-radiant-inc/clipfan/internal/transport"
 )
 
 var ErrSignedEndpointRequired = errors.New("signed_endpoint_required")
+var ErrInvalidRequestURI = errors.New("invalid_local_request_uri")
 
 type SignedRequest struct {
 	Request *http.Request
@@ -23,11 +25,14 @@ type SignedRequestOptions struct {
 }
 
 func NewSignedRequest(ctx context.Context, endpoint Endpoint, auth *transport.Auth, method, requestURI string, body []byte, opts SignedRequestOptions) (*SignedRequest, error) {
-	if endpoint.Purpose != PurposeSigned {
+	if !isSignedPurpose(endpoint.Purpose) {
 		return nil, ErrSignedEndpointRequired
 	}
 	if auth == nil {
 		return nil, errors.New("auth required")
+	}
+	if err := validateLocalRequestURI(requestURI); err != nil {
+		return nil, err
 	}
 	base, err := url.Parse(endpoint.BaseURL)
 	if err != nil {
@@ -58,4 +63,18 @@ func NewSignedRequest(ctx context.Context, endpoint Endpoint, auth *transport.Au
 		return nil, fmt.Errorf("missing request nonce")
 	}
 	return &SignedRequest{Request: req, Nonce: nonce}, nil
+}
+
+func validateLocalRequestURI(requestURI string) error {
+	if requestURI == "" || !strings.HasPrefix(requestURI, "/") || strings.HasPrefix(requestURI, "//") {
+		return ErrInvalidRequestURI
+	}
+	parsed, err := url.ParseRequestURI(requestURI)
+	if err != nil {
+		return err
+	}
+	if parsed.Scheme != "" || parsed.Host != "" {
+		return ErrInvalidRequestURI
+	}
+	return nil
 }

@@ -18,8 +18,9 @@ var ErrSignedIdentityUnverified = errors.New("local_daemon_identity_unverified")
 type Purpose string
 
 const (
-	PurposeHealthOnly Purpose = "health_only"
-	PurposeSigned     Purpose = "signed"
+	PurposeHealthOnly          Purpose = "health_only"
+	PurposeSigned              Purpose = "signed"
+	PurposeSignedCompatibility Purpose = "signed_compatibility"
 )
 
 type Endpoint struct {
@@ -38,8 +39,11 @@ func Discover(cfg *config.Config, purpose Purpose, opts Options) (Endpoint, erro
 	if endpoint, ok := endpointFromConfigListen(cfg, purpose); ok {
 		return endpoint, nil
 	}
-	if purpose == PurposeSigned && !opts.SignedFallbackIdentityProved {
+	if isSignedPurpose(purpose) && !opts.SignedFallbackIdentityProved {
 		return Endpoint{}, ErrSignedIdentityUnverified
+	}
+	if purpose == PurposeSigned {
+		purpose = PurposeSignedCompatibility
 	}
 	return endpointFromParts("127.0.0.1", defaultPort, "default_fallback", purpose), nil
 }
@@ -58,7 +62,7 @@ func endpointFromConfigListen(cfg *config.Config, purpose Purpose) (Endpoint, bo
 		}
 		return Endpoint{}, false
 	}
-	if purpose == PurposeSigned && !isLoopbackHost(host) {
+	if isSignedPurpose(purpose) && !isLoopbackHost(host) {
 		return Endpoint{}, false
 	}
 	if purpose == PurposeHealthOnly && !isLoopbackHost(host) {
@@ -95,6 +99,10 @@ func isLoopbackHost(host string) bool {
 
 func validPort(port int) bool {
 	return port > 0 && port <= 65535
+}
+
+func isSignedPurpose(purpose Purpose) bool {
+	return purpose == PurposeSigned || purpose == PurposeSignedCompatibility
 }
 
 func endpointFromParts(host string, port int, source string, purpose Purpose) Endpoint {

@@ -21,7 +21,7 @@ type StartupOptions struct {
 }
 
 func PlanStartup(cfg *config.Config, opts StartupOptions) StartupPlan {
-	if cfg != nil && cfg.ConfigVersion != nil && *cfg.ConfigVersion == 2 {
+	if cfg != nil && cfg.ConfigVersion != nil && *cfg.ConfigVersion >= 2 {
 		if !opts.ClientSupportsHKDF {
 			return StartupPlan{
 				AllowRawSignedRequests: false,

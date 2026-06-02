@@ -33,6 +33,18 @@ func TestPlanStartupConfigV2OldClientFailsBeforeRawWrites(t *testing.T) {
 	}
 }
 
+func TestPlanStartupFutureConfigVersionRequiresHKDFClient(t *testing.T) {
+	version := 3
+	plan := PlanStartup(&config.Config{ConfigVersion: &version, SharedKey: "k"}, StartupOptions{ClientSupportsHKDF: false})
+
+	if plan.AllowRawSignedRequests || plan.AllowWholeConfigWrite {
+		t.Fatalf("future config old-client plan allowed raw write path: %+v", plan)
+	}
+	if plan.Diagnostic != StartupDiagnosticConfigV2RequiresHKDFClient {
+		t.Fatalf("future config diagnostic = %q", plan.Diagnostic)
+	}
+}
+
 func TestPlanStartupConfigV2NewClientUsesHKDFOnly(t *testing.T) {
 	version := 2
 	plan := PlanStartup(&config.Config{ConfigVersion: &version, SharedKey: "k"}, StartupOptions{ClientSupportsHKDF: true})

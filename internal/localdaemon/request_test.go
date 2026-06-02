@@ -48,6 +48,33 @@ func TestNewSignedRequestBuildsVersionedLocalRequest(t *testing.T) {
 	}
 }
 
+func TestNewSignedRequestAllowsSignedCompatibilityEndpoint(t *testing.T) {
+	auth := fixtureAuth(t)
+	endpoint := Endpoint{
+		BaseURL: "http://127.0.0.1:7853",
+		Host:    "127.0.0.1",
+		Port:    7853,
+		Source:  "default_fallback",
+		Purpose: PurposeSignedCompatibility,
+	}
+
+	signed, err := NewSignedRequest(context.Background(), endpoint, auth, http.MethodGet, "/v1/peers", nil, SignedRequestOptions{
+		AuthOptions: transport.SignedRequestOptions{
+			Timestamp: time.Unix(1780257600, 0),
+			Nonce:     "compat-nonce",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSignedRequest compatibility: %v", err)
+	}
+	if signed.Request.URL.String() != "http://127.0.0.1:7853/v1/peers" {
+		t.Fatalf("compat request URL = %s", signed.Request.URL.String())
+	}
+	if got := signed.Request.Header.Get(transport.HeaderAuthVersion); got != transport.AuthVersionRequestHMAC {
+		t.Fatalf("auth version header = %q", got)
+	}
+}
+
 func TestNewSignedRequestRejectsHealthOnlyEndpoint(t *testing.T) {
 	_, err := NewSignedRequest(context.Background(), Endpoint{
 		BaseURL: "http://127.0.0.1:49123",
@@ -58,6 +85,29 @@ func TestNewSignedRequestRejectsHealthOnlyEndpoint(t *testing.T) {
 	}, fixtureAuth(t), http.MethodGet, "/v1/status", nil, SignedRequestOptions{})
 	if !errors.Is(err, ErrSignedEndpointRequired) {
 		t.Fatalf("error = %v, want ErrSignedEndpointRequired", err)
+	}
+}
+
+func TestNewSignedRequestRejectsNonLocalRequestURI(t *testing.T) {
+	auth := fixtureAuth(t)
+	endpoint := Endpoint{
+		BaseURL: "http://127.0.0.1:49123",
+		Host:    "127.0.0.1",
+		Port:    49123,
+		Source:  "config_listen",
+		Purpose: PurposeSigned,
+	}
+	for _, requestURI := range []string{
+		"",
+		"v1/peers",
+		"//example.com/v1/peers",
+		"http://example.com/v1/peers",
+		"https://example.com/v1/peers",
+	} {
+		_, err := NewSignedRequest(context.Background(), endpoint, auth, http.MethodGet, requestURI, nil, SignedRequestOptions{})
+		if !errors.Is(err, ErrInvalidRequestURI) {
+			t.Fatalf("requestURI %q error = %v, want ErrInvalidRequestURI", requestURI, err)
+		}
 	}
 }
 

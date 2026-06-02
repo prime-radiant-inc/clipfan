@@ -43,6 +43,9 @@ func TestDiscoverSignedFallbackRequiresIdentityProof(t *testing.T) {
 	if endpoint.BaseURL != "http://127.0.0.1:7853" || endpoint.Source != "default_fallback" {
 		t.Fatalf("fallback endpoint = %+v", endpoint)
 	}
+	if endpoint.Purpose != PurposeSignedCompatibility {
+		t.Fatalf("fallback purpose = %q, want %q", endpoint.Purpose, PurposeSignedCompatibility)
+	}
 }
 
 func TestDiscoverHealthOnlyUsesConfigPortWithoutSignedAuthorization(t *testing.T) {
