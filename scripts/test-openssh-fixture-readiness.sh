@@ -52,3 +52,24 @@ fi
 if command -v python3 >/dev/null 2>&1; then
   python3 -m json.tool "$tmp/required.json" >/dev/null
 fi
+
+if command -v python3 >/dev/null 2>&1; then
+  CLIPFAN_OPENSSH_FIXTURE_SOURCE_ONLY=1 bash -c '
+    source "$1" macos
+    reason="$(printf "line1\nline2\t\001quoted\"slash\\")"
+    printf "{\"reason\":\""
+    json_escape "$reason"
+    printf "\"}\n"
+  ' bash "$fixture" >"$tmp/control.json"
+  python3 -m json.tool "$tmp/control.json" >/dev/null
+  python3 - "$tmp/control.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)["reason"]
+want = "line1\nline2\t\x01quoted\"slash\\"
+if value != want:
+    raise SystemExit(f"decoded reason = {value!r}, want {want!r}")
+PY
+fi

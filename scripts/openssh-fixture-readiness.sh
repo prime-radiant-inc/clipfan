@@ -103,15 +103,24 @@ cleanup() {
 trap 'cleanup || true' EXIT
 
 json_escape() {
-  if command -v perl >/dev/null 2>&1; then
-    printf '%s' "$1" | perl -0pe 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g; s/\r/\\r/g; s/\t/\\t/g; s/([\x00-\x08\x0b\x0c\x0e-\x1f])/sprintf("\\u%04x", ord($1))/ge'
-    return 0
-  fi
-  if command -v python3 >/dev/null 2>&1; then
-    JSON_ESCAPE_VALUE="$1" python3 -c 'import json, os; print(json.dumps(os.environ["JSON_ESCAPE_VALUE"])[1:-1], end="")'
-    return 0
-  fi
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+  local hex
+  local line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    for hex in $line; do
+      case "$hex" in
+        22) printf '\\"' ;;
+        5c) printf '\\\\' ;;
+        09) printf '\\t' ;;
+        0a) printf '\\n' ;;
+        0d) printf '\\r' ;;
+        00|01|02|03|04|05|06|07|08|0b|0c|0e|0f|10|11|12|13|14|15|16|17|18|19|1a|1b|1c|1d|1e|1f)
+          printf '\\u00%s' "$hex"
+          ;;
+        *) printf '%b' "\\x$hex" ;;
+      esac
+    done
+  done < <(printf '%s' "$1" | od -An -v -tx1)
 }
 
 write_status() {
@@ -432,6 +441,10 @@ run_ubuntu_fixture() {
   run_forward_block_probe "$(id -un)" "$port"
   finish_success "Ubuntu OpenSSH fixture readiness passed"
 }
+
+if [ "${CLIPFAN_OPENSSH_FIXTURE_SOURCE_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 case "$target" in
   macos) run_macos_fixture ;;
