@@ -32,6 +32,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Verify SSH Release Gates
+        run: bash scripts/test-ssh-release-gates.sh
+
       - name: Setup Signing Keychain
         env:
           DEVELOPER_ID_APPLICATION_CERT_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_CERT_BASE64 }}
