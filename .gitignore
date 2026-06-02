@@ -38,3 +38,5 @@ apps/mac/Clipfan/*.xcodeproj/
 
 # Private journal — never publish
 .private-journal/
+# roborev snapshots
+/.roborev/
