@@ -39,3 +39,17 @@ grep -qx -- '--user daemon-reload' "$tmp/systemctl.log"
 grep -qx -- '--user enable clipfan.service' "$tmp/systemctl.log"
 grep -qx -- '--user restart clipfan.service' "$tmp/systemctl.log"
 grep -qx -- '--user status clipfan.service --no-pager' "$tmp/systemctl.log"
+
+: > "$tmp/systemctl.log"
+rm -f "$tmp/home/.config/systemd/user/clipfan.service"
+
+HOME="$tmp/home" \
+DEST="$tmp/home/.local/bin" \
+PATH="$tmp/fakebin:/usr/bin:/bin" \
+    "$tmp/dist/install.sh" --no-tmux --no-restart >"$tmp/install-no-restart.out"
+
+test -f "$tmp/home/.config/systemd/user/clipfan.service"
+grep -qx -- '--user daemon-reload' "$tmp/systemctl.log"
+! grep -qx -- '--user enable clipfan.service' "$tmp/systemctl.log"
+! grep -qx -- '--user restart clipfan.service' "$tmp/systemctl.log"
+! grep -qx -- '--user status clipfan.service --no-pager' "$tmp/systemctl.log"

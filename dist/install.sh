@@ -3,11 +3,12 @@
 # a launchd / systemd-user unit so the daemon runs in the background.
 #
 # Usage from a freshly-extracted dist tarball:
-#     ./install.sh [--with-tmux | --no-tmux]
+#     ./install.sh [--with-tmux | --no-tmux] [--no-restart]
 #
 # Flags:
 #     --with-tmux  — always install tmux integration (even if tmux not found)
 #     --no-tmux    — skip tmux integration (default: auto — install iff tmux present)
+#     --no-restart — install files only; do not load/enable/restart the user service
 #
 # Environment overrides:
 #     DEST       — install dir for binaries (default: $HOME/.local/bin)
@@ -15,11 +16,13 @@
 
 # tmux integration mode: auto (default; on iff tmux is installed), on, or off.
 TMUX_MODE=auto
+NO_RESTART=0
 _args=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --with-tmux) TMUX_MODE=on ;;
         --no-tmux)   TMUX_MODE=off ;;
+        --no-restart) NO_RESTART=1 ;;
         *) _args+=("$1") ;;
     esac
     shift
@@ -129,9 +132,13 @@ case "$goos" in
             -e "s|__LOG__|$log_dir|g" \
             -e "s|__PATH__|$run_path|g" \
             "$here/com.primeradiant.clipfan.plist" > "$plist"
-        launchctl unload "$plist" 2>/dev/null || true
-        launchctl load "$plist"
-        echo "Loaded launchd job: com.primeradiant.clipfan"
+        if [[ "$NO_RESTART" -eq 0 ]]; then
+            launchctl unload "$plist" 2>/dev/null || true
+            launchctl load "$plist"
+            echo "Loaded launchd job: com.primeradiant.clipfan"
+        else
+            echo "Skipped launchd load/restart (--no-restart)"
+        fi
         echo "Logs: $log_dir/clipfan.{out,err}.log"
 
         # The menubar UI is now Clipfan.app (apps/mac/Clipfan), installed
@@ -157,9 +164,13 @@ case "$goos" in
         echo "Writing $unit"
         install -m 0644 "$here/clipfan.service" "$unit"
         systemctl --user daemon-reload
-        systemctl --user enable clipfan.service
-        systemctl --user restart clipfan.service
-        systemctl --user status clipfan.service --no-pager | head -10 || true
+        if [[ "$NO_RESTART" -eq 0 ]]; then
+            systemctl --user enable clipfan.service
+            systemctl --user restart clipfan.service
+            systemctl --user status clipfan.service --no-pager | head -10 || true
+        else
+            echo "Skipped systemd user service enable/restart (--no-restart)"
+        fi
         ;;
 esac
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -13,6 +14,8 @@ import (
 	"github.com/prime-radiant-inc/clipfan/internal/cli"
 	"github.com/prime-radiant-inc/clipfan/internal/config"
 	"github.com/prime-radiant-inc/clipfan/internal/daemon"
+	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
+	"github.com/prime-radiant-inc/clipfan/internal/transport"
 	"github.com/prime-radiant-inc/clipfan/internal/version"
 )
 
@@ -56,6 +59,13 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			usage(stderr)
 			return 0
 		case "version":
+			if len(args) >= 2 && args[1] == "--json" {
+				if err := json.NewEncoder(stdout).Encode(versionJSONPayload()); err != nil {
+					fmt.Fprintln(stderr, "clipfan version:", err)
+					return 1
+				}
+				return 0
+			}
 			fmt.Fprintln(stdout, version.Version)
 			return 0
 		case "daemon":
@@ -65,6 +75,21 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	runDaemon()
 	return 0
+}
+
+func versionJSONPayload() map[string]any {
+	return map[string]any{
+		"version": version.Version,
+		"capabilities": map[string]any{
+			"config_v2":              true,
+			"config_v2_local_auth":   transport.AuthVersionRequestHMAC,
+			"peer_http_runtime_gate": true,
+		},
+		"release_gates": map[string]any{
+			"config_v2_write_enabled":    releaseflags.ConfigV2WriteEnabled,
+			"peer_http_runtime_disabled": releaseflags.PeerHTTPRuntimeDisabled,
+		},
+	}
 }
 
 func runDaemon() {

@@ -90,9 +90,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in
             await DaemonClient.shared.refresh()
-            switch LaunchDecision.decide(binaryInstalled: Bootstrap.binaryInstalled,
+            let binaryInstalled = Bootstrap.binaryInstalled
+            let installedBinaryCurrent = Bootstrap.installedBinaryCurrent
+            let configV2Present = Bootstrap.configV2Present()
+            let supportsConfigV2 = Bootstrap.needsConfigV2CapabilityProbe(
+                binaryInstalled: binaryInstalled,
+                installedBinaryCurrent: installedBinaryCurrent,
+                configV2Present: configV2Present
+            ) ? Bootstrap.installedBinarySupportsConfigV2() : true
+
+            switch LaunchDecision.decide(binaryInstalled: binaryInstalled,
                                          daemonHealthy: DaemonClient.shared.connected,
-                                         installedBinaryCurrent: Bootstrap.installedBinaryCurrent) {
+                                         installedBinaryCurrent: installedBinaryCurrent,
+                                         configV2Present: configV2Present,
+                                         installedBinarySupportsConfigV2: supportsConfigV2) {
             case .normal:
                 break
             case .upgradeExisting:
@@ -109,6 +120,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             case .firstRunInstall:
                 WelcomeWindowController.shared.show(startInstall: true)
+            case .blockedDowngrade:
+                BootstrapController.shared.state = .failed(
+                    message: "config_v2_downgrade_blocked: install the current Clipfan build before restarting the daemon.",
+                    logPath: Bootstrap.installLog.path
+                )
+                WelcomeWindowController.shared.show(startInstall: false)
             }
             await DaemonClient.shared.refresh()
             await RemoteUpdateOfferController.shared.maybeOffer()

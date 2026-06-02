@@ -12,8 +12,17 @@ enum LaunchDecision: Equatable {
     case restartExisting
     /// No daemon installed — run the guided first-run install.
     case firstRunInstall
+    /// Config v2 has been written and the installed binary cannot safely read it.
+    case blockedDowngrade
 
-    static func decide(binaryInstalled: Bool, daemonHealthy: Bool, installedBinaryCurrent: Bool) -> LaunchDecision {
+    static func decide(binaryInstalled: Bool,
+                       daemonHealthy: Bool,
+                       installedBinaryCurrent: Bool,
+                       configV2Present: Bool = false,
+                       installedBinarySupportsConfigV2: Bool = true) -> LaunchDecision {
+        if binaryInstalled && configV2Present && !installedBinarySupportsConfigV2 {
+            return installedBinaryCurrent ? .blockedDowngrade : .upgradeExisting
+        }
         if binaryInstalled && !installedBinaryCurrent { return .upgradeExisting }
         if daemonHealthy { return .normal }
         return binaryInstalled ? .restartExisting : .firstRunInstall
@@ -92,6 +101,45 @@ enum Bootstrap {
             return installedVersion == bundledVersion
         }
         return filesEqual(installed, bundled)
+    }
+
+    static func configV2Present(configURL: URL = Installer.localConfigURL()) -> Bool {
+        guard let data = try? Data(contentsOf: configURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let version = object["config_version"] as? NSNumber else {
+            return false
+        }
+        return version.intValue >= 2
+    }
+
+    static func needsConfigV2CapabilityProbe(binaryInstalled: Bool,
+                                             installedBinaryCurrent: Bool,
+                                             configV2Present: Bool) -> Bool {
+        binaryInstalled && installedBinaryCurrent && configV2Present
+    }
+
+    static func installedBinarySupportsConfigV2(binary: URL = daemonBinary) -> Bool {
+        guard FileManager.default.fileExists(atPath: binary.path) else { return false }
+        let proc = Process()
+        proc.executableURL = binary
+        proc.arguments = ["version", "--json"]
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = Pipe()
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            return false
+        }
+        guard proc.terminationStatus == 0 else { return false }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let capabilities = object["capabilities"] as? [String: Any],
+              let configV2 = capabilities["config_v2"] as? Bool else {
+            return false
+        }
+        return configV2
     }
 
     static var installLog: URL {

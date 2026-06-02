@@ -12,6 +12,24 @@ final class BootstrapDecisionTests: XCTestCase {
         XCTAssertEqual(LaunchDecision.decide(binaryInstalled: true, daemonHealthy: false, installedBinaryCurrent: true), .restartExisting)
     }
 
+    func testConfigV2BlocksRestartOfInstalledBinaryWithoutCapability() {
+        XCTAssertEqual(LaunchDecision.decide(binaryInstalled: true,
+                                             daemonHealthy: false,
+                                             installedBinaryCurrent: true,
+                                             configV2Present: true,
+                                             installedBinarySupportsConfigV2: false),
+                       .blockedDowngrade)
+    }
+
+    func testConfigV2CanUpgradeOutdatedBinaryBeforeRestart() {
+        XCTAssertEqual(LaunchDecision.decide(binaryInstalled: true,
+                                             daemonHealthy: false,
+                                             installedBinaryCurrent: false,
+                                             configV2Present: true,
+                                             installedBinarySupportsConfigV2: false),
+                       .upgradeExisting)
+    }
+
     func testNotInstalledTriggersFirstRunInstall() {
         XCTAssertEqual(LaunchDecision.decide(binaryInstalled: false, daemonHealthy: false, installedBinaryCurrent: false), .firstRunInstall)
     }
@@ -64,6 +82,56 @@ final class BootstrapInstallTests: XCTestCase {
         XCTAssertFalse(Bootstrap.filesEqual(installed, bundled))
     }
 
+    func testInstalledBinarySupportsConfigV2ParsesVersionJSONCapability() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-bootstrap-capability-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let binary = try writeCapabilityScript(dir.appendingPathComponent("clipfan"), supportsConfigV2: true)
+
+        XCTAssertTrue(Bootstrap.installedBinarySupportsConfigV2(binary: binary))
+    }
+
+    func testInstalledBinarySupportsConfigV2RejectsOldVersionCommand() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-bootstrap-old-capability-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let binary = try writeVersionScript(dir.appendingPathComponent("clipfan"),
+                                            version: "v0.3.7",
+                                            marker: "old")
+
+        XCTAssertFalse(Bootstrap.installedBinarySupportsConfigV2(binary: binary))
+    }
+
+    func testConfigV2PresentDetectsVersionedConfig() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-bootstrap-config-v2-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let configURL = dir.appendingPathComponent("config.json")
+        try Data(#"{"config_version":2,"config_revision":1}"#.utf8).write(to: configURL)
+
+        XCTAssertTrue(Bootstrap.configV2Present(configURL: configURL))
+    }
+
+    func testConfigV2CapabilityProbeOnlyRunsForCurrentBinaryAndV2Config() {
+        XCTAssertFalse(Bootstrap.needsConfigV2CapabilityProbe(binaryInstalled: true,
+                                                              installedBinaryCurrent: true,
+                                                              configV2Present: false))
+        XCTAssertFalse(Bootstrap.needsConfigV2CapabilityProbe(binaryInstalled: true,
+                                                              installedBinaryCurrent: false,
+                                                              configV2Present: true))
+        XCTAssertFalse(Bootstrap.needsConfigV2CapabilityProbe(binaryInstalled: false,
+                                                              installedBinaryCurrent: true,
+                                                              configV2Present: true))
+        XCTAssertTrue(Bootstrap.needsConfigV2CapabilityProbe(binaryInstalled: true,
+                                                             installedBinaryCurrent: true,
+                                                             configV2Present: true))
+    }
+
     private func writeVersionScript(_ url: URL, version: String, marker: String) throws -> URL {
         let script = """
         #!/usr/bin/env bash
@@ -71,6 +139,24 @@ final class BootstrapInstallTests: XCTestCase {
           echo "\(version)"
         else
           echo "\(marker)"
+        fi
+        """
+        try script.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                              ofItemAtPath: url.path)
+        return url
+    }
+
+    private func writeCapabilityScript(_ url: URL, supportsConfigV2: Bool) throws -> URL {
+        let configV2 = supportsConfigV2 ? "true" : "false"
+        let script = """
+        #!/usr/bin/env bash
+        if [[ "$1" == "version" && "$2" == "--json" ]]; then
+          echo '{"version":"v0.3.8","capabilities":{"config_v2":\(configV2)}}'
+        elif [[ "$1" == "version" ]]; then
+          echo "v0.3.8"
+        else
+          exit 2
         fi
         """
         try script.write(to: url, atomically: true, encoding: .utf8)

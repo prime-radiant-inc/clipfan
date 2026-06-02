@@ -118,12 +118,14 @@ actor Installer {
         remoteUpdateCommand(stage: stage,
                             payloadBinaryName: nil,
                             enforceStorageAbort: GeneratedSSHTransportGates.peerHTTPRuntimeDisabled ||
-                                GeneratedSSHTransportGates.configV2WriteEnabled)
+                                GeneratedSSHTransportGates.configV2WriteEnabled,
+                            enforceDowngradeBlock: GeneratedSSHTransportGates.configV2WriteEnabled)
     }
 
     static func remoteUpdateCommand(stage: String,
                                     payloadBinaryName: String?,
-                                    enforceStorageAbort: Bool) -> String {
+                                    enforceStorageAbort: Bool,
+                                    enforceDowngradeBlock: Bool = GeneratedSSHTransportGates.configV2WriteEnabled) -> String {
         let quotedStage = shellSingleQuote(stage)
         if enforceStorageAbort, payloadBinaryName == nil {
             return """
@@ -134,18 +136,39 @@ actor Installer {
             exit 1
             """
         }
+        if enforceDowngradeBlock, payloadBinaryName == nil {
+            return """
+            set -e
+            stage=\(quotedStage)
+            trap 'rm -rf "$stage"' EXIT
+            printf '%s\\n' 'pre_ssh_binary_unsupported: missing staged update binary' >&2
+            exit 1
+            """
+        }
 
-        let storageAbortPrelude: String
-        if enforceStorageAbort, let payloadBinaryName {
-            storageAbortPrelude = """
-            preflight_bin="$stage/\(payloadBinaryName)"
-            if [ ! -x "$preflight_bin" ]; then
-                chmod 700 "$preflight_bin" 2>/dev/null || true
+        let payloadExecutablePrelude: String
+        if (enforceStorageAbort || enforceDowngradeBlock), let payloadBinaryName {
+            let notExecutable = enforceDowngradeBlock
+                ? "pre_ssh_binary_unsupported: staged update binary is not executable"
+                : "storage_check_inconclusive: staged storage preflight binary is not executable"
+            payloadExecutablePrelude = """
+            payload_bin="$stage/\(payloadBinaryName)"
+            if [ ! -x "$payload_bin" ]; then
+                chmod 700 "$payload_bin" 2>/dev/null || true
             fi
-            if [ ! -x "$preflight_bin" ]; then
-                printf '%s\\n' 'storage_check_inconclusive: staged storage preflight binary is not executable' >&2
+            if [ ! -x "$payload_bin" ]; then
+                printf '%s\\n' '\(notExecutable)' >&2
                 exit 1
             fi
+            """
+        } else {
+            payloadExecutablePrelude = ""
+        }
+
+        let storageAbortPrelude: String
+        if enforceStorageAbort, payloadBinaryName != nil {
+            storageAbortPrelude = """
+            preflight_bin="$payload_bin"
             preflight_status=0
             preflight_output="$("$preflight_bin" storage-preflight 2>&1)" || preflight_status=$?
             if [ "$preflight_status" -ne 0 ]; then
@@ -182,13 +205,92 @@ actor Installer {
             storageAbortPrelude = ""
         }
 
+        let downgradeCapabilityPrelude: String
+        let serviceStopAfterInstall: String
+        let installedCapabilityCheck: String
+        let serviceRestartAfterCapabilityCheck: String
+        if enforceDowngradeBlock {
+            downgradeCapabilityPrelude = """
+            staged_version_json="$("$payload_bin" version --json 2>&1)" || {
+                printf '%s\\n' "$staged_version_json" >&2
+                printf '%s\\n' 'pre_ssh_binary_unsupported: staged binary lacks config v2 capability' >&2
+                exit 1
+            }
+            if ! printf '%s\\n' "$staged_version_json" | grep -Eq '"config_v2"[[:space:]]*:[[:space:]]*true'; then
+                printf '%s\\n' 'pre_ssh_binary_unsupported: staged binary lacks config v2 capability' >&2
+                exit 1
+            fi
+            """
+            serviceStopAfterInstall = """
+            service_still_active=0
+            user_uid="$(id -u 2>/dev/null || printf '%s' "${UID:-}")"
+            if command -v launchctl >/dev/null 2>&1; then
+                plist="$HOME/Library/LaunchAgents/com.primeradiant.clipfan.plist"
+                launchctl bootout "gui/$user_uid/com.primeradiant.clipfan" >/dev/null 2>&1 || \
+                    launchctl bootout "gui/$user_uid" "$plist" >/dev/null 2>&1 || \
+                    launchctl unload "$plist" >/dev/null 2>&1 || true
+                launchctl disable "gui/$user_uid/com.primeradiant.clipfan" >/dev/null 2>&1 || true
+                if launchctl print "gui/$user_uid/com.primeradiant.clipfan" >/dev/null 2>&1; then
+                    service_still_active=1
+                fi
+            fi
+            if command -v systemctl >/dev/null 2>&1; then
+                systemctl --user stop clipfan.service >/dev/null 2>&1 || true
+                systemctl --user disable clipfan.service >/dev/null 2>&1 || true
+                if systemctl --user is-active --quiet clipfan.service; then
+                    service_still_active=1
+                fi
+            fi
+            if [ "$service_still_active" -ne 0 ]; then
+                printf '%s\\n' 'public_listener_service_still_active' >&2
+                exit 1
+            fi
+            """
+            installedCapabilityCheck = """
+            installed_version_json="$("$bin" version --json 2>&1)" || {
+                printf '%s\\n' "$installed_version_json" >&2
+                printf '%s\\n' 'pre_ssh_binary_unsupported: installed binary lacks config v2 capability' >&2
+                exit 1
+            }
+            if ! printf '%s\\n' "$installed_version_json" | grep -Eq '"config_v2"[[:space:]]*:[[:space:]]*true'; then
+                printf '%s\\n' 'pre_ssh_binary_unsupported: installed binary lacks config v2 capability' >&2
+                exit 1
+            fi
+            """
+            serviceRestartAfterCapabilityCheck = """
+            user_uid="$(id -u 2>/dev/null || printf '%s' "${UID:-}")"
+            if command -v launchctl >/dev/null 2>&1; then
+                plist="$HOME/Library/LaunchAgents/com.primeradiant.clipfan.plist"
+                launchctl enable "gui/$user_uid/com.primeradiant.clipfan" >/dev/null 2>&1 || true
+                launchctl load "$plist" >/dev/null 2>&1 || \
+                    launchctl kickstart -k "gui/$user_uid/com.primeradiant.clipfan" >/dev/null 2>&1
+            fi
+            if command -v systemctl >/dev/null 2>&1; then
+                systemctl --user enable clipfan.service >/dev/null 2>&1
+                systemctl --user restart clipfan.service >/dev/null 2>&1
+            fi
+            """
+        } else {
+            downgradeCapabilityPrelude = ""
+            serviceStopAfterInstall = ""
+            installedCapabilityCheck = ""
+            serviceRestartAfterCapabilityCheck = ""
+        }
+
+        let installFlags = enforceDowngradeBlock ? "--no-tmux --no-restart" : "--no-tmux"
+
         return """
         set -e
         stage=\(quotedStage)
         trap 'rm -rf "$stage"' EXIT
+        \(payloadExecutablePrelude)
         \(storageAbortPrelude)
-        cd "$stage" && bash install.sh --no-tmux >&2
+        \(downgradeCapabilityPrelude)
+        cd "$stage" && bash install.sh \(installFlags) >&2
+        \(serviceStopAfterInstall)
         bin="${DEST:-$HOME/.local/bin}/clipfan"
+        \(installedCapabilityCheck)
+        \(serviceRestartAfterCapabilityCheck)
         "$bin" version
         """
     }
@@ -405,6 +507,7 @@ actor Installer {
                                            stage: URL, stagedFiles: [String],
                                            enforceStorageAbort: Bool = GeneratedSSHTransportGates.peerHTTPRuntimeDisabled ||
                                                GeneratedSSHTransportGates.configV2WriteEnabled,
+                                           enforceDowngradeBlock: Bool = GeneratedSSHTransportGates.configV2WriteEnabled,
                                            runCommand: CommandRunner,
                                            onInstall: @MainActor @escaping () -> Void = {}) async throws -> String {
         let remoteStageOutput = try await runCommand("/usr/bin/ssh", sshArgs + [target, remoteStageCommand()])
@@ -418,7 +521,8 @@ actor Installer {
             await onInstall()
             let cmd = remoteUpdateCommand(stage: remoteStage,
                                           payloadBinaryName: updatePayloadBinaryName(from: stagedFiles),
-                                          enforceStorageAbort: enforceStorageAbort)
+                                          enforceStorageAbort: enforceStorageAbort,
+                                          enforceDowngradeBlock: enforceDowngradeBlock)
             let output = try await runCommand("/usr/bin/ssh", sshArgs + [target, cmd])
             let remoteVersion = output.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !remoteVersion.isEmpty else {

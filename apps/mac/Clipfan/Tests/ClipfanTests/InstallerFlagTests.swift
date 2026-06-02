@@ -80,7 +80,8 @@ final class InstallerFlagTests: XCTestCase {
         let install = try! XCTUnwrap(command.range(of: "cd \"$stage\" && bash install.sh --no-tmux >&2"))
 
         XCTAssertLessThan(preflight.lowerBound, install.lowerBound)
-        XCTAssertTrue(command.contains("preflight_bin=\"$stage/clipfan-linux-arm64\""))
+        XCTAssertTrue(command.contains("payload_bin=\"$stage/clipfan-linux-arm64\""))
+        XCTAssertTrue(command.contains("preflight_bin=\"$payload_bin\""))
         XCTAssertTrue(command.contains("unsupported_runtime_storage"))
         XCTAssertTrue(command.contains("storage_check_inconclusive"))
         XCTAssertTrue(command.contains("systemctl --user stop clipfan.service"))
@@ -92,6 +93,92 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertFalse(command.contains("config.json"))
         XCTAssertFalse(command.contains("~/.config/clipfan"))
         XCTAssertFalse(command.contains("config_version"))
+    }
+
+    func testRemoteUpdateCommandDowngradeBlockInstallsWithoutRestartThenStopsService() {
+        let command = Installer.remoteUpdateCommand(stage: "/tmp/clipfan-install.ABC123",
+                                                    payloadBinaryName: "clipfan-linux-arm64",
+                                                    enforceStorageAbort: false,
+                                                    enforceDowngradeBlock: true)
+
+        let stagedVersion = try! XCTUnwrap(command.range(of: "\"$payload_bin\" version --json"))
+        let install = try! XCTUnwrap(command.range(of: "cd \"$stage\" && bash install.sh --no-tmux --no-restart >&2"))
+        let stop = try! XCTUnwrap(command.range(of: "systemctl --user stop clipfan.service"))
+        let installedVersion = try! XCTUnwrap(command.range(of: "\"$bin\" version --json"))
+        let restart = try! XCTUnwrap(command.range(of: "systemctl --user restart clipfan.service"))
+        let finalVersion = try! XCTUnwrap(command.range(of: "\"$bin\" version", options: .backwards))
+
+        XCTAssertLessThan(stagedVersion.lowerBound, install.lowerBound)
+        XCTAssertLessThan(install.lowerBound, stop.lowerBound)
+        XCTAssertLessThan(stop.lowerBound, installedVersion.lowerBound)
+        XCTAssertLessThan(installedVersion.lowerBound, restart.lowerBound)
+        XCTAssertLessThan(restart.lowerBound, finalVersion.lowerBound)
+        XCTAssertTrue(command.contains("pre_ssh_binary_unsupported"))
+        XCTAssertTrue(command.contains("public_listener_service_still_active"))
+        XCTAssertFalse(command.contains("config.json"))
+        XCTAssertFalse(command.contains("config_version"))
+    }
+
+    func testRemoteUpdateCommandDowngradeBlockRejectsPreSSHStagedBinaryBeforeInstall() throws {
+        let fixture = try makeRemoteUpdateShellFixture(systemctlIsActive: false)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        try writeExecutableScript(fixture.stage.appendingPathComponent("clipfan-linux-arm64"), """
+        #!/usr/bin/env bash
+        if [[ "$1" == "version" && "$2" == "--json" ]]; then
+          echo "old binary has no json capability" >&2
+          exit 42
+        fi
+        exit 42
+        """)
+
+        let command = Installer.remoteUpdateCommand(stage: fixture.stage.path,
+                                                    payloadBinaryName: "clipfan-linux-arm64",
+                                                    enforceStorageAbort: false,
+                                                    enforceDowngradeBlock: true)
+        let result = try runBash(command, environment: fixture.environment)
+
+        XCTAssertEqual(result.status, 1)
+        XCTAssertTrue(result.stderr.contains("pre_ssh_binary_unsupported"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.installMarker.path))
+    }
+
+    func testRemoteUpdateCommandDowngradeBlockFailsIfOldServiceStillActive() throws {
+        let fixture = try makeRemoteUpdateShellFixture(systemctlIsActive: true)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let command = Installer.remoteUpdateCommand(stage: fixture.stage.path,
+                                                    payloadBinaryName: "clipfan-linux-arm64",
+                                                    enforceStorageAbort: false,
+                                                    enforceDowngradeBlock: true)
+        let result = try runBash(command, environment: fixture.environment)
+
+        XCTAssertEqual(result.status, 1)
+        XCTAssertTrue(result.stderr.contains("public_listener_service_still_active"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.installMarker.path))
+    }
+
+    func testRemoteUpdateCommandDowngradeBlockRestartsServiceAfterCapabilityCheck() throws {
+        let fixture = try makeRemoteUpdateShellFixture(systemctlIsActive: false)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let command = Installer.remoteUpdateCommand(stage: fixture.stage.path,
+                                                    payloadBinaryName: "clipfan-linux-arm64",
+                                                    enforceStorageAbort: false,
+                                                    enforceDowngradeBlock: true)
+        let result = try runBash(command, environment: fixture.environment)
+
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "v-fixture")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.installMarker.path))
+
+        let systemctlLog = try String(contentsOf: fixture.systemctlLog, encoding: .utf8)
+        let stop = try XCTUnwrap(systemctlLog.range(of: "--user stop clipfan.service"))
+        let disable = try XCTUnwrap(systemctlLog.range(of: "--user disable clipfan.service"))
+        let enable = try XCTUnwrap(systemctlLog.range(of: "--user enable clipfan.service"))
+        let restart = try XCTUnwrap(systemctlLog.range(of: "--user restart clipfan.service"))
+        XCTAssertLessThan(stop.lowerBound, disable.lowerBound)
+        XCTAssertLessThan(disable.lowerBound, enable.lowerBound)
+        XCTAssertLessThan(enable.lowerBound, restart.lowerBound)
     }
 
     func testRemoteUpdateCommandStorageAbortFailsClosedWithoutPayloadBinary() {
@@ -411,12 +498,34 @@ final class InstallerFlagTests: XCTestCase {
           echo "code: unsupported_runtime_storage" >&2
           exit 37
         fi
+        if [[ "$1" == "version" && "$2" == "--json" ]]; then
+          echo '{"version":"v-fixture","capabilities":{"config_v2":true}}'
+          exit 0
+        fi
+        if [[ "$1" == "version" ]]; then
+          echo "v-fixture"
+          exit 0
+        fi
         echo "unexpected staged binary command: $*" >&2
         exit 99
         """)
         try writeExecutableScript(stage.appendingPathComponent("install.sh"), """
         #!/usr/bin/env bash
         touch "$INSTALL_MARKER"
+        mkdir -p "$HOME/.local/bin"
+        cat > "$HOME/.local/bin/clipfan" <<'BIN'
+        #!/usr/bin/env bash
+        if [[ "$1" == "version" && "$2" == "--json" ]]; then
+          echo '{"version":"v-fixture","capabilities":{"config_v2":true}}'
+          exit 0
+        fi
+        if [[ "$1" == "version" ]]; then
+          echo "v-fixture"
+          exit 0
+        fi
+        exit 99
+        BIN
+        chmod 755 "$HOME/.local/bin/clipfan"
         exit 0
         """)
         try writeExecutableScript(fakebin.appendingPathComponent("launchctl"), """
