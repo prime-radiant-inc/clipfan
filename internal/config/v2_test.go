@@ -426,6 +426,37 @@ func TestUpdateConfigV2ScopedRejectsSymlinkedConfigFile(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigV2ScopedRejectsSymlinkedConfigDirectory(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	if err := os.MkdirAll(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(root, "clipfan")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(linkDir, "config.json")
+
+	err := updateConfigV2ScopedWithGate(path, true, RevisionExpectation{
+		State:    RevisionStateVersioned,
+		Revision: uint64Ptr(1),
+	}, func(c *Config) error {
+		c.MaxHistory = 300
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "config directory") {
+		t.Fatalf("error = %v, want symlinked directory rejection", err)
+	}
+	info, err := os.Lstat(linkDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("config directory mode = %v, want symlink unchanged", info.Mode())
+	}
+}
+
 func TestUpdateConfigV2ScopedRejectsMissingConfigFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "clipfan", "config.json")
 	err := updateConfigV2ScopedWithGate(path, true, RevisionExpectation{State: RevisionStatePreV2}, func(c *Config) error {

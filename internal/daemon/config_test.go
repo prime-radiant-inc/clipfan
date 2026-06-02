@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prime-radiant-inc/clipfan/internal/config"
+	"github.com/prime-radiant-inc/clipfan/internal/transport"
 )
 
 func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
@@ -82,6 +87,64 @@ func TestSetMaxHistoryRejectsConfigV2WhenWritesDisabled(t *testing.T) {
 	}
 }
 
+func TestPostConfigRejectsConfigV2WithSignedFailureWhenWritesDisabled(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	dir := filepath.Join(root, "clipfan")
+	path := filepath.Join(dir, "config.json")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sharedKey := config.NewSharedKey()
+	before := []byte(`{"config_version":2,"config_revision":1,"shared_key":"` + sharedKey + `","max_history":50,"future":{"keep":true}}`)
+	if err := os.WriteFile(path, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := transport.NewAuth(sharedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"max_history":300}`)
+	nonce := "config-v2-disabled"
+	req := signedDaemonRequest(t, auth, http.MethodPost, "/v1/config", nonce, body)
+	rec := httptest.NewRecorder()
+
+	d.sv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	responseBody := rec.Body.Bytes()
+	if !strings.Contains(string(responseBody), "config_v2_writes_disabled") {
+		t.Fatalf("response body = %q, want stable code", string(responseBody))
+	}
+	if sig := rec.Header().Get("X-Clipfan-Response-Sig"); sig == "" {
+		t.Fatal("missing signed response header")
+	} else if err := auth.VerifyResponse(nonce, responseBody, sig); err != nil {
+		t.Fatalf("bad response signature: %v", err)
+	}
+	if d.cfg.MaxHistory != 50 {
+		t.Fatalf("daemon cfg MaxHistory = %d, want unchanged 50", d.cfg.MaxHistory)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("v2 config changed\nbefore: %s\nafter: %s", before, after)
+	}
+}
+
 func readSavedMax(t *testing.T) int {
 	t.Helper()
 	p := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "clipfan", "config.json")
@@ -96,4 +159,15 @@ func readSavedMax(t *testing.T) int {
 		t.Fatal(err)
 	}
 	return c.MaxHistory
+}
+
+func signedDaemonRequest(t *testing.T, auth *transport.Auth, method, target, nonce string, body []byte) *http.Request {
+	t.Helper()
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	req := httptest.NewRequest(method, target, bytes.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("X-Clipfan-Ts", ts)
+	req.Header.Set("X-Clipfan-Nonce", nonce)
+	req.Header.Set("X-Clipfan-Sig", auth.SignRequest(method, target, ts, nonce, body))
+	return req
 }

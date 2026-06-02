@@ -282,7 +282,7 @@ func (s *Server) postConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.configFn(req.MaxHistory); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.writeSignedBody(w, signed.nonce, http.StatusBadRequest, []byte(err.Error()+"\n"))
 		return
 	}
 	s.writeSignedBody(w, signed.nonce, http.StatusOK, nil)

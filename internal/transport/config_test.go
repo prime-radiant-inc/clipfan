@@ -57,7 +57,13 @@ func TestPostConfigPropagatesConfigErrorCode(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("signed POST status = %d, want 400", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "config_v2_writes_disabled") {
-		t.Fatalf("response body = %q, want stable code", rec.Body.String())
+	bodyBytes := rec.Body.Bytes()
+	if !strings.Contains(string(bodyBytes), "config_v2_writes_disabled") {
+		t.Fatalf("response body = %q, want stable code", string(bodyBytes))
+	}
+	if sig := rec.Header().Get("X-Clipfan-Response-Sig"); sig == "" {
+		t.Fatal("missing signed response header")
+	} else if err := auth.VerifyResponse("config", bodyBytes, sig); err != nil {
+		t.Fatalf("bad response signature: %v", err)
 	}
 }
