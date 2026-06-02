@@ -1,0 +1,72 @@
+name: OpenSSH Fixture Readiness
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/openssh-fixtures.yml"
+      - "docs/ci/clipfan-macos-ssh-fixture.md"
+      - "scripts/openssh-fixture-readiness.sh"
+      - "scripts/test-openssh-fixture-readiness.sh"
+  workflow_dispatch:
+    inputs:
+      blocking:
+        description: "Fail the workflow when a fixture is unavailable"
+        required: false
+        default: false
+        type: boolean
+
+env:
+  CLIPFAN_OPENSSH_FIXTURE_REQUIRED: ${{ github.event_name == 'workflow_dispatch' && inputs.blocking && '1' || '0' }}
+
+jobs:
+  openssh-fixtures-macos:
+    name: OpenSSH fixtures macOS
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Test fixture readiness sentinels
+        run: bash scripts/test-openssh-fixture-readiness.sh
+
+      - name: Probe macOS OpenSSH fixture readiness
+        env:
+          CLIPFAN_OPENSSH_FIXTURE_ARTIFACT: ${{ runner.temp }}/openssh-fixture-macos.json
+        run: bash scripts/openssh-fixture-readiness.sh macos
+
+      - name: Upload macOS fixture readiness artifact
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: openssh-fixture-macos
+          path: ${{ runner.temp }}/openssh-fixture-macos.json
+          if-no-files-found: warn
+
+  openssh-fixtures-ubuntu:
+    name: OpenSSH fixtures Ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Test fixture readiness sentinels
+        run: bash scripts/test-openssh-fixture-readiness.sh
+
+      - name: Install OpenSSH server dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server netcat-openbsd
+          sudo mkdir -p /run/sshd
+
+      - name: Probe Ubuntu OpenSSH fixture readiness
+        env:
+          CLIPFAN_OPENSSH_FIXTURE_ARTIFACT: ${{ runner.temp }}/openssh-fixture-ubuntu.json
+        run: bash scripts/openssh-fixture-readiness.sh ubuntu
+
+      - name: Upload Ubuntu fixture readiness artifact
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: openssh-fixture-ubuntu
+          path: ${{ runner.temp }}/openssh-fixture-ubuntu.json
+          if-no-files-found: warn
