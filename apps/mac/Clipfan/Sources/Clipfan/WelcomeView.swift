@@ -79,6 +79,9 @@ struct WelcomeView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .font(.system(size: 12))
+            if let repair = LocalStorageRepair.prompt(message: message) {
+                storageRepair(repair)
+            }
             HStack(spacing: 12) {
                 if FileManager.default.fileExists(atPath: logPath) {
                     Button("View log") {
@@ -91,6 +94,36 @@ struct WelcomeView: View {
                 .keyboardShortcut(.defaultAction)
             }
         }
+    }
+
+    private func storageRepair(_ prompt: LocalStorageRepairPrompt) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(prompt.title)
+                .font(.system(size: 13, weight: .semibold))
+            Text(prompt.message)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            Text("Code: \(prompt.code.rawValue)")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+            ForEach(Array(prompt.roots.enumerated()), id: \.offset) { _, root in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\(root.role): \(root.normalizedPath)")
+                        .font(.system(size: 11, design: .monospaced))
+                    if let storageClass = root.storageClass {
+                        Text("Storage: \(storageClass)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    if let reason = root.reason {
+                        Text("Reason: \(reason)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: helpers

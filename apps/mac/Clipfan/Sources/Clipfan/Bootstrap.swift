@@ -171,6 +171,31 @@ enum Bootstrap {
             }
         }.value
     }
+
+    static func storagePreflightRepairPrompt(binary: URL = daemonBinary) async -> LocalStorageRepairPrompt? {
+        await Task.detached(priority: .userInitiated) {
+            guard FileManager.default.fileExists(atPath: binary.path) else { return nil }
+            let proc = Process()
+            proc.executableURL = binary
+            proc.arguments = ["storage-preflight"]
+            let out = Pipe()
+            proc.standardOutput = out
+            proc.standardError = out
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+            } catch {
+                return nil
+            }
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            let text = String(decoding: data, as: UTF8.self)
+            return LocalStorageRepair.prompt(message: text)
+        }.value
+    }
+
+    static func storageRepairFailureMessage(_ prompt: LocalStorageRepairPrompt) -> String {
+        "\(prompt.code.rawValue): \(prompt.message)"
+    }
 }
 
 /// Drives the first-run install and publishes progress for the Welcome window.
@@ -222,9 +247,21 @@ final class BootstrapController: ObservableObject {
             await DaemonClient.shared.refreshHistory()
             state = .success
         } else {
+            if let repair = await Bootstrap.storagePreflightRepairPrompt() {
+                state = .failed(message: Bootstrap.storageRepairFailureMessage(repair),
+                                logPath: installLogPath)
+                return
+            }
             state = .failed(message: "The service installed but didn't come online. See the log.",
                             logPath: installLogPath)
         }
+    }
+
+    func presentStorageRepairIfAvailable() async -> Bool {
+        guard let repair = await Bootstrap.storagePreflightRepairPrompt() else { return false }
+        state = .failed(message: Bootstrap.storageRepairFailureMessage(repair),
+                        logPath: installLogPath)
+        return true
     }
 
     /// Poll the local daemon until it answers, or give up after ~10s.

@@ -23,6 +23,7 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  copy [--osc52 /dev/tty] [--image] [--no-daemon] [--no-osc52]")
 	fmt.Fprintln(w, "                  — read stdin, push to local daemon and/or emit OSC 52")
 	fmt.Fprintln(w, "  paste [--raw]   — write current clipfan state to stdout")
+	fmt.Fprintln(w, "  storage-preflight — check local runtime storage and print offline repair guidance")
 	fmt.Fprintln(w, "  version         — print the build version")
 }
 
@@ -42,6 +43,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		case "paste":
 			if err := cli.RunPaste(args[1:]); err != nil {
 				fmt.Fprintln(stderr, "clipfan paste:", err)
+				return 1
+			}
+			return 0
+		case "storage-preflight":
+			if err := cli.RunStoragePreflight(args[1:], stdout, stderr); err != nil {
+				fmt.Fprintln(stderr, "clipfan storage-preflight:", err)
 				return 1
 			}
 			return 0

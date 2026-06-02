@@ -102,6 +102,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             case .restartExisting:
                 await DaemonClient.shared.ensureDaemonRunning()
+                await DaemonClient.shared.refresh()
+                if !DaemonClient.shared.connected,
+                   await BootstrapController.shared.presentStorageRepairIfAvailable() {
+                    WelcomeWindowController.shared.show(startInstall: false)
+                }
             case .firstRunInstall:
                 WelcomeWindowController.shared.show(startInstall: true)
             }
