@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"go/format"
 	"os"
 	"path/filepath"
 
@@ -32,17 +33,26 @@ func run() error {
 		return err
 	}
 
+	transportGo, err := renderGoTransportGates(transport)
+	if err != nil {
+		return err
+	}
+	runtimeGo, err := renderGoRuntimeGates(runtime)
+	if err != nil {
+		return err
+	}
+
 	outputs := []struct {
 		path    string
 		content []byte
 	}{
 		{
 			path:    "internal/releaseflags/ssh_transport_gates.go",
-			content: renderGoTransportGates(transport),
+			content: transportGo,
 		},
 		{
 			path:    "internal/releaseflags/ssh_runtime_gates.go",
-			content: renderGoRuntimeGates(runtime),
+			content: runtimeGo,
 		},
 		{
 			path:    "apps/mac/Clipfan/Sources/Clipfan/GeneratedSSHTransportGates.swift",
@@ -109,7 +119,7 @@ func load(root string) (releaseflags.TransportGates, releaseflags.RuntimeGates, 
 	return transport, runtime, nil
 }
 
-func renderGoTransportGates(gates releaseflags.TransportGates) []byte {
+func renderGoTransportGates(gates releaseflags.TransportGates) ([]byte, error) {
 	var b bytes.Buffer
 	b.WriteString(generatedHeader)
 	b.WriteString("\n")
@@ -120,10 +130,10 @@ func renderGoTransportGates(gates releaseflags.TransportGates) []byte {
 	fmt.Fprintf(&b, "\tRemoteSecretWriteReleaseEnabled = %t\n", gates.RemoteSecretWriteReleaseEnabled)
 	fmt.Fprintf(&b, "\tSSHPublicAddPeerSuccessEnabled = %t\n", gates.SSHPublicAddPeerSuccessEnabled)
 	b.WriteString(")\n")
-	return b.Bytes()
+	return formatGoOutput("transport gates", b.Bytes())
 }
 
-func renderGoRuntimeGates(gates releaseflags.RuntimeGates) []byte {
+func renderGoRuntimeGates(gates releaseflags.RuntimeGates) ([]byte, error) {
 	var b bytes.Buffer
 	b.WriteString(generatedHeader)
 	b.WriteString("\n")
@@ -134,7 +144,7 @@ func renderGoRuntimeGates(gates releaseflags.RuntimeGates) []byte {
 	fmt.Fprintf(&b, "\tSSHPersistentCurrentEnabled = %t\n", gates.SSHPersistentCurrentEnabled)
 	fmt.Fprintf(&b, "\tSSHSyncKeyRotationEnabled = %t\n", gates.SSHSyncKeyRotationEnabled)
 	b.WriteString(")\n")
-	return b.Bytes()
+	return formatGoOutput("runtime gates", b.Bytes())
 }
 
 func renderSwiftTransportGates(gates releaseflags.TransportGates) []byte {
@@ -168,4 +178,12 @@ func writeFile(path string, content []byte) error {
 		return err
 	}
 	return os.WriteFile(path, content, 0644)
+}
+
+func formatGoOutput(name string, content []byte) ([]byte, error) {
+	formatted, err := format.Source(content)
+	if err != nil {
+		return nil, fmt.Errorf("format generated Go output for %s: %w", name, err)
+	}
+	return formatted, nil
 }

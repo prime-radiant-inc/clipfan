@@ -3,8 +3,8 @@
 package releaseflags
 
 const (
-	SSHReceivePrimitiveEnabled = false
-	SSHSyncStreamEnabled = false
+	SSHReceivePrimitiveEnabled  = false
+	SSHSyncStreamEnabled        = false
 	SSHPersistentCurrentEnabled = false
-	SSHSyncKeyRotationEnabled = false
+	SSHSyncKeyRotationEnabled   = false
 )
