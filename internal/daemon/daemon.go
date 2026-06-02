@@ -119,6 +119,18 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 	d.cl = transport.NewClient(auth, origin)
 	d.sv = transport.NewServer(listenerPlan.BindListen, auth, d.onReceive, d.peersHandler)
 	d.sv.SetSafeMode(listenerPlan.SafeMode)
+	d.sv.SetSafeModeInfo(transport.SafeModeInfo{
+		Origin:                origin,
+		Hostname:              origin,
+		ConfiguredListen:      listenerPlan.ConfiguredListen,
+		EffectiveRepairListen: listenerPlan.EffectiveRepairListen,
+		ParseError:            listenerPlan.ParseError,
+		PeerSyncStarted:       listenerPlan.PeerSyncStarted,
+		ConfigVersion:         runtimeCfg.ConfigVersion,
+		ConfigRevision:        runtimeCfg.ConfigRevision,
+		Port:                  runtimeCfg.Port,
+		StaticPeers:           runtimeCfg.StaticPeers,
+	})
 	d.sv.SetRecipientIdentity(origin)
 	d.sv.SetVersionFunc(d.versionHandler)
 	d.sv.SetHistory(

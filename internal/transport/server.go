@@ -52,9 +52,23 @@ type Server struct {
 	deleteFn  DeleteHistoryFunc
 	configFn  func(maxHistory int) error
 	safeMode  bool
+	safeInfo  SafeModeInfo
 	nonces    *nonceCache
 	now       func() time.Time
 	recipient string
+}
+
+type SafeModeInfo struct {
+	Origin                string
+	Hostname              string
+	ConfiguredListen      string
+	EffectiveRepairListen string
+	ParseError            string
+	PeerSyncStarted       bool
+	ConfigVersion         *int
+	ConfigRevision        *uint64
+	Port                  int
+	StaticPeers           []string
 }
 
 type signedPayload struct {
@@ -94,6 +108,11 @@ func (s *Server) SetVersionFunc(fn VersionFunc) { s.versionFn = fn }
 
 func (s *Server) SetSafeMode(enabled bool) { s.safeMode = enabled }
 
+func (s *Server) SetSafeModeInfo(info SafeModeInfo) {
+	info.StaticPeers = append([]string(nil), info.StaticPeers...)
+	s.safeInfo = info
+}
+
 // Handler builds the HTTP routes. Exposed so it can be exercised in tests.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -124,7 +143,7 @@ func (s *Server) safeModeRoute(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/version":
 		s.getSafeModeVersion(w, r)
 	case r.Method == http.MethodGet && (r.URL.Path == "/v1/status" || r.URL.Path == "/v1/peers" || r.URL.Path == "/v1/ssh/logs"):
-		s.safeModeSignedUnavailable(w, r, "safe_mode_status_unavailable_before_schema")
+		s.getSafeModeReadOnly(w, r)
 	case (r.Method == http.MethodGet || r.Method == http.MethodPatch) && r.URL.Path == "/v1/config/listener":
 		s.safeModeSignedUnavailable(w, r, "listener_repair_unavailable")
 	default:
@@ -141,7 +160,181 @@ func (s *Server) getSafeModeVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeSignedError(w, signed, http.StatusServiceUnavailable, "safe_mode_status_unavailable_before_schema")
 		return
 	}
-	s.writeSignedJSON(w, signed, s.versionFn())
+	s.writeSignedJSON(w, signed, s.safeModeVersionPayload())
+}
+
+func (s *Server) getSafeModeReadOnly(w http.ResponseWriter, r *http.Request) {
+	signed := s.readSignedLocalRequiredAuthVersion(w, r, AuthVersionRequestHMAC)
+	if signed == nil {
+		return
+	}
+	switch r.URL.Path {
+	case "/v1/status":
+		s.writeSignedJSON(w, signed, s.safeModeStatusPayload())
+	case "/v1/peers":
+		s.writeSignedJSON(w, signed, s.safeModePeersPayload())
+	case "/v1/ssh/logs":
+		s.getSafeModeLogs(w, r, signed)
+	default:
+		s.writeSignedError(w, signed, http.StatusNotFound, "not_found")
+	}
+}
+
+func (s *Server) safeModeVersionPayload() map[string]any {
+	payload := map[string]any{}
+	switch v := s.versionFn().(type) {
+	case map[string]string:
+		for key, value := range v {
+			payload[key] = value
+		}
+	case map[string]any:
+		for key, value := range v {
+			payload[key] = value
+		}
+	default:
+		payload["version"] = v
+	}
+	payload["safe_mode"] = true
+	payload["config_version"] = s.safeInfo.ConfigVersion
+	payload["config_revision"] = s.safeInfo.ConfigRevision
+	return payload
+}
+
+func (s *Server) safeModeStatusPayload() map[string]any {
+	return map[string]any{
+		"status":                  "safe_mode_signed_repair",
+		"hostname":                s.safeInfo.Hostname,
+		"configured_listen":       s.safeInfo.ConfiguredListen,
+		"effective_repair_listen": s.safeInfo.EffectiveRepairListen,
+		"parse_error":             s.safeInfo.ParseError,
+		"safe_mode":               true,
+		"safe_mode_schema":        "safe_mode_v1",
+		"peer_sync_started":       s.safeInfo.PeerSyncStarted,
+		"config_version":          s.safeInfo.ConfigVersion,
+		"config_revision":         s.safeInfo.ConfigRevision,
+		"legacy_peer_suggestions": s.safeModeLegacyPeerSuggestions(),
+		"log_ids":                 s.safeModeLogIDs(),
+	}
+}
+
+func (s *Server) safeModePeersPayload() map[string]any {
+	payload := s.safeModeStatusPayload()
+	payload["origin"] = s.safeInfo.Origin
+	payload["version"] = s.safeModeVersionString()
+	payload["peers"] = s.safeModeLegacyPeerRows()
+	return payload
+}
+
+func (s *Server) safeModeVersionString() string {
+	if s.versionFn == nil {
+		return ""
+	}
+	switch v := s.versionFn().(type) {
+	case map[string]string:
+		return v["version"]
+	case map[string]any:
+		if version, ok := v["version"].(string); ok {
+			return version
+		}
+	case string:
+		return v
+	}
+	return ""
+}
+
+func (s *Server) safeModeLegacyPeerSuggestions() []map[string]string {
+	suggestions := make([]map[string]string, 0, len(s.safeInfo.StaticPeers))
+	for _, peer := range s.safeInfo.StaticPeers {
+		if peer == "" {
+			continue
+		}
+		suggestions = append(suggestions, map[string]string{
+			"hostname": peer,
+			"source":   "static_peers",
+			"status":   "legacy_http",
+		})
+	}
+	return suggestions
+}
+
+func (s *Server) safeModeLegacyPeerRows() []map[string]any {
+	rows := make([]map[string]any, 0, len(s.safeInfo.StaticPeers))
+	for _, peer := range s.safeInfo.StaticPeers {
+		if peer == "" {
+			continue
+		}
+		rows = append(rows, map[string]any{
+			"hostname":     peer,
+			"port":         s.safeInfo.Port,
+			"last_push_ok": false,
+			"source":       "static_peers",
+			"status":       "legacy_http",
+		})
+	}
+	return rows
+}
+
+func (s *Server) safeModeLogIDs() []string {
+	ids := []string{"safe-mode-listener"}
+	for i, peer := range s.safeInfo.StaticPeers {
+		if peer == "" {
+			continue
+		}
+		ids = append(ids, "legacy-static-peer-"+strconv.Itoa(i))
+	}
+	return ids
+}
+
+func (s *Server) getSafeModeLogs(w http.ResponseWriter, r *http.Request, signed *signedPayload) {
+	peerID := r.URL.Query().Get("peer")
+	if peerID != "" && peerID != "local" {
+		body := map[string]any{
+			"type":      "error",
+			"code":      "ssh_peer_logs_unavailable_before_schema",
+			"peer_id":   peerID,
+			"safe_mode": true,
+			"entries":   []any{},
+		}
+		s.writeSignedJSONStatus(w, signed, http.StatusServiceUnavailable, body)
+		return
+	}
+	s.writeSignedJSON(w, signed, map[string]any{
+		"peer_id":   "local",
+		"safe_mode": true,
+		"entries":   s.safeModeLogEntries(),
+		"truncated": false,
+	})
+}
+
+func (s *Server) safeModeLogEntries() []map[string]any {
+	code := s.safeInfo.ParseError
+	if code == "" {
+		code = "public_listen_requires_confirmation"
+	}
+	entries := []map[string]any{{
+		"ts":      s.now().UTC().Format(time.RFC3339),
+		"source":  "listener_repair",
+		"durable": false,
+		"log_id":  "safe-mode-listener",
+		"phase":   "listener_safe_mode",
+		"code":    code,
+		"message": "Configured listener requires local repair before peer sync can start.",
+	}}
+	for i, peer := range s.safeInfo.StaticPeers {
+		if peer == "" {
+			continue
+		}
+		entries = append(entries, map[string]any{
+			"ts":      s.now().UTC().Format(time.RFC3339),
+			"source":  "remediation",
+			"durable": false,
+			"log_id":  "legacy-static-peer-" + strconv.Itoa(i),
+			"phase":   "legacy_static_peer",
+			"code":    "ssh_setup_required",
+			"message": "Static peer requires SSH setup before sync.",
+		})
+	}
+	return entries
 }
 
 func (s *Server) safeModeSignedUnavailable(w http.ResponseWriter, r *http.Request, code string) {
@@ -339,13 +532,17 @@ func (s *Server) postConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) writeSignedJSON(w http.ResponseWriter, signed *signedPayload, v any) {
+	s.writeSignedJSONStatus(w, signed, http.StatusOK, v)
+}
+
+func (s *Server) writeSignedJSONStatus(w http.ResponseWriter, signed *signedPayload, status int, v any) {
 	body, err := json.Marshal(v)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	s.writeSignedBody(w, signed, http.StatusOK, body)
+	s.writeSignedBody(w, signed, status, body)
 }
 
 func (s *Server) writeSignedBody(w http.ResponseWriter, signed *signedPayload, status int, body []byte) {
