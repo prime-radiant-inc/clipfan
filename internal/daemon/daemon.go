@@ -37,13 +37,15 @@ type pusher interface {
 }
 
 type Daemon struct {
-	cfg    *config.Config
-	cb     clipboard.Backend
-	disc   discovery.Discoverer
-	auth   *transport.Auth
-	cl     pusher
-	sv     *transport.Server
-	origin string
+	cfg              *config.Config
+	cb               clipboard.Backend
+	disc             discovery.Discoverer
+	auth             *transport.Auth
+	cl               pusher
+	sv               *transport.Server
+	serve            func(context.Context) error
+	origin           string
+	storagePreflight StoragePreflightPolicy
 
 	mu      sync.Mutex
 	seen    *seenSet
@@ -65,6 +67,14 @@ type currentClip struct {
 }
 
 func New(cfg *config.Config) (*Daemon, error) {
+	return NewWithOptions(cfg, Options{StoragePreflight: DefaultStoragePreflightPolicy()})
+}
+
+type Options struct {
+	StoragePreflight StoragePreflightPolicy
+}
+
+func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 	auth, err := transport.NewAuth(cfg.SharedKey)
 	if err != nil {
 		return nil, err
@@ -85,13 +95,14 @@ func New(cfg *config.Config) (*Daemon, error) {
 	}
 
 	d := &Daemon{
-		cfg:        cfg,
-		cb:         clipboard.NewBackend(),
-		disc:       disc,
-		auth:       auth,
-		origin:     origin,
-		peerStatus: map[string]*PeerState{},
-		seen:       newSeenSet(),
+		cfg:              cfg,
+		cb:               clipboard.NewBackend(),
+		disc:             disc,
+		auth:             auth,
+		origin:           origin,
+		storagePreflight: opts.StoragePreflight,
+		peerStatus:       map[string]*PeerState{},
+		seen:             newSeenSet(),
 	}
 	d.cl = transport.NewClient(auth, origin)
 	d.sv = transport.NewServer(cfg.Listen, auth, d.onReceive, d.peersHandler)
@@ -109,6 +120,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		},
 	)
 	d.sv.SetConfigFunc(d.setMaxHistory)
+	d.serve = d.sv.Serve
 	return d, nil
 }
 
@@ -206,6 +218,9 @@ func (d *Daemon) versionHandler() any {
 // setMaxHistory persists a new history cap. Values are clamped to [50, 5000];
 // a non-positive request is rejected. After saving, excess history is trimmed.
 func (d *Daemon) setMaxHistory(n int) error {
+	if err := d.storagePreflight.check(); err != nil {
+		return err
+	}
 	if n <= 0 {
 		return fmt.Errorf("max_history must be positive, got %d", n)
 	}
@@ -227,9 +242,12 @@ func (d *Daemon) setMaxHistory(n int) error {
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
+	if err := d.storagePreflight.check(); err != nil {
+		return err
+	}
 	serverErr := make(chan error, 1)
 	go func() {
-		serverErr <- d.sv.Serve(ctx)
+		serverErr <- d.serve(ctx)
 	}()
 
 	if c, err := d.cb.Read(); err == nil && len(c.Bytes) > 0 {
