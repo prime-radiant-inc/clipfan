@@ -25,8 +25,9 @@ const (
 type RootRole string
 
 const (
-	RootConfig RootRole = "config"
-	RootState  RootRole = "state"
+	RootConfig  RootRole = "config"
+	RootState   RootRole = "state"
+	RootSyncKey RootRole = "sync_key"
 )
 
 type StorageClass string
@@ -77,6 +78,10 @@ func RuntimeRoots(configRoot, stateRoot string) []Root {
 		{Role: RootConfig, Path: configRoot},
 		{Role: RootState, Path: stateRoot},
 	}
+}
+
+func SyncKeyRoots(syncKeyPath string) []Root {
+	return []Root{{Role: RootSyncKey, Path: filepath.Dir(syncKeyPath)}}
 }
 
 func CheckRuntimeRoots(configRoot, stateRoot string) ([]Result, error) {

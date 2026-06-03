@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -253,22 +254,32 @@ func validateProofFields(keyID, gatewayPath, verifiedAt, verifiedBy string) erro
 }
 
 func ValidateSSHExecutablePath(value string) error {
-	if value == "" {
-		return fmt.Errorf("invalid_ssh_path: empty")
-	}
-	if !strings.HasPrefix(value, "/") {
-		return fmt.Errorf("invalid_ssh_path: relative")
+	if err := ValidateSafeAbsolutePath(value); err != nil {
+		return fmt.Errorf("invalid_ssh_path: %w", err)
 	}
 	if !sshPathPattern.MatchString(value) {
 		return fmt.Errorf("invalid_ssh_path: invalid characters")
 	}
+	return nil
+}
+
+func ValidateSafeAbsolutePath(value string) error {
+	if value == "" {
+		return errors.New("empty")
+	}
+	if !strings.HasPrefix(value, "/") {
+		return errors.New("relative")
+	}
+	if strings.ContainsAny(value, "\x00\n\r\t") {
+		return errors.New("invalid characters")
+	}
 	cleaned := path.Clean(value)
 	if cleaned != value {
-		return fmt.Errorf("invalid_ssh_path: not canonical")
+		return errors.New("not canonical")
 	}
 	for _, part := range strings.Split(value, "/") {
 		if part == ".." {
-			return fmt.Errorf("invalid_ssh_path: parent traversal")
+			return errors.New("parent traversal")
 		}
 	}
 	return nil

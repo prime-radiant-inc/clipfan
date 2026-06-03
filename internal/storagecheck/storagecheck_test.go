@@ -273,6 +273,37 @@ func TestCheckRuntimeRootsCoversConfigAndStateOnly(t *testing.T) {
 	}
 }
 
+func TestSyncKeyRootsChecksSyncKeyParentSeparately(t *testing.T) {
+	syncKeyDir := t.TempDir()
+	syncKeyPath := filepath.Join(syncKeyDir, "sync_ed25519")
+	calls := map[string]bool{}
+	checker := Checker{
+		Probe: fakeProbe(Fact{FilesystemType: "apfs", Local: boolPtr(true), MountPoint: filepath.Dir(syncKeyDir)}),
+		Smoke: func(path string) error {
+			calls[path] = true
+			return nil
+		},
+	}
+
+	results, err := checker.CheckRoots(SyncKeyRoots(syncKeyPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
+	}
+	if results[0].Role != RootSyncKey {
+		t.Fatalf("Role = %q, want %q", results[0].Role, RootSyncKey)
+	}
+	resolvedSyncKeyDir, err := filepath.EvalSymlinks(syncKeyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !calls[resolvedSyncKeyDir] {
+		t.Fatalf("smoke calls = %#v, want sync key parent", calls)
+	}
+}
+
 func fakeProbe(fact Fact) ProbeFunc {
 	return func(string) (Fact, error) {
 		return fact, nil
