@@ -1193,6 +1193,752 @@ func TestTransitionSSHPeerLoopbackPreservesAbsenceProofAuditHistory(t *testing.T
 	assertJSONValueEqual(t, "local_config_scan", proof["absence_verified_by"])
 }
 
+func TestDecodeSSHPeerDisableRequestRejectsInvalidInput(t *testing.T) {
+	req, err := DecodeSSHPeerDisableRequest(strings.NewReader(`{"expected_config_revision":7,"reason":"user_disabled"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.ExpectedConfigRevision == nil || *req.ExpectedConfigRevision != 7 || req.Reason != "user_disabled" {
+		t.Fatalf("decoded disable request = %#v", req)
+	}
+
+	cases := []struct {
+		name string
+		body string
+		code string
+	}{
+		{
+			name: "unknown field",
+			body: `{"expected_config_revision":7,"reason":"user_disabled","future":true}`,
+			code: "unknown_field: future",
+		},
+		{
+			name: "missing revision",
+			body: `{"reason":"user_disabled"}`,
+			code: "missing_ssh_peer_disable_field: expected_config_revision",
+		},
+		{
+			name: "null revision",
+			body: `{"expected_config_revision":null,"reason":"user_disabled"}`,
+			code: "missing_ssh_peer_disable_field: expected_config_revision",
+		},
+		{
+			name: "missing reason",
+			body: `{"expected_config_revision":7}`,
+			code: "missing_ssh_peer_disable_field: reason",
+		},
+		{
+			name: "blank reason",
+			body: `{"expected_config_revision":7,"reason":" "}`,
+			code: "missing_ssh_peer_disable_field: reason",
+		},
+		{
+			name: "unstable reason",
+			body: `{"expected_config_revision":7,"reason":"user disabled"}`,
+			code: "invalid_ssh_peer_disable_field: reason",
+		},
+		{
+			name: "trailing data",
+			body: `{"expected_config_revision":7,"reason":"user_disabled"} {}`,
+			code: "malformed_ssh_peer_disable_request: trailing data",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := DecodeSSHPeerDisableRequest(strings.NewReader(tc.body))
+			if err == nil || !strings.Contains(err.Error(), tc.code) {
+				t.Fatalf("error = %v, want %s", err, tc.code)
+			}
+		})
+	}
+
+	_, err = DecodeSSHPeerDisableRequest(strings.NewReader(`{"expected_config_revision":0,"reason":"user_disabled"}`))
+	if !errors.Is(err, ErrConfigRevisionConflict) {
+		t.Fatalf("zero revision error = %v, want ErrConfigRevisionConflict", err)
+	}
+}
+
+func TestDecodeSSHPeerDeleteRequestRejectsInvalidInput(t *testing.T) {
+	req, err := DecodeSSHPeerDeleteRequest(strings.NewReader(`{"expected_config_revision":7,"reason":"user_deleted","log_id":"peer-log-1780257600"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.ExpectedConfigRevision == nil || *req.ExpectedConfigRevision != 7 || req.Reason != "user_deleted" || req.LogID != "peer-log-1780257600" {
+		t.Fatalf("decoded delete request = %#v", req)
+	}
+
+	cases := []struct {
+		name string
+		body string
+		code string
+	}{
+		{
+			name: "unknown field",
+			body: `{"expected_config_revision":7,"reason":"user_deleted","log_id":"peer-log-1780257600","future":true}`,
+			code: "unknown_field: future",
+		},
+		{
+			name: "missing revision",
+			body: `{"reason":"user_deleted","log_id":"peer-log-1780257600"}`,
+			code: "missing_ssh_peer_delete_field: expected_config_revision",
+		},
+		{
+			name: "null revision",
+			body: `{"expected_config_revision":null,"reason":"user_deleted","log_id":"peer-log-1780257600"}`,
+			code: "missing_ssh_peer_delete_field: expected_config_revision",
+		},
+		{
+			name: "missing reason",
+			body: `{"expected_config_revision":7,"log_id":"peer-log-1780257600"}`,
+			code: "missing_ssh_peer_delete_field: reason",
+		},
+		{
+			name: "missing log id",
+			body: `{"expected_config_revision":7,"reason":"user_deleted"}`,
+			code: "missing_ssh_peer_delete_field: log_id",
+		},
+		{
+			name: "blank log id",
+			body: `{"expected_config_revision":7,"reason":"user_deleted","log_id":" "}`,
+			code: "missing_ssh_peer_delete_field: log_id",
+		},
+		{
+			name: "unstable reason",
+			body: `{"expected_config_revision":7,"reason":"user deleted","log_id":"peer-log-1780257600"}`,
+			code: "invalid_ssh_peer_delete_field: reason",
+		},
+		{
+			name: "trailing data",
+			body: `{"expected_config_revision":7,"reason":"user_deleted","log_id":"peer-log-1780257600"} {}`,
+			code: "malformed_ssh_peer_delete_request: trailing data",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := DecodeSSHPeerDeleteRequest(strings.NewReader(tc.body))
+			if err == nil || !strings.Contains(err.Error(), tc.code) {
+				t.Fatalf("error = %v, want %s", err, tc.code)
+			}
+		})
+	}
+
+	_, err = DecodeSSHPeerDeleteRequest(strings.NewReader(`{"expected_config_revision":0,"reason":"user_deleted","log_id":"peer-log-1780257600"}`))
+	if !errors.Is(err, ErrConfigRevisionConflict) {
+		t.Fatalf("zero revision error = %v, want ErrConfigRevisionConflict", err)
+	}
+}
+
+func TestDisableSSHPeerSetsEnabledFalseRetainsMaterialAndWritesAudit(t *testing.T) {
+	path := writeConfigForV2Test(t, disableDeleteBaseConfig(MigrationStateSSHKeysReady, true))
+
+	status, err := disableSSHPeerWithGate(path, true, "fsck", SSHPeerDisableRequest{
+		ExpectedConfigRevision: uint64Ptr(7),
+		Reason:                 "user_disabled",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ConfigRevision == nil || *status.ConfigRevision != 8 {
+		t.Fatalf("ConfigRevision = %v, want 8", status.ConfigRevision)
+	}
+	assertJSONValueEqual(t, false, status.Peer["enabled"])
+	if _, ok := status.Peer["shared_key"]; ok {
+		t.Fatalf("disable response exposed shared_key: %#v", status.Peer)
+	}
+	if _, ok := status.Peer["private_key"]; ok {
+		t.Fatalf("disable response exposed private_key: %#v", status.Peer)
+	}
+
+	after := readJSONMap(t, path)
+	assertJSONNumber(t, after["config_revision"], 8)
+	assertJSONValueEqual(t, map[string]any{"keep": true}, after["future_top"])
+	ssh := after["ssh"].(map[string]any)
+	assertJSONValueEqual(t, map[string]any{"keep": true}, ssh["future_ssh"])
+	peer := peerByIDFromJSON(t, ssh["peers"], "fsck")
+	assertJSONValueEqual(t, false, peer["enabled"])
+	assertJSONValueEqual(t, "peer-secret", peer["shared_key"])
+	assertJSONValueEqual(t, "peer-private", peer["private_key"])
+	assertJSONValueEqual(t, map[string]any{"keep": true}, peer["future_peer"])
+	if _, ok := peer["proof"]; !ok {
+		t.Fatal("disable removed proof needed for repair")
+	}
+	other := peerByIDFromJSON(t, ssh["peers"], "other")
+	assertJSONValueEqual(t, "other", other["id"])
+
+	audit := ssh["audit_log"].([]any)
+	if len(audit) != 1 {
+		t.Fatalf("audit_log len = %d, want 1", len(audit))
+	}
+	entry := audit[0].(map[string]any)
+	assertJSONValueEqual(t, "ssh_peer_disable", entry["source"])
+	assertJSONValueEqual(t, true, entry["durable"])
+	assertJSONValueEqual(t, "fsck", entry["peer_id"])
+	assertJSONValueEqual(t, "user_disabled", entry["reason"])
+	assertJSONValueEqual(t, string(MigrationStateSSHKeysReady), entry["previous_migration_state"])
+}
+
+func TestDisableSSHPeerAlreadyDisabledRecordsAuditRequest(t *testing.T) {
+	body := strings.Replace(disableDeleteBaseConfig(MigrationStateSSHKeysReady, true), `"enabled": true,`, `"enabled": false,`, 1)
+	path := writeConfigForV2Test(t, body)
+
+	status, err := disableSSHPeerWithGate(path, true, "fsck", SSHPeerDisableRequest{
+		ExpectedConfigRevision: uint64Ptr(7),
+		Reason:                 "user_disabled",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ConfigRevision == nil || *status.ConfigRevision != 8 {
+		t.Fatalf("ConfigRevision = %v, want 8", status.ConfigRevision)
+	}
+
+	after := readJSONMap(t, path)
+	assertJSONNumber(t, after["config_revision"], 8)
+	ssh := after["ssh"].(map[string]any)
+	audit := ssh["audit_log"].([]any)
+	if len(audit) != 1 {
+		t.Fatalf("audit_log len = %d, want 1", len(audit))
+	}
+	assertJSONValueEqual(t, "ssh_peer_disable", audit[0].(map[string]any)["source"])
+}
+
+func TestDisableSSHPeerProoflessStagedPeerWritesAudit(t *testing.T) {
+	path := writeConfigForV2Test(t, disableDeleteBaseConfig(MigrationStateSSHMaterialStaged, false))
+
+	status, err := disableSSHPeerWithGate(path, true, "fsck", SSHPeerDisableRequest{
+		ExpectedConfigRevision: uint64Ptr(7),
+		Reason:                 "user_disabled",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSONValueEqual(t, false, status.Peer["enabled"])
+
+	after := readJSONMap(t, path)
+	ssh := after["ssh"].(map[string]any)
+	peer := peerByIDFromJSON(t, ssh["peers"], "fsck")
+	assertJSONValueEqual(t, false, peer["enabled"])
+	audit := ssh["audit_log"].([]any)
+	assertJSONValueEqual(t, "ssh_peer_disable", audit[0].(map[string]any)["source"])
+	assertJSONValueEqual(t, string(MigrationStateSSHMaterialStaged), audit[0].(map[string]any)["previous_migration_state"])
+}
+
+func TestDeleteSSHPeerLoopbackRemovesPeerAndWritesAudit(t *testing.T) {
+	path := writeConfigForV2Test(t, disableDeleteBaseConfig(MigrationStateLoopbackUnprovisioned, false))
+
+	status, err := deleteSSHPeerWithGate(path, true, "fsck", validDeleteRequest(7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ConfigRevision == nil || *status.ConfigRevision != 8 {
+		t.Fatalf("ConfigRevision = %v, want 8", status.ConfigRevision)
+	}
+	cleanup := status.Peer["cleanup_status"].(map[string]any)
+	assertJSONValueEqual(t, false, cleanup["cleanup_required"])
+	assertJSONValueEqual(t, false, cleanup["pending"])
+
+	after := readJSONMap(t, path)
+	assertJSONNumber(t, after["config_revision"], 8)
+	ssh := after["ssh"].(map[string]any)
+	peers := ssh["peers"].([]any)
+	if len(peers) != 1 {
+		t.Fatalf("peers len = %d, want 1", len(peers))
+	}
+	assertJSONValueEqual(t, "other", peers[0].(map[string]any)["id"])
+	if _, ok := ssh["remediation"]; ok {
+		t.Fatalf("loopback delete wrote remediation: %#v", ssh["remediation"])
+	}
+	audit := ssh["audit_log"].([]any)
+	entry := audit[0].(map[string]any)
+	assertJSONValueEqual(t, "ssh_peer_delete", entry["source"])
+	assertJSONValueEqual(t, "fsck", entry["peer_id"])
+	assertJSONValueEqual(t, "user_deleted", entry["reason"])
+	assertJSONValueEqual(t, "peer-log-1780257600", entry["log_id"])
+}
+
+func TestDeleteSSHPeerPreSecretWritesCleanupRecordBeforeRemovingPeer(t *testing.T) {
+	path := writeConfigForV2Test(t, disableDeleteBaseConfig(MigrationStateSSHMaterialStaged, true))
+
+	status, err := deleteSSHPeerWithGate(path, true, "fsck", validDeleteRequest(7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupStatus := status.Peer["cleanup_status"].(map[string]any)
+	assertJSONValueEqual(t, "ssh_material_cleanup", cleanupStatus["source"])
+	assertJSONValueEqual(t, true, cleanupStatus["cleanup_required"])
+	assertJSONValueEqual(t, true, cleanupStatus["pending"])
+	if _, ok := status.Peer["shared_key"]; ok {
+		t.Fatalf("delete response exposed shared_key: %#v", status.Peer)
+	}
+	if _, ok := status.Peer["private_key"]; ok {
+		t.Fatalf("delete response exposed private_key: %#v", status.Peer)
+	}
+
+	after := readJSONMap(t, path)
+	ssh := after["ssh"].(map[string]any)
+	if _, found := findPeerByIDFromJSON(ssh["peers"], "fsck"); found {
+		t.Fatal("deleted peer row still exists")
+	}
+	remediation := ssh["remediation"].([]any)
+	if len(remediation) != 1 {
+		t.Fatalf("remediation len = %d, want 1", len(remediation))
+	}
+	record := remediation[0].(map[string]any)
+	assertJSONValueEqual(t, "ssh_material_cleanup", record["source"])
+	assertJSONValueEqual(t, true, record["durable"])
+	assertJSONValueEqual(t, true, record["cleanup_required"])
+	assertJSONValueEqual(t, true, record["pending"])
+	assertJSONValueEqual(t, "fsck", record["peer_id"])
+	assertJSONValueEqual(t, string(MigrationStateSSHMaterialStaged), record["previous_migration_state"])
+	assertJSONValueEqual(t, "peer-log-1780257600", record["log_id"])
+	assertJSONValueEqual(t, "fsck.com", record["ssh_host"])
+	assertJSONValueEqual(t, "accept-key-1", record["accept_key_id"])
+	assertJSONValueEqual(t, "connect-key-1", record["connect_key_id"])
+	actions := record["remaining_user_actions"].([]any)
+	assertJSONValueEqual(t, "retry_regular_ssh_cleanup", actions[0])
+
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("peer-secret")) || bytes.Contains(data, []byte("peer-private")) {
+		t.Fatalf("pre-secret cleanup record leaked secret material: %s", data)
+	}
+}
+
+func TestDeleteSSHPeerProvisionFailedCapturesLastProvisioningPhase(t *testing.T) {
+	cases := []struct {
+		name string
+		log  string
+		want string
+	}{
+		{
+			name: "top level failed phase",
+			log:  `[{"from_state":"ssh_material_staged","to_state":"provision_failed","reason":"provision_failed","log_id":"existing-log","failed_phase":"managed_authorized_keys_write","remote_secret_absence_proof":{"failed_phase":"host_key_confirmation","secret_write_command_spawned":false,"absence_verified_by":"local_config_scan","verified_at":"2026-06-02T12:34:56Z","log_id":"existing-log"}}]`,
+			want: "managed_authorized_keys_write",
+		},
+		{
+			name: "absence proof failed phase",
+			log:  `[{"from_state":"loopback_unprovisioned","to_state":"provision_failed","reason":"provision_failed","log_id":"existing-log","remote_secret_absence_proof":{"failed_phase":"host_key_confirmation","secret_write_command_spawned":false,"absence_verified_by":"local_config_scan","verified_at":"2026-06-02T12:34:56Z","log_id":"existing-log"}}]`,
+			want: "host_key_confirmation",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Replace(
+				disableDeleteBaseConfig(MigrationStateProvisionFailed, true),
+				`"future_peer": {"keep": true}`,
+				`"future_peer": {"keep": true}, "migration_log": `+tc.log,
+				1,
+			)
+			path := writeConfigForV2Test(t, body)
+
+			_, err := deleteSSHPeerWithGate(path, true, "fsck", validDeleteRequest(7))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			after := readJSONMap(t, path)
+			record := after["ssh"].(map[string]any)["remediation"].([]any)[0].(map[string]any)
+			assertJSONValueEqual(t, "ssh_material_cleanup", record["source"])
+			assertJSONValueEqual(t, string(MigrationStateProvisionFailed), record["previous_migration_state"])
+			assertJSONValueEqual(t, tc.want, record["last_provisioning_phase"])
+		})
+	}
+}
+
+func TestDeleteSSHPeerProvisionFailedWithoutAbsenceProofFallsBackToTombstone(t *testing.T) {
+	body := strings.Replace(
+		disableDeleteBaseConfig(MigrationStateProvisionFailed, true),
+		`"future_peer": {"keep": true}`,
+		`"future_peer": {"keep": true}, "migration_log": [{"from_state":"ssh_material_staged","to_state":"provision_failed","reason":"provision_failed","log_id":"existing-log","failed_phase":"managed_authorized_keys_write"}]`,
+		1,
+	)
+	path := writeConfigForV2Test(t, body)
+
+	_, err := deleteSSHPeerWithGate(path, true, "fsck", validDeleteRequest(7))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after := readJSONMap(t, path)
+	record := after["ssh"].(map[string]any)["remediation"].([]any)[0].(map[string]any)
+	assertJSONValueEqual(t, "post_secret_tombstone", record["source"])
+	assertJSONValueEqual(t, string(MigrationStateProvisionFailed), record["previous_migration_state"])
+	assertJSONValueEqual(t, false, record["remote_fleet_secret_cleanup_verified"])
+	actions := record["remaining_user_actions"].([]any)
+	assertJSONValueEqual(t, "rotate_fleet_shared_key", actions[1])
+}
+
+func TestDeleteSSHPeerProvisionFailedAfterSecretWriteSpawnedWritesTombstone(t *testing.T) {
+	body := strings.Replace(
+		disableDeleteBaseConfig(MigrationStateProvisionFailed, true),
+		`"future_peer": {"keep": true}`,
+		`"future_peer": {"keep": true}, "migration_log": [{"from_state":"ssh_material_staged","to_state":"provision_failed","reason":"provision_failed","log_id":"existing-log","failed_phase":"remote_shared_key_write","remote_secret_absence_proof":{"failed_phase":"remote_shared_key_write","secret_write_command_spawned":true,"absence_verified_by":"regular_ssh_locked_read","verified_at":"2026-06-02T12:34:56Z","log_id":"existing-log"}}]`,
+		1,
+	)
+	path := writeConfigForV2Test(t, body)
+
+	_, err := deleteSSHPeerWithGate(path, true, "fsck", validDeleteRequest(7))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after := readJSONMap(t, path)
+	record := after["ssh"].(map[string]any)["remediation"].([]any)[0].(map[string]any)
+	assertJSONValueEqual(t, "post_secret_tombstone", record["source"])
+	assertJSONValueEqual(t, string(MigrationStateProvisionFailed), record["previous_migration_state"])
+	assertJSONValueEqual(t, false, record["remote_fleet_secret_cleanup_verified"])
+	actions := record["remaining_user_actions"].([]any)
+	assertJSONValueEqual(t, "rotate_fleet_shared_key", actions[1])
+}
+
+func TestDeleteSSHPeerPostSecretWritesTombstoneBeforeRemovingPeer(t *testing.T) {
+	path := writeConfigForV2Test(t, disableDeleteBaseConfig(MigrationStateSSHKeysReady, true))
+
+	status, err := deleteSSHPeerWithGate(path, true, "fsck", validDeleteRequest(7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupStatus := status.Peer["cleanup_status"].(map[string]any)
+	assertJSONValueEqual(t, "post_secret_tombstone", cleanupStatus["source"])
+	assertJSONValueEqual(t, true, cleanupStatus["pending"])
+	if _, ok := status.Peer["shared_key"]; ok {
+		t.Fatalf("delete response exposed shared_key: %#v", status.Peer)
+	}
+	if _, ok := status.Peer["private_key"]; ok {
+		t.Fatalf("delete response exposed private_key: %#v", status.Peer)
+	}
+
+	after := readJSONMap(t, path)
+	ssh := after["ssh"].(map[string]any)
+	if _, found := findPeerByIDFromJSON(ssh["peers"], "fsck"); found {
+		t.Fatal("deleted peer row still exists")
+	}
+	record := ssh["remediation"].([]any)[0].(map[string]any)
+	assertJSONValueEqual(t, "post_secret_tombstone", record["source"])
+	assertJSONValueEqual(t, false, record["remote_fleet_secret_cleanup_verified"])
+	assertJSONValueEqual(t, false, record["remote_managed_key_cleanup_verified"])
+	actions := record["remaining_user_actions"].([]any)
+	assertJSONValueEqual(t, "retry_regular_ssh_cleanup", actions[0])
+	assertJSONValueEqual(t, "rotate_fleet_shared_key", actions[1])
+
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("peer-secret")) || bytes.Contains(data, []byte("peer-private")) {
+		t.Fatalf("post-secret tombstone leaked secret material: %s", data)
+	}
+}
+
+func TestDeleteSSHPeerSharedKeyWrittenUnverifiedWritesTombstone(t *testing.T) {
+	path := writeConfigForV2Test(t, disableDeleteBaseConfig(MigrationStateSharedKeyWrittenUnverified, false))
+
+	status, err := deleteSSHPeerWithGate(path, true, "fsck", validDeleteRequest(7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupStatus := status.Peer["cleanup_status"].(map[string]any)
+	assertJSONValueEqual(t, "post_secret_tombstone", cleanupStatus["source"])
+
+	after := readJSONMap(t, path)
+	ssh := after["ssh"].(map[string]any)
+	if _, found := findPeerByIDFromJSON(ssh["peers"], "fsck"); found {
+		t.Fatal("deleted peer row still exists")
+	}
+	record := ssh["remediation"].([]any)[0].(map[string]any)
+	assertJSONValueEqual(t, "post_secret_tombstone", record["source"])
+	assertJSONValueEqual(t, string(MigrationStateSharedKeyWrittenUnverified), record["previous_migration_state"])
+	if _, ok := record["accept_key_id"]; ok {
+		t.Fatalf("tombstone unexpectedly copied absent accept proof: %#v", record)
+	}
+	if _, ok := record["connect_key_id"]; ok {
+		t.Fatalf("tombstone unexpectedly copied absent connect proof: %#v", record)
+	}
+}
+
+func TestDeleteSSHPeerAppendsAuditAndRemediationHistory(t *testing.T) {
+	body := strings.Replace(
+		disableDeleteBaseConfig(MigrationStateSSHMaterialStaged, true),
+		`"future_ssh": {"keep": true},`,
+		`"future_ssh": {"keep": true},
+    "audit_log": [{"source":"existing_audit","peer_id":"old"}],
+    "remediation": [{"source":"existing_remediation","peer_id":"old"}],`,
+		1,
+	)
+	path := writeConfigForV2Test(t, body)
+
+	_, err := deleteSSHPeerWithGate(path, true, "fsck", validDeleteRequest(7))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after := readJSONMap(t, path)
+	ssh := after["ssh"].(map[string]any)
+	audit := ssh["audit_log"].([]any)
+	if len(audit) != 2 {
+		t.Fatalf("audit_log len = %d, want 2", len(audit))
+	}
+	assertJSONValueEqual(t, "existing_audit", audit[0].(map[string]any)["source"])
+	assertJSONValueEqual(t, "ssh_peer_delete", audit[1].(map[string]any)["source"])
+	remediation := ssh["remediation"].([]any)
+	if len(remediation) != 2 {
+		t.Fatalf("remediation len = %d, want 2", len(remediation))
+	}
+	assertJSONValueEqual(t, "existing_remediation", remediation[0].(map[string]any)["source"])
+	assertJSONValueEqual(t, "ssh_material_cleanup", remediation[1].(map[string]any)["source"])
+}
+
+func TestDisableDeleteSSHPeerRejectMalformedHistoryWithoutWriting(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		run  func(string) error
+		code string
+	}{
+		{
+			name: "disable malformed audit log",
+			body: strings.Replace(disableDeleteBaseConfig(MigrationStateSSHKeysReady, true), `"future_ssh": {"keep": true},`, `"future_ssh": {"keep": true}, "audit_log": "bad",`, 1),
+			run: func(path string) error {
+				_, err := disableSSHPeerWithGate(path, true, "fsck", SSHPeerDisableRequest{ExpectedConfigRevision: uint64Ptr(7), Reason: "user_disabled"})
+				return err
+			},
+			code: "invalid_ssh_peer_audit_log",
+		},
+		{
+			name: "delete malformed remediation",
+			body: strings.Replace(disableDeleteBaseConfig(MigrationStateSSHMaterialStaged, true), `"future_ssh": {"keep": true},`, `"future_ssh": {"keep": true}, "remediation": "bad",`, 1),
+			run: func(path string) error {
+				_, err := deleteSSHPeerWithGate(path, true, "fsck", validDeleteRequest(7))
+				return err
+			},
+			code: "invalid_ssh_peer_remediation",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfigForV2Test(t, tc.body)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = tc.run(path)
+			if err == nil || !strings.Contains(err.Error(), tc.code) {
+				t.Fatalf("error = %v, want %s", err, tc.code)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatalf("%s changed config\nbefore=%s\nafter=%s", tc.name, before, after)
+			}
+		})
+	}
+}
+
+func TestDisableDeleteSSHPeerMissingPeerDoesNotWrite(t *testing.T) {
+	cases := []struct {
+		name string
+		run  func(string) error
+	}{
+		{
+			name: "disable missing peer",
+			run: func(path string) error {
+				_, err := disableSSHPeerWithGate(path, true, "missing", SSHPeerDisableRequest{ExpectedConfigRevision: uint64Ptr(7), Reason: "user_disabled"})
+				return err
+			},
+		},
+		{
+			name: "delete missing peer",
+			run: func(path string) error {
+				_, err := deleteSSHPeerWithGate(path, true, "missing", validDeleteRequest(7))
+				return err
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfigForV2Test(t, disableDeleteBaseConfig(MigrationStateSSHKeysReady, true))
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = tc.run(path)
+			if err == nil || !strings.Contains(err.Error(), "ssh_peer_not_found: missing") {
+				t.Fatalf("error = %v, want ssh_peer_not_found", err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatalf("%s changed config\nbefore=%s\nafter=%s", tc.name, before, after)
+			}
+		})
+	}
+}
+
+func TestDisableDeleteSSHPeerRejectStaleRevisionAndGateDisabledWithoutWriting(t *testing.T) {
+	cases := []struct {
+		name string
+		run  func(string) error
+	}{
+		{
+			name: "disable stale",
+			run: func(path string) error {
+				_, err := disableSSHPeerWithGate(path, true, "fsck", SSHPeerDisableRequest{ExpectedConfigRevision: uint64Ptr(6), Reason: "user_disabled"})
+				return err
+			},
+		},
+		{
+			name: "delete stale",
+			run: func(path string) error {
+				_, err := deleteSSHPeerWithGate(path, true, "fsck", SSHPeerDeleteRequest{ExpectedConfigRevision: uint64Ptr(6), Reason: "user_deleted", LogID: "peer-log-1780257600"})
+				return err
+			},
+		},
+		{
+			name: "disable gate disabled",
+			run: func(path string) error {
+				_, err := disableSSHPeerWithGate(path, false, "fsck", SSHPeerDisableRequest{ExpectedConfigRevision: uint64Ptr(7), Reason: "user_disabled"})
+				return err
+			},
+		},
+		{
+			name: "delete gate disabled",
+			run: func(path string) error {
+				_, err := deleteSSHPeerWithGate(path, false, "fsck", validDeleteRequest(7))
+				return err
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfigForV2Test(t, disableDeleteBaseConfig(MigrationStateSSHKeysReady, true))
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = tc.run(path)
+			if tc.name == "disable gate disabled" || tc.name == "delete gate disabled" {
+				if !errors.Is(err, ErrConfigV2WritesDisabled) {
+					t.Fatalf("error = %v, want ErrConfigV2WritesDisabled", err)
+				}
+			} else if !errors.Is(err, ErrConfigRevisionConflict) {
+				t.Fatalf("error = %v, want ErrConfigRevisionConflict", err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatalf("%s changed config\nbefore=%s\nafter=%s", tc.name, before, after)
+			}
+		})
+	}
+}
+
+func TestDisableDeleteSSHPeerRejectMissingMigrationStateWithoutWriting(t *testing.T) {
+	cases := []struct {
+		name string
+		run  func(string) error
+		code string
+	}{
+		{
+			name: "disable missing state",
+			run: func(path string) error {
+				_, err := disableSSHPeerWithGate(path, true, "fsck", SSHPeerDisableRequest{ExpectedConfigRevision: uint64Ptr(7), Reason: "user_disabled"})
+				return err
+			},
+			code: "invalid_ssh_peer_disable_state",
+		},
+		{
+			name: "delete missing state",
+			run: func(path string) error {
+				_, err := deleteSSHPeerWithGate(path, true, "fsck", validDeleteRequest(7))
+				return err
+			},
+			code: "invalid_ssh_peer_delete_state",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Replace(disableDeleteBaseConfig(MigrationStateSSHKeysReady, true), `        "migration_state": "ssh_keys_ready",`+"\n", "", 1)
+			path := writeConfigForV2Test(t, body)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = tc.run(path)
+			if err == nil || !strings.Contains(err.Error(), tc.code) {
+				t.Fatalf("error = %v, want %s", err, tc.code)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatalf("%s changed config\nbefore=%s\nafter=%s", tc.name, before, after)
+			}
+		})
+	}
+}
+
+func TestDisableDeleteSSHPeerDirectValidationRejectsInvalidStructsWithoutWriting(t *testing.T) {
+	cases := []struct {
+		name string
+		run  func(string) error
+		code string
+	}{
+		{
+			name: "disable invalid reason",
+			run: func(path string) error {
+				_, err := disableSSHPeerWithGate(path, true, "fsck", SSHPeerDisableRequest{ExpectedConfigRevision: uint64Ptr(7), Reason: "user disabled"})
+				return err
+			},
+			code: "invalid_ssh_peer_disable_field: reason",
+		},
+		{
+			name: "delete invalid reason",
+			run: func(path string) error {
+				_, err := deleteSSHPeerWithGate(path, true, "fsck", SSHPeerDeleteRequest{ExpectedConfigRevision: uint64Ptr(7), Reason: "user deleted", LogID: "peer-log-1780257600"})
+				return err
+			},
+			code: "invalid_ssh_peer_delete_field: reason",
+		},
+		{
+			name: "delete blank log id",
+			run: func(path string) error {
+				_, err := deleteSSHPeerWithGate(path, true, "fsck", SSHPeerDeleteRequest{ExpectedConfigRevision: uint64Ptr(7), Reason: "user_deleted", LogID: " "})
+				return err
+			},
+			code: "missing_ssh_peer_delete_field: log_id",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfigForV2Test(t, disableDeleteBaseConfig(MigrationStateSSHKeysReady, true))
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = tc.run(path)
+			if err == nil || !strings.Contains(err.Error(), tc.code) {
+				t.Fatalf("error = %v, want %s", err, tc.code)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatalf("%s changed config\nbefore=%s\nafter=%s", tc.name, before, after)
+			}
+		})
+	}
+}
+
 func TestTransitionSSHPeerRejectsInvalidRequestsWithoutWriting(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -1585,6 +2331,90 @@ func validProvisionFailedTransitionRequest(revision uint64, from MigrationState,
 			LogID:                     "log-1",
 		},
 	}
+}
+
+func validDeleteRequest(revision uint64) SSHPeerDeleteRequest {
+	return SSHPeerDeleteRequest{
+		ExpectedConfigRevision: uint64Ptr(revision),
+		Reason:                 "user_deleted",
+		LogID:                  "peer-log-1780257600",
+	}
+}
+
+func disableDeleteBaseConfig(state MigrationState, includeProof bool) string {
+	proof := ""
+	if includeProof {
+		proof = `,
+        "proof": {
+          "accept_key_id": "accept-key-1",
+          "accept_gateway_path": "/home/jesse/.local/bin/clipfan",
+          "accept_verified_at": "2026-06-02T12:34:56Z",
+          "accept_verified_by": "local_file",
+          "connect_key_id": "connect-key-1",
+          "connect_gateway_path": "/home/jesse/.local/bin/clipfan",
+          "connect_verified_at": "2026-06-02T12:35:56Z",
+          "connect_verified_by": "regular_ssh"
+        }`
+	}
+	return `{
+  "config_version": 2,
+  "config_revision": 7,
+  "shared_key": "k",
+  "hostname": "m4",
+  "transport": "ssh",
+  "future_top": {"keep": true},
+  "ssh": {
+    "future_ssh": {"keep": true},
+    "peers": [
+      {
+        "id": "fsck",
+        "enabled": true,
+        "accept": true,
+        "connect": true,
+        "persistent": true,
+        "ssh_host": "fsck.com",
+        "ssh_user": "jesse",
+        "ssh_port": 22,
+        "install_path": "/home/jesse/.local/bin/clipfan",
+        "gateway_path": "/home/jesse/.local/bin/clipfan",
+        "migration_state": "` + string(state) + `",
+        "shared_key": "peer-secret",
+        "private_key": "peer-private",
+        "future_peer": {"keep": true}` + proof + `
+      },
+      {
+        "id": "other",
+        "enabled": true,
+        "accept": true,
+        "migration_state": "loopback_unprovisioned",
+        "future_peer": {"keep": "other"}
+      }
+    ]
+  }
+}`
+}
+
+func peerByIDFromJSON(t *testing.T, value any, peerID string) map[string]any {
+	t.Helper()
+	peer, found := findPeerByIDFromJSON(value, peerID)
+	if !found {
+		t.Fatalf("peer %q not found in %#v", peerID, value)
+	}
+	return peer
+}
+
+func findPeerByIDFromJSON(value any, peerID string) (map[string]any, bool) {
+	peers, ok := value.([]any)
+	if !ok {
+		return nil, false
+	}
+	for _, value := range peers {
+		peer, ok := value.(map[string]any)
+		if ok && peer["id"] == peerID {
+			return peer, true
+		}
+	}
+	return nil, false
 }
 
 func stringPtr(v string) *string { return &v }

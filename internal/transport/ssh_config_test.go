@@ -21,6 +21,10 @@ func TestSSHPeerConfigRoutesRequireHKDFAndDispatch(t *testing.T) {
 	var gotPatchBody []byte
 	var gotTransitionPeer string
 	var gotTransitionBody []byte
+	var gotDisablePeer string
+	var gotDisableBody []byte
+	var gotDeletePeer string
+	var gotDeleteBody []byte
 	s.SetSSHPeerConfig(
 		func(peerID string) (any, *HandlerError) {
 			gotReadPeer = peerID
@@ -41,6 +45,16 @@ func TestSSHPeerConfigRoutesRequireHKDFAndDispatch(t *testing.T) {
 		gotTransitionPeer = peerID
 		gotTransitionBody = append([]byte(nil), body...)
 		return map[string]any{"peer_id": peerID, "config_revision": 10}, nil
+	})
+	s.SetSSHPeerConfigDisable(func(peerID string, body []byte) (any, *HandlerError) {
+		gotDisablePeer = peerID
+		gotDisableBody = append([]byte(nil), body...)
+		return map[string]any{"peer_id": peerID, "config_revision": 11}, nil
+	})
+	s.SetSSHPeerConfigDelete(func(peerID string, body []byte) (any, *HandlerError) {
+		gotDeletePeer = peerID
+		gotDeleteBody = append([]byte(nil), body...)
+		return map[string]any{"peer_id": peerID, "config_revision": 12}, nil
 	})
 
 	getReq := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodGet, "/v1/config/ssh/peers/fsck", "1780257600", "ssh-peer-get", nil, AuthVersionRequestHMAC)
@@ -116,6 +130,46 @@ func TestSSHPeerConfigRoutesRequireHKDFAndDispatch(t *testing.T) {
 		t.Fatalf("transition response signature: %v", err)
 	}
 
+	disableBody := []byte(`{"expected_config_revision":10,"reason":"user_disabled"}`)
+	disableReq := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodPost, "/v1/config/ssh/peers/fsck/disable", "1780257600", "ssh-peer-disable", disableBody, AuthVersionRequestHMAC)
+	disableRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(disableRec, disableReq)
+	if disableRec.Code != http.StatusOK {
+		t.Fatalf("POST disable status = %d body=%q, want 200", disableRec.Code, disableRec.Body.String())
+	}
+	if gotDisablePeer != "fsck" {
+		t.Fatalf("disable peer = %q, want fsck", gotDisablePeer)
+	}
+	if !bytes.Equal(gotDisableBody, disableBody) {
+		t.Fatalf("disable body = %q, want %q", gotDisableBody, disableBody)
+	}
+	if disableRec.Header().Get(HeaderAuthVersion) != AuthVersionRequestHMAC {
+		t.Fatalf("disable response auth version = %q", disableRec.Header().Get(HeaderAuthVersion))
+	}
+	if err := auth.VerifyResponseWithAuthVersion("ssh-peer-disable", disableRec.Body.Bytes(), disableRec.Header().Get("X-Clipfan-Response-Sig"), AuthVersionRequestHMAC); err != nil {
+		t.Fatalf("disable response signature: %v", err)
+	}
+
+	deleteBody := []byte(`{"expected_config_revision":11,"reason":"user_deleted","log_id":"peer-log-1780257600"}`)
+	deleteReq := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodDelete, "/v1/config/ssh/peers/fsck", "1780257600", "ssh-peer-delete", deleteBody, AuthVersionRequestHMAC)
+	deleteRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("DELETE status = %d body=%q, want 200", deleteRec.Code, deleteRec.Body.String())
+	}
+	if gotDeletePeer != "fsck" {
+		t.Fatalf("delete peer = %q, want fsck", gotDeletePeer)
+	}
+	if !bytes.Equal(gotDeleteBody, deleteBody) {
+		t.Fatalf("delete body = %q, want %q", gotDeleteBody, deleteBody)
+	}
+	if deleteRec.Header().Get(HeaderAuthVersion) != AuthVersionRequestHMAC {
+		t.Fatalf("delete response auth version = %q", deleteRec.Header().Get(HeaderAuthVersion))
+	}
+	if err := auth.VerifyResponseWithAuthVersion("ssh-peer-delete", deleteRec.Body.Bytes(), deleteRec.Header().Get("X-Clipfan-Response-Sig"), AuthVersionRequestHMAC); err != nil {
+		t.Fatalf("delete response signature: %v", err)
+	}
+
 	rawReq := signedRequestWithTimestampAndNonce(t, auth, http.MethodGet, "/v1/config/ssh/peers/fsck", "1780257600", "ssh-peer-raw", nil)
 	rawRec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rawRec, rawReq)
@@ -143,6 +197,12 @@ func TestSSHPeerConfigRoutesRejectRemoteAndMapHandlerErrors(t *testing.T) {
 	s.SetSSHPeerConfigTransition(func(peerID string, body []byte) (any, *HandlerError) {
 		return nil, &HandlerError{Status: http.StatusBadRequest, Code: "bad_request"}
 	})
+	s.SetSSHPeerConfigDisable(func(peerID string, body []byte) (any, *HandlerError) {
+		return nil, &HandlerError{Status: http.StatusBadRequest, Code: "bad_request"}
+	})
+	s.SetSSHPeerConfigDelete(func(peerID string, body []byte) (any, *HandlerError) {
+		return nil, &HandlerError{Status: http.StatusConflict, Code: "ssh_peer_delete_blocked"}
+	})
 
 	remoteGetReq := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodGet, "/v1/config/ssh/peers/fsck", "1780257600", "ssh-peer-remote-get", nil, AuthVersionRequestHMAC)
 	remoteGetReq.RemoteAddr = "192.0.2.10:1234"
@@ -166,6 +226,22 @@ func TestSSHPeerConfigRoutesRejectRemoteAndMapHandlerErrors(t *testing.T) {
 	s.Handler().ServeHTTP(remoteTransitionRec, remoteTransitionReq)
 	if remoteTransitionRec.Code != http.StatusForbidden {
 		t.Fatalf("remote transition status = %d, want 403", remoteTransitionRec.Code)
+	}
+
+	remoteDisableReq := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodPost, "/v1/config/ssh/peers/fsck/disable", "1780257600", "ssh-peer-remote-disable", []byte(`{}`), AuthVersionRequestHMAC)
+	remoteDisableReq.RemoteAddr = "192.0.2.10:1234"
+	remoteDisableRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(remoteDisableRec, remoteDisableReq)
+	if remoteDisableRec.Code != http.StatusForbidden {
+		t.Fatalf("remote disable status = %d, want 403", remoteDisableRec.Code)
+	}
+
+	remoteDeleteReq := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodDelete, "/v1/config/ssh/peers/fsck", "1780257600", "ssh-peer-remote-delete", []byte(`{}`), AuthVersionRequestHMAC)
+	remoteDeleteReq.RemoteAddr = "192.0.2.10:1234"
+	remoteDeleteRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(remoteDeleteRec, remoteDeleteReq)
+	if remoteDeleteRec.Code != http.StatusForbidden {
+		t.Fatalf("remote delete status = %d, want 403", remoteDeleteRec.Code)
 	}
 
 	req := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodGet, "/v1/config/ssh/peers/missing", "1780257600", "ssh-peer-missing", nil, AuthVersionRequestHMAC)
@@ -196,5 +272,25 @@ func TestSSHPeerConfigRoutesRejectRemoteAndMapHandlerErrors(t *testing.T) {
 	}
 	if err := auth.VerifyResponseWithAuthVersion("ssh-peer-transition-bad", transitionRec.Body.Bytes(), transitionRec.Header().Get("X-Clipfan-Response-Sig"), AuthVersionRequestHMAC); err != nil {
 		t.Fatalf("transition error response signature: %v", err)
+	}
+
+	disableReq := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodPost, "/v1/config/ssh/peers/fsck/disable", "1780257600", "ssh-peer-disable-bad", []byte(`{}`), AuthVersionRequestHMAC)
+	disableRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(disableRec, disableReq)
+	if disableRec.Code != http.StatusBadRequest || !bytes.Contains(disableRec.Body.Bytes(), []byte("bad_request")) {
+		t.Fatalf("disable handler error status/body = %d %q", disableRec.Code, disableRec.Body.String())
+	}
+	if err := auth.VerifyResponseWithAuthVersion("ssh-peer-disable-bad", disableRec.Body.Bytes(), disableRec.Header().Get("X-Clipfan-Response-Sig"), AuthVersionRequestHMAC); err != nil {
+		t.Fatalf("disable error response signature: %v", err)
+	}
+
+	deleteReq := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodDelete, "/v1/config/ssh/peers/fsck", "1780257600", "ssh-peer-delete-blocked", []byte(`{}`), AuthVersionRequestHMAC)
+	deleteRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusConflict || !bytes.Contains(deleteRec.Body.Bytes(), []byte("ssh_peer_delete_blocked")) {
+		t.Fatalf("delete handler error status/body = %d %q", deleteRec.Code, deleteRec.Body.String())
+	}
+	if err := auth.VerifyResponseWithAuthVersion("ssh-peer-delete-blocked", deleteRec.Body.Bytes(), deleteRec.Header().Get("X-Clipfan-Response-Sig"), AuthVersionRequestHMAC); err != nil {
+		t.Fatalf("delete error response signature: %v", err)
 	}
 }

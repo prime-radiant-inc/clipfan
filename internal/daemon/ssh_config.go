@@ -53,6 +53,30 @@ func (d *Daemon) sshPeerConfigTransitionHandler(peerID string, body []byte) (any
 	return status, nil
 }
 
+func (d *Daemon) sshPeerConfigDisableHandler(peerID string, body []byte) (any, *transport.HandlerError) {
+	req, err := config.DecodeSSHPeerDisableRequest(bytes.NewReader(body))
+	if err != nil {
+		return nil, sshPeerConfigHandlerError(err)
+	}
+	status, err := config.DisableSSHPeer(d.configPath, peerID, req)
+	if err != nil {
+		return nil, sshPeerConfigHandlerError(err)
+	}
+	return status, nil
+}
+
+func (d *Daemon) sshPeerConfigDeleteHandler(peerID string, body []byte) (any, *transport.HandlerError) {
+	req, err := config.DecodeSSHPeerDeleteRequest(bytes.NewReader(body))
+	if err != nil {
+		return nil, sshPeerConfigHandlerError(err)
+	}
+	status, err := config.DeleteSSHPeer(d.configPath, peerID, req)
+	if err != nil {
+		return nil, sshPeerConfigHandlerError(err)
+	}
+	return status, nil
+}
+
 func sshPeerConfigHandlerError(err error) *transport.HandlerError {
 	if err == nil {
 		return nil
@@ -74,12 +98,18 @@ func sshPeerConfigHandlerError(err error) *transport.HandlerError {
 		"missing_ssh_peer_upsert_field",
 		"missing_ssh_peer_proof_patch_field",
 		"missing_ssh_peer_transition_field",
+		"missing_ssh_peer_disable_field",
+		"missing_ssh_peer_delete_field",
 		"malformed_ssh_peer_upsert_request",
 		"malformed_ssh_peer_proof_patch_request",
 		"malformed_ssh_peer_transition_request",
+		"malformed_ssh_peer_disable_request",
+		"malformed_ssh_peer_delete_request",
 		"invalid_ssh_peer_upsert_field",
 		"invalid_ssh_peer_proof_patch_field",
 		"invalid_ssh_peer_transition_field",
+		"invalid_ssh_peer_disable_field",
+		"invalid_ssh_peer_delete_field",
 		"ssh_peer_proof_patch_empty",
 		"invalid_expected_config_revision"):
 		return &transport.HandlerError{Status: 400, Code: "bad_request"}
@@ -105,6 +135,10 @@ func sshPeerConfigHandlerError(err error) *transport.HandlerError {
 		return &transport.HandlerError{Status: 400, Code: "invalid_ssh_peer_transition"}
 	case hasErrorPrefix(text, "ssh_peer_transition_requires_"):
 		return &transport.HandlerError{Status: 400, Code: "invalid_ssh_peer_transition"}
+	case hasErrorPrefix(text, "invalid_ssh_peer_disable_state"):
+		return &transport.HandlerError{Status: 400, Code: "invalid_ssh_peer_disable"}
+	case hasErrorPrefix(text, "invalid_ssh_peer_delete_state"):
+		return &transport.HandlerError{Status: 400, Code: "invalid_ssh_peer_delete"}
 	case hasErrorPrefix(text, "ssh_peer_create_requires_loopback_unprovisioned"):
 		return &transport.HandlerError{Status: 400, Code: "ssh_peer_create_requires_loopback_unprovisioned"}
 	case hasErrorPrefix(text, "ssh_peer_create_requires_"):
@@ -130,6 +164,8 @@ func sshPeerConfigHandlerError(err error) *transport.HandlerError {
 		"invalid_ssh_log_limit_bytes",
 		"invalid_ssh_peer_proof",
 		"invalid_ssh_peer_migration_log",
+		"invalid_ssh_peer_audit_log",
+		"invalid_ssh_peer_remediation",
 		"invalid_accept_proof",
 		"invalid_connect_proof"):
 		return &transport.HandlerError{Status: 400, Code: "invalid_ssh_peer_config"}

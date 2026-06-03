@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
@@ -39,6 +40,17 @@ type SSHPeerTransitionRequest struct {
 	RemoteSecretAbsenceProof *SSHPeerRemoteSecretAbsenceProof `json:"remote_secret_absence_proof,omitempty"`
 }
 
+type SSHPeerDisableRequest struct {
+	ExpectedConfigRevision *uint64 `json:"expected_config_revision"`
+	Reason                 string  `json:"reason"`
+}
+
+type SSHPeerDeleteRequest struct {
+	ExpectedConfigRevision *uint64 `json:"expected_config_revision"`
+	Reason                 string  `json:"reason"`
+	LogID                  string  `json:"log_id"`
+}
+
 type SSHPeerRemoteSecretAbsenceProof struct {
 	FailedPhase               string  `json:"failed_phase"`
 	SecretWriteCommandSpawned bool    `json:"secret_write_command_spawned"`
@@ -71,6 +83,8 @@ type SSHPeerUpsertFields struct {
 
 	SharedKey *string `json:"shared_key,omitempty"`
 }
+
+var stableSSHPeerReasonPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{1,63}$`)
 
 func ReadSSHPeer(path string, peerID string) (SSHPeerConfigReadResult, error) {
 	if err := ValidateHostID(peerID); err != nil {
@@ -249,6 +263,76 @@ func DecodeSSHPeerTransitionRequest(r io.Reader) (SSHPeerTransitionRequest, erro
 	return req, nil
 }
 
+func DecodeSSHPeerDisableRequest(r io.Reader) (SSHPeerDisableRequest, error) {
+	decoder := json.NewDecoder(r)
+	var raw map[string]json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
+		return SSHPeerDisableRequest{}, fmt.Errorf("malformed_ssh_peer_disable_request: %w", err)
+	}
+	if raw == nil {
+		return SSHPeerDisableRequest{}, fmt.Errorf("malformed_ssh_peer_disable_request: expected object")
+	}
+	if err := rejectTrailingJSON(decoder, "malformed_ssh_peer_disable_request"); err != nil {
+		return SSHPeerDisableRequest{}, err
+	}
+	for field := range raw {
+		switch field {
+		case "expected_config_revision", "reason":
+		default:
+			return SSHPeerDisableRequest{}, fmt.Errorf("unknown_field: %s", field)
+		}
+	}
+	revision, err := decodeRequiredSSHPeerMutationRevision(raw, "disable")
+	if err != nil {
+		return SSHPeerDisableRequest{}, err
+	}
+	reason, err := decodeRequiredSSHPeerMutationStringField(raw, "disable", "reason")
+	if err != nil {
+		return SSHPeerDisableRequest{}, err
+	}
+	if !stableSSHPeerReasonPattern.MatchString(reason) {
+		return SSHPeerDisableRequest{}, fmt.Errorf("invalid_ssh_peer_disable_field: reason")
+	}
+	return SSHPeerDisableRequest{ExpectedConfigRevision: revision, Reason: reason}, nil
+}
+
+func DecodeSSHPeerDeleteRequest(r io.Reader) (SSHPeerDeleteRequest, error) {
+	decoder := json.NewDecoder(r)
+	var raw map[string]json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
+		return SSHPeerDeleteRequest{}, fmt.Errorf("malformed_ssh_peer_delete_request: %w", err)
+	}
+	if raw == nil {
+		return SSHPeerDeleteRequest{}, fmt.Errorf("malformed_ssh_peer_delete_request: expected object")
+	}
+	if err := rejectTrailingJSON(decoder, "malformed_ssh_peer_delete_request"); err != nil {
+		return SSHPeerDeleteRequest{}, err
+	}
+	for field := range raw {
+		switch field {
+		case "expected_config_revision", "reason", "log_id":
+		default:
+			return SSHPeerDeleteRequest{}, fmt.Errorf("unknown_field: %s", field)
+		}
+	}
+	revision, err := decodeRequiredSSHPeerMutationRevision(raw, "delete")
+	if err != nil {
+		return SSHPeerDeleteRequest{}, err
+	}
+	reason, err := decodeRequiredSSHPeerMutationStringField(raw, "delete", "reason")
+	if err != nil {
+		return SSHPeerDeleteRequest{}, err
+	}
+	if !stableSSHPeerReasonPattern.MatchString(reason) {
+		return SSHPeerDeleteRequest{}, fmt.Errorf("invalid_ssh_peer_delete_field: reason")
+	}
+	logID, err := decodeRequiredSSHPeerMutationStringField(raw, "delete", "log_id")
+	if err != nil {
+		return SSHPeerDeleteRequest{}, err
+	}
+	return SSHPeerDeleteRequest{ExpectedConfigRevision: revision, Reason: reason, LogID: logID}, nil
+}
+
 func decodeSSHPeerExpectedRevision(raw map[string]json.RawMessage) (*uint64, error) {
 	value, ok := raw["expected_config_revision"]
 	if !ok || isJSONNull(value) {
@@ -264,6 +348,36 @@ func decodeSSHPeerExpectedRevision(raw map[string]json.RawMessage) (*uint64, err
 	return &revision, nil
 }
 
+func decodeRequiredSSHPeerMutationRevision(raw map[string]json.RawMessage, action string) (*uint64, error) {
+	value, ok := raw["expected_config_revision"]
+	if !ok || isJSONNull(value) {
+		return nil, fmt.Errorf("missing_ssh_peer_%s_field: expected_config_revision", action)
+	}
+	revision, err := decodeSSHPeerExpectedRevision(raw)
+	if err != nil {
+		return nil, err
+	}
+	if revision == nil || *revision == 0 {
+		return nil, ErrConfigRevisionConflict
+	}
+	return revision, nil
+}
+
+func decodeRequiredSSHPeerMutationStringField(raw map[string]json.RawMessage, action string, field string) (string, error) {
+	value, ok := raw[field]
+	if !ok || isJSONNull(value) {
+		return "", fmt.Errorf("missing_ssh_peer_%s_field: %s", action, field)
+	}
+	var out string
+	if err := json.Unmarshal(value, &out); err != nil {
+		return "", fmt.Errorf("invalid_ssh_peer_%s_field: %s", action, field)
+	}
+	if strings.TrimSpace(out) == "" {
+		return "", fmt.Errorf("missing_ssh_peer_%s_field: %s", action, field)
+	}
+	return out, nil
+}
+
 func UpsertSSHPeer(path string, peerID string, req SSHPeerUpsertRequest) (SSHPeerConfigReadResult, error) {
 	return upsertSSHPeerWithGate(path, releaseflags.ConfigV2WriteEnabled, peerID, req)
 }
@@ -274,6 +388,14 @@ func PatchSSHPeerProof(path string, peerID string, req SSHPeerProofPatchRequest)
 
 func TransitionSSHPeer(path string, peerID string, req SSHPeerTransitionRequest) (SSHPeerConfigReadResult, error) {
 	return transitionSSHPeerWithGate(path, releaseflags.ConfigV2WriteEnabled, peerID, req)
+}
+
+func DisableSSHPeer(path string, peerID string, req SSHPeerDisableRequest) (SSHPeerConfigReadResult, error) {
+	return disableSSHPeerWithGate(path, releaseflags.ConfigV2WriteEnabled, peerID, req)
+}
+
+func DeleteSSHPeer(path string, peerID string, req SSHPeerDeleteRequest) (SSHPeerConfigReadResult, error) {
+	return deleteSSHPeerWithGate(path, releaseflags.ConfigV2WriteEnabled, peerID, req)
 }
 
 func upsertSSHPeerWithGate(path string, gateEnabled bool, peerID string, req SSHPeerUpsertRequest) (SSHPeerConfigReadResult, error) {
@@ -341,6 +463,53 @@ func transitionSSHPeerWithGate(path string, gateEnabled bool, peerID string, req
 	return result, nil
 }
 
+func disableSSHPeerWithGate(path string, gateEnabled bool, peerID string, req SSHPeerDisableRequest) (SSHPeerConfigReadResult, error) {
+	if err := ValidateHostID(peerID); err != nil {
+		return SSHPeerConfigReadResult{}, fmt.Errorf("invalid_ssh_peer_id: %w", err)
+	}
+	if req.ExpectedConfigRevision == nil || *req.ExpectedConfigRevision == 0 {
+		return SSHPeerConfigReadResult{}, ErrConfigRevisionConflict
+	}
+	// Decode helpers validate HTTP bodies, but exported entrypoints repeat this
+	// check because callers may construct request structs directly.
+	if err := validateStableSSHPeerReason("disable", req.Reason); err != nil {
+		return SSHPeerConfigReadResult{}, err
+	}
+	expected := RevisionExpectation{State: RevisionStateVersioned, Revision: copyUint64Ptr(req.ExpectedConfigRevision)}
+
+	var result SSHPeerConfigReadResult
+	err := updateSSHPeerDisableConfigRaw(path, gateEnabled, expected, peerID, req, &result)
+	if err != nil {
+		return SSHPeerConfigReadResult{}, err
+	}
+	return result, nil
+}
+
+func deleteSSHPeerWithGate(path string, gateEnabled bool, peerID string, req SSHPeerDeleteRequest) (SSHPeerConfigReadResult, error) {
+	if err := ValidateHostID(peerID); err != nil {
+		return SSHPeerConfigReadResult{}, fmt.Errorf("invalid_ssh_peer_id: %w", err)
+	}
+	if req.ExpectedConfigRevision == nil || *req.ExpectedConfigRevision == 0 {
+		return SSHPeerConfigReadResult{}, ErrConfigRevisionConflict
+	}
+	// Decode helpers validate HTTP bodies, but exported entrypoints repeat this
+	// check because callers may construct request structs directly.
+	if err := validateStableSSHPeerReason("delete", req.Reason); err != nil {
+		return SSHPeerConfigReadResult{}, err
+	}
+	if strings.TrimSpace(req.LogID) == "" {
+		return SSHPeerConfigReadResult{}, fmt.Errorf("missing_ssh_peer_delete_field: log_id")
+	}
+	expected := RevisionExpectation{State: RevisionStateVersioned, Revision: copyUint64Ptr(req.ExpectedConfigRevision)}
+
+	var result SSHPeerConfigReadResult
+	err := updateSSHPeerDeleteConfigRaw(path, gateEnabled, expected, peerID, req, &result)
+	if err != nil {
+		return SSHPeerConfigReadResult{}, err
+	}
+	return result, nil
+}
+
 func updateSSHPeerConfigRaw(path string, gateEnabled bool, expected RevisionExpectation, peerID string, req SSHPeerUpsertRequest, result *SSHPeerConfigReadResult) error {
 	return withSSHPeerConfigUpdate(path, gateEnabled, expected, result, func(cfg *Config, raw map[string]json.RawMessage) (map[string]json.RawMessage, error) {
 		updatedPeer, err := applySSHPeerUpsert(cfg, raw, peerID, req)
@@ -366,6 +535,18 @@ func updateSSHPeerProofConfigRaw(path string, gateEnabled bool, expected Revisio
 func updateSSHPeerTransitionConfigRaw(path string, gateEnabled bool, expected RevisionExpectation, peerID string, req SSHPeerTransitionRequest, result *SSHPeerConfigReadResult) error {
 	return withSSHPeerConfigUpdate(path, gateEnabled, expected, result, func(cfg *Config, raw map[string]json.RawMessage) (map[string]json.RawMessage, error) {
 		return applySSHPeerTransition(cfg, raw, peerID, req)
+	})
+}
+
+func updateSSHPeerDisableConfigRaw(path string, gateEnabled bool, expected RevisionExpectation, peerID string, req SSHPeerDisableRequest, result *SSHPeerConfigReadResult) error {
+	return withSSHPeerConfigUpdate(path, gateEnabled, expected, result, func(cfg *Config, raw map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+		return applySSHPeerDisable(cfg, raw, peerID, req)
+	})
+}
+
+func updateSSHPeerDeleteConfigRaw(path string, gateEnabled bool, expected RevisionExpectation, peerID string, req SSHPeerDeleteRequest, result *SSHPeerConfigReadResult) error {
+	return withSSHPeerConfigUpdate(path, gateEnabled, expected, result, func(cfg *Config, raw map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+		return applySSHPeerDelete(cfg, raw, peerID, req)
 	})
 }
 
@@ -865,6 +1046,77 @@ func applySSHPeerTransition(cfg *Config, raw map[string]json.RawMessage, peerID 
 	return peer, rebuildTypedSSHPeersAndWriteBack(cfg, raw, sshRaw, peers)
 }
 
+func applySSHPeerDisable(cfg *Config, raw map[string]json.RawMessage, peerID string, req SSHPeerDisableRequest) (map[string]json.RawMessage, error) {
+	sshRaw, peers, err := rawSSHPeers(raw)
+	if err != nil {
+		return nil, err
+	}
+	index, peer, found, err := findRawPeerForUpdate(peers, peerID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("ssh_peer_not_found: %s", peerID)
+	}
+	currentState, err := rawPeerMigrationState(peer)
+	if err != nil {
+		return nil, err
+	}
+	if !validSSHPeerConfigMutationState(currentState) {
+		return nil, fmt.Errorf("invalid_ssh_peer_disable_state: %s", currentState)
+	}
+
+	// Disable records each explicit request as a durable audit event, even if
+	// the peer was already disabled before this mutation.
+	setRaw(peer, "enabled", false)
+	if err := appendSSHAuditLog(sshRaw, sshPeerDisableAuditEntry(peerID, currentState, req.Reason)); err != nil {
+		return nil, err
+	}
+
+	peers[index] = peer
+	return peer, rebuildTypedSSHPeersAndWriteBack(cfg, raw, sshRaw, peers)
+}
+
+func applySSHPeerDelete(cfg *Config, raw map[string]json.RawMessage, peerID string, req SSHPeerDeleteRequest) (map[string]json.RawMessage, error) {
+	sshRaw, peers, err := rawSSHPeers(raw)
+	if err != nil {
+		return nil, err
+	}
+	index, peer, found, err := findRawPeerForUpdate(peers, peerID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("ssh_peer_not_found: %s", peerID)
+	}
+	currentState, err := rawPeerMigrationState(peer)
+	if err != nil {
+		return nil, err
+	}
+	if !validSSHPeerConfigMutationState(currentState) {
+		return nil, fmt.Errorf("invalid_ssh_peer_delete_state: %s", currentState)
+	}
+
+	removedAt := time.Now().UTC().Format(time.RFC3339)
+	responsePeer := cloneRawMap(peer)
+	if err := appendSSHAuditLog(sshRaw, sshPeerDeleteAuditEntry(peerID, currentState, req, removedAt)); err != nil {
+		return nil, err
+	}
+	cleanupStatus, remediation, err := sshPeerDeleteCleanupStatus(peerID, currentState, peer, req, removedAt)
+	if err != nil {
+		return nil, err
+	}
+	if remediation != nil {
+		if err := appendSSHRemediation(sshRaw, remediation); err != nil {
+			return nil, err
+		}
+	}
+	setRaw(responsePeer, "cleanup_status", cleanupStatus)
+
+	peers = append(peers[:index], peers[index+1:]...)
+	return responsePeer, rebuildTypedSSHPeersAndWriteBack(cfg, raw, sshRaw, peers)
+}
+
 func validateSSHPeerTransitionRequest(peer map[string]json.RawMessage, req SSHPeerTransitionRequest) error {
 	if !validSSHPeerTransitionState(req.FromState) {
 		return fmt.Errorf("invalid_ssh_peer_transition_state: from_state")
@@ -1058,6 +1310,244 @@ func appendSSHPeerMigrationLog(peer map[string]json.RawMessage, req SSHPeerTrans
 	log = append(log, data)
 	setRaw(peer, "migration_log", log)
 	return nil
+}
+
+func validateStableSSHPeerReason(action string, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("missing_ssh_peer_%s_field: reason", action)
+	}
+	if !stableSSHPeerReasonPattern.MatchString(reason) {
+		return fmt.Errorf("invalid_ssh_peer_%s_field: reason", action)
+	}
+	return nil
+}
+
+func sshPeerDisableAuditEntry(peerID string, previousState MigrationState, reason string) map[string]any {
+	return map[string]any{
+		"source":                   "ssh_peer_disable",
+		"durable":                  true,
+		"peer_id":                  peerID,
+		"previous_migration_state": previousState,
+		"reason":                   reason,
+		"disabled_at":              time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+func sshPeerDeleteAuditEntry(peerID string, previousState MigrationState, req SSHPeerDeleteRequest, removedAt string) map[string]any {
+	return map[string]any{
+		"source":                   "ssh_peer_delete",
+		"durable":                  true,
+		"peer_id":                  peerID,
+		"previous_migration_state": previousState,
+		"reason":                   req.Reason,
+		"log_id":                   req.LogID,
+		"removed_at":               removedAt,
+	}
+}
+
+func sshPeerDeleteCleanupStatus(peerID string, previousState MigrationState, peer map[string]json.RawMessage, req SSHPeerDeleteRequest, removedAt string) (map[string]any, map[string]any, error) {
+	switch previousState {
+	case MigrationStateLoopbackUnprovisioned:
+		return map[string]any{
+			"source":           "ssh_peer_delete",
+			"durable":          true,
+			"cleanup_required": false,
+			"pending":          false,
+		}, nil, nil
+	case MigrationStateSSHMaterialStaged:
+		return sshMaterialCleanupResult(peerID, previousState, peer, req, removedAt)
+	case MigrationStateProvisionFailed:
+		if provisionFailedHasRemoteSecretAbsenceProof(peer) {
+			return sshMaterialCleanupResult(peerID, previousState, peer, req, removedAt)
+		}
+		return postSecretTombstoneResult(peerID, previousState, peer, req, removedAt)
+	case MigrationStateSharedKeyWrittenUnverified, MigrationStateSSHKeysReady:
+		return postSecretTombstoneResult(peerID, previousState, peer, req, removedAt)
+	default:
+		return nil, nil, fmt.Errorf("invalid_ssh_peer_delete_state: %s", previousState)
+	}
+}
+
+func sshMaterialCleanupResult(peerID string, previousState MigrationState, peer map[string]json.RawMessage, req SSHPeerDeleteRequest, removedAt string) (map[string]any, map[string]any, error) {
+	record, err := sshPeerCleanupRecord("ssh_material_cleanup", peerID, previousState, peer, req, removedAt)
+	if err != nil {
+		return nil, nil, err
+	}
+	record["cleanup_required"] = true
+	record["pending"] = true
+	record["cleanup_verified"] = false
+	record["remaining_user_actions"] = []string{"retry_regular_ssh_cleanup", "dismiss_after_acknowledgement"}
+	return sshPeerCleanupStatus("ssh_material_cleanup", true), record, nil
+}
+
+func postSecretTombstoneResult(peerID string, previousState MigrationState, peer map[string]json.RawMessage, req SSHPeerDeleteRequest, removedAt string) (map[string]any, map[string]any, error) {
+	record, err := sshPeerCleanupRecord("post_secret_tombstone", peerID, previousState, peer, req, removedAt)
+	if err != nil {
+		return nil, nil, err
+	}
+	record["cleanup_required"] = true
+	record["pending"] = true
+	record["remote_fleet_secret_cleanup_verified"] = false
+	record["remote_managed_key_cleanup_verified"] = false
+	record["remaining_user_actions"] = []string{"retry_regular_ssh_cleanup", "rotate_fleet_shared_key", "dismiss_after_acknowledgement"}
+	return sshPeerCleanupStatus("post_secret_tombstone", true), record, nil
+}
+
+func validSSHPeerConfigMutationState(state MigrationState) bool {
+	switch state {
+	case MigrationStateLoopbackUnprovisioned,
+		MigrationStateSSHMaterialStaged,
+		MigrationStateSharedKeyWrittenUnverified,
+		MigrationStateSSHKeysReady,
+		MigrationStateProvisionFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func sshPeerCleanupStatus(source string, pending bool) map[string]any {
+	return map[string]any{
+		"source":           source,
+		"durable":          true,
+		"cleanup_required": pending,
+		"pending":          pending,
+	}
+}
+
+func sshPeerCleanupRecord(source string, peerID string, previousState MigrationState, peer map[string]json.RawMessage, req SSHPeerDeleteRequest, removedAt string) (map[string]any, error) {
+	record := map[string]any{
+		"source":                   source,
+		"durable":                  true,
+		"peer_id":                  peerID,
+		"previous_migration_state": previousState,
+		"removed_at":               removedAt,
+		"reason":                   req.Reason,
+		"log_id":                   req.LogID,
+	}
+	copyRawStringToRecord(record, peer, "ssh_host")
+	copyRawStringToRecord(record, peer, "ssh_user")
+	copyRawIntToRecord(record, peer, "ssh_port")
+	copyRawStringToRecord(record, peer, "install_path")
+	copyRawStringToRecord(record, peer, "gateway_path")
+	proofRaw, err := rawPeerProofObject(peer)
+	if err != nil {
+		return nil, err
+	}
+	copyRawStringToRecord(record, proofRaw, "accept_key_id")
+	copyRawStringToRecord(record, proofRaw, "accept_gateway_path")
+	copyRawStringToRecord(record, proofRaw, "connect_key_id")
+	copyRawStringToRecord(record, proofRaw, "connect_gateway_path")
+	if failedPhase := lastSSHPeerFailedPhase(peer); failedPhase != "" {
+		record["last_provisioning_phase"] = failedPhase
+	}
+	return record, nil
+}
+
+func appendSSHAuditLog(sshRaw map[string]json.RawMessage, entry map[string]any) error {
+	return appendSSHRawObjectArray(sshRaw, "audit_log", entry, "invalid_ssh_peer_audit_log")
+}
+
+func appendSSHRemediation(sshRaw map[string]json.RawMessage, entry map[string]any) error {
+	return appendSSHRawObjectArray(sshRaw, "remediation", entry, "invalid_ssh_peer_remediation")
+}
+
+func appendSSHRawObjectArray(sshRaw map[string]json.RawMessage, field string, entry map[string]any, errorPrefix string) error {
+	var existing []json.RawMessage
+	if value, ok := sshRaw[field]; ok && !isJSONNull(value) {
+		if err := json.Unmarshal(value, &existing); err != nil {
+			return fmt.Errorf("%s: %w", errorPrefix, err)
+		}
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	existing = append(existing, data)
+	setRaw(sshRaw, field, existing)
+	return nil
+}
+
+func copyRawStringToRecord(record map[string]any, raw map[string]json.RawMessage, field string) {
+	value, ok := raw[field]
+	if !ok || isJSONNull(value) {
+		return
+	}
+	var decoded string
+	if err := json.Unmarshal(value, &decoded); err == nil && decoded != "" {
+		record[field] = decoded
+	}
+}
+
+func copyRawIntToRecord(record map[string]any, raw map[string]json.RawMessage, field string) {
+	value, ok := raw[field]
+	if !ok || isJSONNull(value) {
+		return
+	}
+	var decoded int
+	if err := json.Unmarshal(value, &decoded); err == nil && decoded != 0 {
+		record[field] = decoded
+	}
+}
+
+func lastSSHPeerFailedPhase(peer map[string]json.RawMessage) string {
+	value, ok := peer["migration_log"]
+	if !ok || isJSONNull(value) {
+		return ""
+	}
+	var log []map[string]json.RawMessage
+	if err := json.Unmarshal(value, &log); err != nil {
+		return ""
+	}
+	for i := len(log) - 1; i >= 0; i-- {
+		var failedPhase string
+		if value, ok := log[i]["failed_phase"]; ok && json.Unmarshal(value, &failedPhase) == nil && failedPhase != "" {
+			return failedPhase
+		}
+		if value, ok := log[i]["remote_secret_absence_proof"]; ok {
+			var proof map[string]json.RawMessage
+			if err := json.Unmarshal(value, &proof); err == nil {
+				if failedValue, ok := proof["failed_phase"]; ok && json.Unmarshal(failedValue, &failedPhase) == nil && failedPhase != "" {
+					return failedPhase
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func provisionFailedHasRemoteSecretAbsenceProof(peer map[string]json.RawMessage) bool {
+	value, ok := peer["migration_log"]
+	if !ok || isJSONNull(value) {
+		return false
+	}
+	var log []map[string]json.RawMessage
+	if err := json.Unmarshal(value, &log); err != nil {
+		return false
+	}
+	for i := len(log) - 1; i >= 0; i-- {
+		value, ok := log[i]["remote_secret_absence_proof"]
+		if !ok || isJSONNull(value) {
+			continue
+		}
+		var proof map[string]json.RawMessage
+		if err := json.Unmarshal(value, &proof); err != nil {
+			continue
+		}
+		if _, ok := proof["failed_phase"]; !ok {
+			return false
+		}
+		spawnedValue, ok := proof["secret_write_command_spawned"]
+		if !ok || isJSONNull(spawnedValue) {
+			return false
+		}
+		var spawned bool
+		if err := json.Unmarshal(spawnedValue, &spawned); err != nil {
+			return false
+		}
+		return !spawned
+	}
+	return false
 }
 
 func rebuildTypedSSHPeersAndWriteBack(cfg *Config, raw map[string]json.RawMessage, sshRaw map[string]json.RawMessage, peers []map[string]json.RawMessage) error {

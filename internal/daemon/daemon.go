@@ -176,6 +176,8 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 	d.sv.SetSSHPeerConfig(d.sshPeerConfigReadHandler, d.sshPeerConfigPutHandler)
 	d.sv.SetSSHPeerConfigProofPatch(d.sshPeerConfigProofPatchHandler)
 	d.sv.SetSSHPeerConfigTransition(d.sshPeerConfigTransitionHandler)
+	d.sv.SetSSHPeerConfigDisable(d.sshPeerConfigDisableHandler)
+	d.sv.SetSSHPeerConfigDelete(d.sshPeerConfigDeleteHandler)
 	d.serveListener = d.sv.ServeListener
 	return d, nil
 }

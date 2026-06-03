@@ -102,6 +102,50 @@ func TestSSHPeerConfigTransitionFailsClosedWhenConfigV2WritesDisabled(t *testing
 	}
 }
 
+func TestSSHPeerConfigDisableFailsClosedWhenConfigV2WritesDisabled(t *testing.T) {
+	sharedKey := config.NewSharedKey()
+	configPath := writeSSHPeerDaemonConfig(t, sharedKey)
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := newSSHPeerConfigDaemon(t, sharedKey, configPath)
+
+	body := []byte(`{"expected_config_revision":7,"reason":"user_disabled"}`)
+	rec := serveSignedDaemonRequest(t, d, http.MethodPost, "/v1/config/ssh/peers/fsck/disable", "ssh-peer-disable-disabled", body, transport.AuthVersionRequestHMAC)
+	requireDaemonSignedError(t, d.auth, rec, "ssh-peer-disable-disabled", http.StatusServiceUnavailable, "config_v2_writes_disabled")
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("disabled ssh peer disable changed config\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
+func TestSSHPeerConfigDeleteFailsClosedWhenConfigV2WritesDisabled(t *testing.T) {
+	sharedKey := config.NewSharedKey()
+	configPath := writeSSHPeerDaemonConfig(t, sharedKey)
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := newSSHPeerConfigDaemon(t, sharedKey, configPath)
+
+	body := []byte(`{"expected_config_revision":7,"reason":"user_deleted","log_id":"peer-log-1780257600"}`)
+	rec := serveSignedDaemonRequest(t, d, http.MethodDelete, "/v1/config/ssh/peers/fsck", "ssh-peer-delete-disabled", body, transport.AuthVersionRequestHMAC)
+	requireDaemonSignedError(t, d.auth, rec, "ssh-peer-delete-disabled", http.StatusServiceUnavailable, "config_v2_writes_disabled")
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("disabled ssh peer delete changed config\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
 func TestSSHPeerConfigHandlerErrorMapsValidationFailures(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -148,6 +192,18 @@ func TestSSHPeerConfigHandlerErrorMapsValidationFailures(t *testing.T) {
 		{
 			name:   "invalid transition field body",
 			err:    errors.New("invalid_ssh_peer_transition_field: remote_secret_absence_proof.verified_at"),
+			status: http.StatusBadRequest,
+			code:   "bad_request",
+		},
+		{
+			name:   "invalid disable body",
+			err:    errors.New("invalid_ssh_peer_disable_field: reason"),
+			status: http.StatusBadRequest,
+			code:   "bad_request",
+		},
+		{
+			name:   "invalid delete body",
+			err:    errors.New("missing_ssh_peer_delete_field: log_id"),
 			status: http.StatusBadRequest,
 			code:   "bad_request",
 		},
@@ -204,6 +260,24 @@ func TestSSHPeerConfigHandlerErrorMapsValidationFailures(t *testing.T) {
 			err:    errors.New("ssh_peer_transition_absence_proof_failed_phase_mismatch"),
 			status: http.StatusBadRequest,
 			code:   "invalid_ssh_peer_transition",
+		},
+		{
+			name:   "disable invalid state",
+			err:    errors.New("invalid_ssh_peer_disable_state: removed"),
+			status: http.StatusBadRequest,
+			code:   "invalid_ssh_peer_disable",
+		},
+		{
+			name:   "delete invalid state",
+			err:    errors.New("invalid_ssh_peer_delete_state: removed"),
+			status: http.StatusBadRequest,
+			code:   "invalid_ssh_peer_delete",
+		},
+		{
+			name:   "delete malformed remediation",
+			err:    errors.New("invalid_ssh_peer_remediation: json: cannot unmarshal string into Go value"),
+			status: http.StatusBadRequest,
+			code:   "invalid_ssh_peer_config",
 		},
 	}
 	for _, tc := range cases {
