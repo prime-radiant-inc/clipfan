@@ -44,6 +44,7 @@ type ListenerRepairReadFunc func() (any, *HandlerError)
 type ListenerRepairPatchFunc func(body []byte) (any, *HandlerError)
 type SSHPeerConfigReadFunc func(peerID string) (any, *HandlerError)
 type SSHPeerConfigPutFunc func(peerID string, body []byte) (any, *HandlerError)
+type SSHPeerConfigProofPatchFunc func(peerID string, body []byte) (any, *HandlerError)
 
 type HandlerError struct {
 	Status int
@@ -79,6 +80,7 @@ type Server struct {
 	listenerRepairPatchFn ListenerRepairPatchFunc
 	sshPeerReadFn         SSHPeerConfigReadFunc
 	sshPeerPutFn          SSHPeerConfigPutFunc
+	sshPeerProofPatchFn   SSHPeerConfigProofPatchFunc
 	localRequiredAuthVer  string
 	safeMode              bool
 	safeInfo              SafeModeInfo
@@ -145,6 +147,10 @@ func (s *Server) SetSSHPeerConfig(readFn SSHPeerConfigReadFunc, putFn SSHPeerCon
 	s.sshPeerPutFn = putFn
 }
 
+func (s *Server) SetSSHPeerConfigProofPatch(patchFn SSHPeerConfigProofPatchFunc) {
+	s.sshPeerProofPatchFn = patchFn
+}
+
 func (s *Server) SetRequiredLocalAuthVersion(authVersion string) {
 	s.localRequiredAuthVer = authVersion
 }
@@ -177,6 +183,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/config", s.postConfig)
 	mux.HandleFunc("GET /v1/config/ssh/peers/{peer_id}", s.getSSHPeerConfig)
 	mux.HandleFunc("PUT /v1/config/ssh/peers/{peer_id}", s.putSSHPeerConfig)
+	mux.HandleFunc("PATCH /v1/config/ssh/peers/{peer_id}/proof", s.patchSSHPeerConfigProof)
 	return mux
 }
 
@@ -671,6 +678,23 @@ func (s *Server) putSSHPeerConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	payload, handlerErr := s.sshPeerPutFn(r.PathValue("peer_id"), signed.body)
+	if handlerErr != nil {
+		s.writeSignedError(w, signed, handlerErr.httpStatus(), handlerErr.Code)
+		return
+	}
+	s.writeSignedJSON(w, signed, payload)
+}
+
+func (s *Server) patchSSHPeerConfigProof(w http.ResponseWriter, r *http.Request) {
+	signed := s.readSignedLocalRequiredAuthVersion(w, r, AuthVersionRequestHMAC)
+	if signed == nil {
+		return
+	}
+	if s.sshPeerProofPatchFn == nil {
+		s.writeSignedError(w, signed, http.StatusServiceUnavailable, "ssh_peer_config_unavailable")
+		return
+	}
+	payload, handlerErr := s.sshPeerProofPatchFn(r.PathValue("peer_id"), signed.body)
 	if handlerErr != nil {
 		s.writeSignedError(w, signed, handlerErr.httpStatus(), handlerErr.Code)
 		return

@@ -29,6 +29,18 @@ func (d *Daemon) sshPeerConfigPutHandler(peerID string, body []byte) (any, *tran
 	return status, nil
 }
 
+func (d *Daemon) sshPeerConfigProofPatchHandler(peerID string, body []byte) (any, *transport.HandlerError) {
+	req, err := config.DecodeSSHPeerProofPatchRequest(bytes.NewReader(body))
+	if err != nil {
+		return nil, sshPeerConfigHandlerError(err)
+	}
+	status, err := config.PatchSSHPeerProof(d.configPath, peerID, req)
+	if err != nil {
+		return nil, sshPeerConfigHandlerError(err)
+	}
+	return status, nil
+}
+
 func sshPeerConfigHandlerError(err error) *transport.HandlerError {
 	if err == nil {
 		return nil
@@ -48,8 +60,12 @@ func sshPeerConfigHandlerError(err error) *transport.HandlerError {
 	case hasErrorPrefix(text,
 		"unknown_field",
 		"missing_ssh_peer_upsert_field",
+		"missing_ssh_peer_proof_patch_field",
 		"malformed_ssh_peer_upsert_request",
+		"malformed_ssh_peer_proof_patch_request",
 		"invalid_ssh_peer_upsert_field",
+		"invalid_ssh_peer_proof_patch_field",
+		"ssh_peer_proof_patch_empty",
 		"invalid_expected_config_revision"):
 		return &transport.HandlerError{Status: 400, Code: "bad_request"}
 	case hasErrorPrefix(text, "invalid_ssh_peer_id"):
@@ -60,6 +76,8 @@ func sshPeerConfigHandlerError(err error) *transport.HandlerError {
 		return &transport.HandlerError{Status: 400, Code: "ssh_peer_id_mismatch"}
 	case hasErrorPrefix(text, "ssh_peer_migration_state_change_not_allowed"):
 		return &transport.HandlerError{Status: 409, Code: "ssh_peer_migration_state_change_not_allowed"}
+	case hasErrorPrefix(text, "proof_mismatch"):
+		return &transport.HandlerError{Status: 409, Code: "proof_mismatch"}
 	case hasErrorPrefix(text, "ssh_peer_create_requires_loopback_unprovisioned"):
 		return &transport.HandlerError{Status: 400, Code: "ssh_peer_create_requires_loopback_unprovisioned"}
 	case hasErrorPrefix(text, "ssh_peer_create_requires_"):
@@ -83,6 +101,7 @@ func sshPeerConfigHandlerError(err error) *transport.HandlerError {
 		"invalid_ssh_max_sessions",
 		"invalid_ssh_max_sessions_per_peer",
 		"invalid_ssh_log_limit_bytes",
+		"invalid_ssh_peer_proof",
 		"invalid_accept_proof",
 		"invalid_connect_proof"):
 		return &transport.HandlerError{Status: 400, Code: "invalid_ssh_peer_config"}

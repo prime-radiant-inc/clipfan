@@ -22,6 +22,19 @@ type SSHPeerUpsertRequest struct {
 	Peer                   SSHPeerUpsertFields `json:"peer"`
 }
 
+type SSHPeerProofPatchRequest struct {
+	ExpectedConfigRevision *uint64                       `json:"expected_config_revision"`
+	AcceptProof            *SSHPeerDirectionalProofPatch `json:"accept_proof,omitempty"`
+	ConnectProof           *SSHPeerDirectionalProofPatch `json:"connect_proof,omitempty"`
+}
+
+type SSHPeerDirectionalProofPatch struct {
+	KeyID       string `json:"key_id"`
+	GatewayPath string `json:"gateway_path"`
+	VerifiedAt  string `json:"verified_at"`
+	VerifiedBy  string `json:"verified_by"`
+}
+
 type SSHPeerUpsertFields struct {
 	ID             *string         `json:"id,omitempty"`
 	Enabled        *bool           `json:"enabled,omitempty"`
@@ -94,6 +107,57 @@ func DecodeSSHPeerUpsertRequest(r io.Reader) (SSHPeerUpsertRequest, error) {
 	return SSHPeerUpsertRequest{ExpectedConfigRevision: revision, Peer: peer}, nil
 }
 
+func DecodeSSHPeerProofPatchRequest(r io.Reader) (SSHPeerProofPatchRequest, error) {
+	decoder := json.NewDecoder(r)
+	var raw map[string]json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
+		return SSHPeerProofPatchRequest{}, fmt.Errorf("malformed_ssh_peer_proof_patch_request: %w", err)
+	}
+	if raw == nil {
+		return SSHPeerProofPatchRequest{}, fmt.Errorf("malformed_ssh_peer_proof_patch_request: expected object")
+	}
+	if err := rejectTrailingJSON(decoder, "malformed_ssh_peer_proof_patch_request"); err != nil {
+		return SSHPeerProofPatchRequest{}, err
+	}
+	for field := range raw {
+		switch field {
+		case "expected_config_revision", "accept_proof", "connect_proof":
+		default:
+			return SSHPeerProofPatchRequest{}, fmt.Errorf("unknown_field: %s", field)
+		}
+	}
+	if _, ok := raw["expected_config_revision"]; !ok {
+		return SSHPeerProofPatchRequest{}, fmt.Errorf("missing_ssh_peer_proof_patch_field: expected_config_revision")
+	}
+	revision, err := decodeSSHPeerExpectedRevision(raw)
+	if err != nil {
+		return SSHPeerProofPatchRequest{}, err
+	}
+	if revision == nil || *revision == 0 {
+		return SSHPeerProofPatchRequest{}, ErrConfigRevisionConflict
+	}
+
+	req := SSHPeerProofPatchRequest{ExpectedConfigRevision: revision}
+	if value, ok := raw["accept_proof"]; ok {
+		proof, err := decodeSSHPeerDirectionalProofPatch(value, "accept_proof")
+		if err != nil {
+			return SSHPeerProofPatchRequest{}, err
+		}
+		req.AcceptProof = &proof
+	}
+	if value, ok := raw["connect_proof"]; ok {
+		proof, err := decodeSSHPeerDirectionalProofPatch(value, "connect_proof")
+		if err != nil {
+			return SSHPeerProofPatchRequest{}, err
+		}
+		req.ConnectProof = &proof
+	}
+	if req.AcceptProof == nil && req.ConnectProof == nil {
+		return SSHPeerProofPatchRequest{}, fmt.Errorf("ssh_peer_proof_patch_empty")
+	}
+	return req, nil
+}
+
 func decodeSSHPeerExpectedRevision(raw map[string]json.RawMessage) (*uint64, error) {
 	value, ok := raw["expected_config_revision"]
 	if !ok || isJSONNull(value) {
@@ -111,6 +175,10 @@ func decodeSSHPeerExpectedRevision(raw map[string]json.RawMessage) (*uint64, err
 
 func UpsertSSHPeer(path string, peerID string, req SSHPeerUpsertRequest) (SSHPeerConfigReadResult, error) {
 	return upsertSSHPeerWithGate(path, releaseflags.ConfigV2WriteEnabled, peerID, req)
+}
+
+func PatchSSHPeerProof(path string, peerID string, req SSHPeerProofPatchRequest) (SSHPeerConfigReadResult, error) {
+	return patchSSHPeerProofWithGate(path, releaseflags.ConfigV2WriteEnabled, peerID, req)
 }
 
 func upsertSSHPeerWithGate(path string, gateEnabled bool, peerID string, req SSHPeerUpsertRequest) (SSHPeerConfigReadResult, error) {
@@ -141,9 +209,54 @@ func upsertSSHPeerWithGate(path string, gateEnabled bool, peerID string, req SSH
 	return result, nil
 }
 
+func patchSSHPeerProofWithGate(path string, gateEnabled bool, peerID string, req SSHPeerProofPatchRequest) (SSHPeerConfigReadResult, error) {
+	if err := ValidateHostID(peerID); err != nil {
+		return SSHPeerConfigReadResult{}, fmt.Errorf("invalid_ssh_peer_id: %w", err)
+	}
+	if req.ExpectedConfigRevision == nil || *req.ExpectedConfigRevision == 0 {
+		return SSHPeerConfigReadResult{}, ErrConfigRevisionConflict
+	}
+	if req.AcceptProof == nil && req.ConnectProof == nil {
+		return SSHPeerConfigReadResult{}, fmt.Errorf("ssh_peer_proof_patch_empty")
+	}
+	expected := RevisionExpectation{State: RevisionStateVersioned, Revision: copyUint64Ptr(req.ExpectedConfigRevision)}
+
+	var result SSHPeerConfigReadResult
+	err := updateSSHPeerProofConfigRaw(path, gateEnabled, expected, peerID, req, &result)
+	if err != nil {
+		return SSHPeerConfigReadResult{}, err
+	}
+	return result, nil
+}
+
 func updateSSHPeerConfigRaw(path string, gateEnabled bool, expected RevisionExpectation, peerID string, req SSHPeerUpsertRequest, result *SSHPeerConfigReadResult) error {
+	return withSSHPeerConfigUpdate(path, gateEnabled, expected, result, func(cfg *Config, raw map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+		updatedPeer, err := applySSHPeerUpsert(cfg, raw, peerID, req)
+		if err != nil {
+			return nil, err
+		}
+		if err := NormalizeLocalSSHPaths(cfg); err != nil {
+			return nil, err
+		}
+		if err := persistNormalizedLocalSSHPaths(raw, cfg); err != nil {
+			return nil, err
+		}
+		return updatedPeer, nil
+	})
+}
+
+func updateSSHPeerProofConfigRaw(path string, gateEnabled bool, expected RevisionExpectation, peerID string, req SSHPeerProofPatchRequest, result *SSHPeerConfigReadResult) error {
+	return withSSHPeerConfigUpdate(path, gateEnabled, expected, result, func(cfg *Config, raw map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+		return applySSHPeerProofPatch(cfg, raw, peerID, req)
+	})
+}
+
+func withSSHPeerConfigUpdate(path string, gateEnabled bool, expected RevisionExpectation, result *SSHPeerConfigReadResult, apply func(*Config, map[string]json.RawMessage) (map[string]json.RawMessage, error)) error {
 	if !gateEnabled {
 		return ErrConfigV2WritesDisabled
+	}
+	if apply == nil {
+		return fmt.Errorf("missing ssh peer config mutation")
 	}
 	return withConfigFileLock(path, func() error {
 		data, err := readConfigFileSafe(path)
@@ -166,14 +279,8 @@ func updateSSHPeerConfigRaw(path string, gateEnabled bool, expected RevisionExpe
 		cfg.StaticPeers = append([]string(nil), doc.Config.StaticPeers...)
 		cfg.SSH = cloneSSHConfig(doc.Config.SSH)
 
-		updatedPeer, err := applySSHPeerUpsert(&cfg, raw, peerID, req)
+		updatedPeer, err := apply(&cfg, raw)
 		if err != nil {
-			return err
-		}
-		if err := NormalizeLocalSSHPaths(&cfg); err != nil {
-			return err
-		}
-		if err := persistNormalizedLocalSSHPaths(raw, &cfg); err != nil {
 			return err
 		}
 		if err := ValidateSSHTransportConfig(cfg); err != nil {
@@ -307,6 +414,54 @@ func decodeSSHPeerUpsertFields(raw json.RawMessage) (SSHPeerUpsertFields, error)
 	return req, nil
 }
 
+func decodeSSHPeerDirectionalProofPatch(raw json.RawMessage, wrapperField string) (SSHPeerDirectionalProofPatch, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return SSHPeerDirectionalProofPatch{}, fmt.Errorf("invalid_ssh_peer_proof_patch_field: %s", wrapperField)
+	}
+	if fields == nil {
+		return SSHPeerDirectionalProofPatch{}, fmt.Errorf("invalid_ssh_peer_proof_patch_field: %s", wrapperField)
+	}
+	allowed := map[string]bool{
+		"key_id": true, "gateway_path": true, "verified_at": true, "verified_by": true,
+	}
+	for field := range fields {
+		if !allowed[field] {
+			return SSHPeerDirectionalProofPatch{}, fmt.Errorf("unknown_field: %s.%s", wrapperField, field)
+		}
+	}
+	var proof SSHPeerDirectionalProofPatch
+	var err error
+	if proof.KeyID, err = decodeRequiredProofPatchStringField(fields, wrapperField, "key_id"); err != nil {
+		return SSHPeerDirectionalProofPatch{}, err
+	}
+	if proof.GatewayPath, err = decodeRequiredProofPatchStringField(fields, wrapperField, "gateway_path"); err != nil {
+		return SSHPeerDirectionalProofPatch{}, err
+	}
+	if proof.VerifiedAt, err = decodeRequiredProofPatchStringField(fields, wrapperField, "verified_at"); err != nil {
+		return SSHPeerDirectionalProofPatch{}, err
+	}
+	if proof.VerifiedBy, err = decodeRequiredProofPatchStringField(fields, wrapperField, "verified_by"); err != nil {
+		return SSHPeerDirectionalProofPatch{}, err
+	}
+	if err := validateProofFields(proof.KeyID, proof.GatewayPath, proof.VerifiedAt, proof.VerifiedBy); err != nil {
+		return SSHPeerDirectionalProofPatch{}, fmt.Errorf("invalid_ssh_peer_proof_patch_field: %s: %w", wrapperField, err)
+	}
+	return proof, nil
+}
+
+func decodeRequiredProofPatchStringField(fields map[string]json.RawMessage, wrapperField, field string) (string, error) {
+	value, ok := fields[field]
+	if !ok || isJSONNull(value) {
+		return "", fmt.Errorf("missing_ssh_peer_proof_patch_field: %s.%s", wrapperField, field)
+	}
+	var out string
+	if err := json.Unmarshal(value, &out); err != nil {
+		return "", fmt.Errorf("invalid_ssh_peer_proof_patch_field: %s.%s", wrapperField, field)
+	}
+	return out, nil
+}
+
 func decodeBoolField(raw json.RawMessage, field string) (bool, error) {
 	if isJSONNull(raw) {
 		return false, fmt.Errorf("invalid_ssh_peer_upsert_field: peer.%s", field)
@@ -408,7 +563,59 @@ func applySSHPeerUpsert(cfg *Config, raw map[string]json.RawMessage, peerID stri
 	} else {
 		peers[index] = peer
 	}
+	return peer, rebuildTypedSSHPeersAndWriteBack(cfg, raw, sshRaw, peers)
+}
 
+func applySSHPeerProofPatch(cfg *Config, raw map[string]json.RawMessage, peerID string, req SSHPeerProofPatchRequest) (map[string]json.RawMessage, error) {
+	sshRaw, peers, err := rawSSHPeers(raw)
+	if err != nil {
+		return nil, err
+	}
+	index := -1
+	var peer map[string]json.RawMessage
+	for i, candidate := range peers {
+		id, err := rawPeerID(candidate)
+		if err != nil {
+			return nil, err
+		}
+		if id == peerID {
+			index = i
+			peer = cloneRawMap(candidate)
+			break
+		}
+	}
+	if index == -1 {
+		return nil, fmt.Errorf("ssh_peer_not_found: %s", peerID)
+	}
+
+	typedPeer, err := typedPeerFromRaw(peer)
+	if err != nil {
+		return nil, err
+	}
+	if req.AcceptProof != nil && (!typedPeer.Enabled || !typedPeer.Accept) {
+		return nil, fmt.Errorf("proof_mismatch: accept")
+	}
+	if req.ConnectProof != nil && (!typedPeer.Enabled || !typedPeer.Connect) {
+		return nil, fmt.Errorf("proof_mismatch: connect")
+	}
+
+	proofRaw, err := rawPeerProofObject(peer)
+	if err != nil {
+		return nil, err
+	}
+	if req.AcceptProof != nil {
+		setDirectionalProofRaw(proofRaw, DirectionAccept, *req.AcceptProof)
+	}
+	if req.ConnectProof != nil {
+		setDirectionalProofRaw(proofRaw, DirectionConnect, *req.ConnectProof)
+	}
+	setRaw(peer, "proof", proofRaw)
+
+	peers[index] = peer
+	return peer, rebuildTypedSSHPeersAndWriteBack(cfg, raw, sshRaw, peers)
+}
+
+func rebuildTypedSSHPeersAndWriteBack(cfg *Config, raw map[string]json.RawMessage, sshRaw map[string]json.RawMessage, peers []map[string]json.RawMessage) error {
 	if cfg.SSH == nil {
 		cfg.SSH = &SSHConfig{}
 	}
@@ -416,13 +623,41 @@ func applySSHPeerUpsert(cfg *Config, raw map[string]json.RawMessage, peerID stri
 	for _, rawPeer := range peers {
 		typed, err := typedPeerFromRaw(rawPeer)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		cfg.SSH.Peers = append(cfg.SSH.Peers, typed)
 	}
 	setRaw(sshRaw, "peers", peers)
 	setRaw(raw, "ssh", sshRaw)
-	return peer, nil
+	return nil
+}
+
+func rawPeerProofObject(peer map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+	proofRaw := map[string]json.RawMessage{}
+	if value, ok := peer["proof"]; ok && !isJSONNull(value) {
+		if err := json.Unmarshal(value, &proofRaw); err != nil {
+			return nil, fmt.Errorf("invalid_ssh_peer_proof: %w", err)
+		}
+		if proofRaw == nil {
+			return nil, fmt.Errorf("invalid_ssh_peer_proof: expected object")
+		}
+	}
+	return proofRaw, nil
+}
+
+func setDirectionalProofRaw(proofRaw map[string]json.RawMessage, direction ProofDirection, proof SSHPeerDirectionalProofPatch) {
+	switch direction {
+	case DirectionAccept:
+		setRaw(proofRaw, "accept_key_id", proof.KeyID)
+		setRaw(proofRaw, "accept_gateway_path", proof.GatewayPath)
+		setRaw(proofRaw, "accept_verified_at", proof.VerifiedAt)
+		setRaw(proofRaw, "accept_verified_by", proof.VerifiedBy)
+	case DirectionConnect:
+		setRaw(proofRaw, "connect_key_id", proof.KeyID)
+		setRaw(proofRaw, "connect_gateway_path", proof.GatewayPath)
+		setRaw(proofRaw, "connect_verified_at", proof.VerifiedAt)
+		setRaw(proofRaw, "connect_verified_by", proof.VerifiedBy)
+	}
 }
 
 func validateSSHPeerCreateFields(peer SSHPeerUpsertFields) error {

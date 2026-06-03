@@ -58,6 +58,28 @@ func TestSSHPeerConfigPutFailsClosedWhenConfigV2WritesDisabled(t *testing.T) {
 	}
 }
 
+func TestSSHPeerConfigProofPatchFailsClosedWhenConfigV2WritesDisabled(t *testing.T) {
+	sharedKey := config.NewSharedKey()
+	configPath := writeSSHPeerDaemonConfig(t, sharedKey)
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := newSSHPeerConfigDaemon(t, sharedKey, configPath)
+
+	body := []byte(`{"expected_config_revision":7,"accept_proof":{"key_id":"a4a4a4a4","gateway_path":"/Users/jesse/.local/bin/clipfan","verified_at":"2026-06-01T12:34:56Z","verified_by":"local_file"}}`)
+	rec := serveSignedDaemonRequest(t, d, http.MethodPatch, "/v1/config/ssh/peers/fsck/proof", "ssh-peer-proof-disabled", body, transport.AuthVersionRequestHMAC)
+	requireDaemonSignedError(t, d.auth, rec, "ssh-peer-proof-disabled", http.StatusServiceUnavailable, "config_v2_writes_disabled")
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("disabled ssh peer proof PATCH changed config\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
 func TestSSHPeerConfigHandlerErrorMapsValidationFailures(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -86,6 +108,24 @@ func TestSSHPeerConfigHandlerErrorMapsValidationFailures(t *testing.T) {
 		{
 			name:   "missing create field",
 			err:    errors.New("ssh_peer_create_requires_enabled"),
+			status: http.StatusBadRequest,
+			code:   "invalid_ssh_peer_config",
+		},
+		{
+			name:   "proof mismatch",
+			err:    errors.New("proof_mismatch: accept"),
+			status: http.StatusConflict,
+			code:   "proof_mismatch",
+		},
+		{
+			name:   "invalid proof patch body",
+			err:    errors.New("invalid_ssh_peer_proof_patch_field: accept_proof.key_id"),
+			status: http.StatusBadRequest,
+			code:   "bad_request",
+		},
+		{
+			name:   "malformed stored proof",
+			err:    errors.New("invalid_ssh_peer_proof: json: cannot unmarshal string into Go value"),
 			status: http.StatusBadRequest,
 			code:   "invalid_ssh_peer_config",
 		},
