@@ -1,6 +1,7 @@
 import Foundation
 
 let localDaemonConfigRevisionConflictCode = "config_revision_conflict"
+let localDaemonSSHPeerMigrationStateChangeNotAllowedCode = "ssh_peer_migration_state_change_not_allowed"
 
 extension LocalDaemonRequestBuilder {
     static func sshPeerConfigReadRequest(endpoint: LocalDaemonEndpoint,

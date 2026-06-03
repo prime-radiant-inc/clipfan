@@ -50,6 +50,39 @@ struct InstallCommandFailure: LocalizedError {
     }
 }
 
+struct ScopedSSHPeerConfigWriter {
+    typealias ReadPeer = (String) async throws -> LocalDaemonSSHPeerConfigResponse
+    typealias UpsertPeer = (String, LocalDaemonSSHPeerUpsertRequest) async throws -> LocalDaemonSSHPeerConfigResponse
+
+    let readPeer: ReadPeer?
+    let upsertPeer: UpsertPeer
+
+    init(readPeer: ReadPeer? = nil, upsertPeer: @escaping UpsertPeer) {
+        self.readPeer = readPeer
+        self.upsertPeer = upsertPeer
+    }
+
+    func read(peerID: String) async throws -> LocalDaemonSSHPeerConfigResponse {
+        guard let readPeer else {
+            throw InstallError.configIO("config_v2_scoped_reader_unavailable")
+        }
+        return try await readPeer(peerID)
+    }
+
+    func upsert(peerID: String, request: LocalDaemonSSHPeerUpsertRequest) async throws -> LocalDaemonSSHPeerConfigResponse {
+        try await upsertPeer(peerID, request)
+    }
+
+    static let daemon = ScopedSSHPeerConfigWriter(
+        readPeer: { peerID in
+            try await DaemonClient.shared.readSSHPeerConfig(peerID: peerID)
+        },
+        upsertPeer: { peerID, request in
+            try await DaemonClient.shared.upsertSSHPeerConfig(peerID: peerID, request: request)
+        }
+    )
+}
+
 /// Drives the same scp + install.sh playbook used by `cc-clip`-style remote
 /// installs. Source binaries are read out of $HOME/.local/share/clipfan
 /// (staged by `dist/install.sh` on the host running the menubar app).
@@ -373,7 +406,7 @@ actor Installer {
 
         // Add this host to our own static_peers, save, kick the daemon.
         await MainActor.run { onProgress(.init(step: "Local", detail: "adding peer to local config")) }
-        try await addPeerToLocalConfig(host)
+        try await addPeerToLocalConfig(host, scopedWriter: .daemon)
         await MainActor.run { onProgress(.init(step: "Restart", detail: "kickstarting local daemon")) }
         await DaemonClient.shared.restartDaemon()
     }
@@ -552,12 +585,33 @@ actor Installer {
         return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
     }
 
-    static func addPeerToLocalConfig(_ host: String, configURL: URL? = nil) async throws {
+    static func addPeerToLocalConfig(_ host: String,
+                                     configURL: URL? = nil,
+                                     scopedWriter: ScopedSSHPeerConfigWriter? = nil,
+                                     configV2WriteEnabled: Bool = GeneratedSSHTransportGates.configV2WriteEnabled) async throws {
         let p = configURL ?? localConfigURL()
         var cfg = (try? await readLocalConfig(configURL: p)) ?? [:]
-        if cfg.keys.contains("config_version"),
-           !GeneratedSSHTransportGates.configV2WriteEnabled {
-            throw InstallError.configIO("config_v2_writes_disabled")
+        if cfg.keys.contains("config_version") {
+            guard configV2WriteEnabled else {
+                throw InstallError.configIO("config_v2_writes_disabled")
+            }
+            try validateConfigV2Marker(cfg)
+            guard let scopedWriter else {
+                throw InstallError.configIO("config_v2_scoped_writer_unavailable")
+            }
+            let revision = try configRevision(from: cfg)
+            let request = LocalDaemonSSHPeerUpsertRequest(
+                expectedConfigRevision: revision,
+                peer: LocalDaemonSSHPeerUpsertFields(
+                    id: host,
+                    enabled: true,
+                    accept: true,
+                    connect: false,
+                    migrationState: "loopback_unprovisioned"
+                )
+            )
+            try await upsertAddPeerConfigV2(host, request: request, scopedWriter: scopedWriter)
+            return
         }
         var peers = (cfg["static_peers"] as? [String]) ?? []
         if !peers.contains(host) { peers.append(host) }
@@ -570,6 +624,53 @@ actor Installer {
         try data.write(to: p, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600],
                                               ofItemAtPath: p.path)
+    }
+
+    private static func validateConfigV2Marker(_ cfg: [String: Any]) throws {
+        let version = try positiveInteger(from: cfg["config_version"],
+                                          stableCode: "unsupported_config_version")
+        guard version == 2 else {
+            throw InstallError.configIO("unsupported_config_version")
+        }
+    }
+
+    private static func configRevision(from cfg: [String: Any]) throws -> UInt64 {
+        try positiveInteger(from: cfg["config_revision"], stableCode: "invalid_config_revision")
+    }
+
+    private static func positiveInteger(from rawValue: Any?, stableCode: String) throws -> UInt64 {
+        guard let rawValue, !(rawValue is NSNull),
+              let number = rawValue as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else {
+            throw InstallError.configIO(stableCode)
+        }
+        let decimal = number.decimalValue
+        guard decimal > Decimal(0),
+              decimal <= Decimal(UInt64.max),
+              decimal == Decimal(number.uint64Value) else {
+            throw InstallError.configIO(stableCode)
+        }
+        return number.uint64Value
+    }
+
+    private static func upsertAddPeerConfigV2(_ host: String,
+                                              request: LocalDaemonSSHPeerUpsertRequest,
+                                              scopedWriter: ScopedSSHPeerConfigWriter) async throws {
+        do {
+            _ = try await scopedWriter.upsert(peerID: host, request: request)
+        } catch LocalDaemonSSHPeerConfigError.api(let code, let statusCode)
+            where code == localDaemonSSHPeerMigrationStateChangeNotAllowedCode ||
+            code == localDaemonConfigRevisionConflictCode {
+            if let existing = try? await scopedWriter.read(peerID: host),
+               existingAddPeerMatches(existing.peer, host: host) {
+                return
+            }
+            throw LocalDaemonSSHPeerConfigError.api(code: code, statusCode: statusCode)
+        }
+    }
+
+    private static func existingAddPeerMatches(_ peer: LocalDaemonSSHPeer, host: String) -> Bool {
+        peer.id == host && peer.enabled == true && peer.accept == true
     }
 
     static func run(_ exe: String, _ args: [String]) async throws -> String {

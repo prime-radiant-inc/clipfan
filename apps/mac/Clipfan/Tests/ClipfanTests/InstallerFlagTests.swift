@@ -494,6 +494,348 @@ final class InstallerFlagTests: XCTestCase {
         }
     }
 
+    func testAddPeerToLocalConfigUsesScopedWriterForConfigV2AndDoesNotRewriteFile() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-config-v2-scoped-\(UUID().uuidString)")
+        let configURL = root.appendingPathComponent("clipfan/config.json")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        let before = """
+        {"config_version":2,"config_revision":1,"shared_key":"secret","static_peers":["existing"],"ssh":{"future":{"keep":true},"peers":{"existing":{"future_peer":"keep"}}},"future":{"keep":true}}
+        """.data(using: .utf8)!
+        try before.write(to: configURL)
+
+        var capturedPeerID: String?
+        var capturedRequest: LocalDaemonSSHPeerUpsertRequest?
+        let writer = ScopedSSHPeerConfigWriter { peerID, request in
+            capturedPeerID = peerID
+            capturedRequest = request
+            return try JSONDecoder.clipfan.decode(LocalDaemonSSHPeerConfigResponse.self, from: """
+            {"peer":{"id":"new-peer","enabled":true,"accept":true,"connect":false,"migration_state":"loopback_unprovisioned"},"config_revision":8,"revision_state":"current","config_version":2}
+            """.data(using: .utf8)!)
+        }
+
+        try await Installer.addPeerToLocalConfig("new-peer",
+                                                 configURL: configURL,
+                                                 scopedWriter: writer,
+                                                 configV2WriteEnabled: true)
+
+        XCTAssertEqual(try Data(contentsOf: configURL), before)
+        XCTAssertEqual(capturedPeerID, "new-peer")
+        XCTAssertEqual(capturedRequest?.expected_config_revision, 1)
+        XCTAssertEqual(capturedRequest?.peer.id, "new-peer")
+        XCTAssertEqual(capturedRequest?.peer.enabled, true)
+        XCTAssertEqual(capturedRequest?.peer.accept, true)
+        XCTAssertEqual(capturedRequest?.peer.connect, false)
+        XCTAssertEqual(capturedRequest?.peer.migration_state, "loopback_unprovisioned")
+    }
+
+    func testAddPeerToLocalConfigRequiresScopedWriterForConfigV2WhenGateEnabled() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-config-v2-no-writer-\(UUID().uuidString)")
+        let configURL = root.appendingPathComponent("clipfan/config.json")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        let before = #"{"config_version":2,"config_revision":9,"shared_key":"secret","static_peers":["existing"],"future":{"keep":true}}"#
+            .data(using: .utf8)!
+        try before.write(to: configURL)
+
+        do {
+            try await Installer.addPeerToLocalConfig("new-peer",
+                                                     configURL: configURL,
+                                                     configV2WriteEnabled: true)
+            XCTFail("expected missing scoped writer failure")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("config_v2_scoped_writer_unavailable"),
+                          "error \(error) should include stable code")
+        }
+
+        XCTAssertEqual(try Data(contentsOf: configURL), before)
+    }
+
+    func testAddPeerToLocalConfigRejectsUnsupportedConfigVersionWhenGateEnabled() async throws {
+        let bodies = [
+            #"{"config_version":3,"config_revision":9,"shared_key":"secret","static_peers":["existing"]}"#,
+            #"{"config_version":"2","config_revision":9,"shared_key":"secret","static_peers":["existing"]}"#,
+            #"{"config_version":2.1,"config_revision":9,"shared_key":"secret","static_peers":["existing"]}"#,
+            #"{"config_version":null,"config_revision":9,"shared_key":"secret","static_peers":["existing"]}"#,
+            #"{"config_version":0,"config_revision":9,"shared_key":"secret","static_peers":["existing"]}"#,
+            #"{"config_version":true,"config_revision":9,"shared_key":"secret","static_peers":["existing"]}"#
+        ]
+
+        for body in bodies {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("clipfan-config-v2-bad-version-\(UUID().uuidString)")
+            let configURL = root.appendingPathComponent("clipfan/config.json")
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            let before = body.data(using: .utf8)!
+            try before.write(to: configURL)
+
+            var calledWriter = false
+            let writer = ScopedSSHPeerConfigWriter { _, _ in
+                calledWriter = true
+                return try JSONDecoder.clipfan.decode(LocalDaemonSSHPeerConfigResponse.self, from: """
+                {"peer":{"id":"new-peer"},"config_revision":10,"revision_state":"current","config_version":2}
+                """.data(using: .utf8)!)
+            }
+
+            do {
+                try await Installer.addPeerToLocalConfig("new-peer",
+                                                         configURL: configURL,
+                                                         scopedWriter: writer,
+                                                         configV2WriteEnabled: true)
+                XCTFail("expected unsupported_config_version for \(body)")
+            } catch {
+                XCTAssertTrue(String(describing: error).contains("unsupported_config_version"),
+                              "error \(error) should include stable code")
+            }
+
+            XCTAssertFalse(calledWriter)
+            XCTAssertEqual(try Data(contentsOf: configURL), before)
+        }
+    }
+
+    func testAddPeerToLocalConfigTreatsAlreadyAdvancedConfigV2PeerAsPresent() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-config-v2-existing-\(UUID().uuidString)")
+        let configURL = root.appendingPathComponent("clipfan/config.json")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        let before = #"{"config_version":2,"config_revision":12,"shared_key":"secret","ssh":{"peers":[{"id":"new-peer","migration_state":"ssh_material_staged","future_peer":"keep"}]},"future":{"keep":true}}"#
+            .data(using: .utf8)!
+        try before.write(to: configURL)
+
+        var upsertCalls = 0
+        var readCalls = 0
+        let writer = ScopedSSHPeerConfigWriter(
+            readPeer: { peerID in
+                readCalls += 1
+                XCTAssertEqual(peerID, "new-peer")
+                return try JSONDecoder.clipfan.decode(LocalDaemonSSHPeerConfigResponse.self, from: """
+                {"peer":{"id":"new-peer","enabled":true,"accept":true,"connect":false,"migration_state":"ssh_material_staged"},"config_revision":12,"revision_state":"current","config_version":2}
+                """.data(using: .utf8)!)
+            },
+            upsertPeer: { peerID, request in
+                upsertCalls += 1
+                XCTAssertEqual(peerID, "new-peer")
+                XCTAssertEqual(request.expected_config_revision, 12)
+                throw LocalDaemonSSHPeerConfigError.api(code: localDaemonSSHPeerMigrationStateChangeNotAllowedCode,
+                                                        statusCode: 409)
+            }
+        )
+
+        try await Installer.addPeerToLocalConfig("new-peer",
+                                                 configURL: configURL,
+                                                 scopedWriter: writer,
+                                                 configV2WriteEnabled: true)
+
+        XCTAssertEqual(upsertCalls, 1)
+        XCTAssertEqual(readCalls, 1)
+        XCTAssertEqual(try Data(contentsOf: configURL), before)
+    }
+
+    func testAddPeerToLocalConfigPropagatesStateMismatchWhenScopedReadFails() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-config-v2-read-fails-\(UUID().uuidString)")
+        let configURL = root.appendingPathComponent("clipfan/config.json")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        let before = #"{"config_version":2,"config_revision":12,"shared_key":"secret","ssh":{"peers":[{"id":"new-peer","migration_state":"ssh_material_staged"}]}}"#
+            .data(using: .utf8)!
+        try before.write(to: configURL)
+
+        let writer = ScopedSSHPeerConfigWriter(
+            readPeer: { _ in
+                throw LocalDaemonSSHPeerConfigError.api(code: "missing_config_revision", statusCode: 409)
+            },
+            upsertPeer: { _, _ in
+                throw LocalDaemonSSHPeerConfigError.api(code: localDaemonSSHPeerMigrationStateChangeNotAllowedCode,
+                                                        statusCode: 409)
+            }
+        )
+
+        do {
+            try await Installer.addPeerToLocalConfig("new-peer",
+                                                     configURL: configURL,
+                                                     scopedWriter: writer,
+                                                     configV2WriteEnabled: true)
+            XCTFail("expected original migration-state error")
+        } catch LocalDaemonSSHPeerConfigError.api(let code, let statusCode) {
+            XCTAssertEqual(code, localDaemonSSHPeerMigrationStateChangeNotAllowedCode)
+            XCTAssertEqual(statusCode, 409)
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+
+        XCTAssertEqual(try Data(contentsOf: configURL), before)
+    }
+
+    func testAddPeerToLocalConfigPropagatesStateMismatchWhenScopedWriterHasNoReader() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-config-v2-no-reader-\(UUID().uuidString)")
+        let configURL = root.appendingPathComponent("clipfan/config.json")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        let before = #"{"config_version":2,"config_revision":12,"shared_key":"secret","ssh":{"peers":[{"id":"new-peer","enabled":true,"accept":true,"migration_state":"ssh_material_staged"}]}}"#
+            .data(using: .utf8)!
+        try before.write(to: configURL)
+
+        let writer = ScopedSSHPeerConfigWriter { _, _ in
+            throw LocalDaemonSSHPeerConfigError.api(code: localDaemonSSHPeerMigrationStateChangeNotAllowedCode,
+                                                    statusCode: 409)
+        }
+
+        do {
+            try await Installer.addPeerToLocalConfig("new-peer",
+                                                     configURL: configURL,
+                                                     scopedWriter: writer,
+                                                     configV2WriteEnabled: true)
+            XCTFail("expected original migration-state error")
+        } catch LocalDaemonSSHPeerConfigError.api(let code, let statusCode) {
+            XCTAssertEqual(code, localDaemonSSHPeerMigrationStateChangeNotAllowedCode)
+            XCTAssertEqual(statusCode, 409)
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+
+        XCTAssertEqual(try Data(contentsOf: configURL), before)
+    }
+
+    func testAddPeerToLocalConfigDoesNotTreatDisabledAdvancedConfigV2PeerAsPresent() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-config-v2-disabled-\(UUID().uuidString)")
+        let configURL = root.appendingPathComponent("clipfan/config.json")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        let before = #"{"config_version":2,"config_revision":12,"shared_key":"secret","ssh":{"peers":[{"id":"new-peer","enabled":false,"accept":true,"migration_state":"ssh_material_staged"}]}}"#
+            .data(using: .utf8)!
+        try before.write(to: configURL)
+
+        let writer = ScopedSSHPeerConfigWriter(
+            readPeer: { _ in
+                try JSONDecoder.clipfan.decode(LocalDaemonSSHPeerConfigResponse.self, from: """
+                {"peer":{"id":"new-peer","enabled":false,"accept":true,"connect":false,"migration_state":"ssh_material_staged"},"config_revision":12,"revision_state":"current","config_version":2}
+                """.data(using: .utf8)!)
+            },
+            upsertPeer: { _, _ in
+                throw LocalDaemonSSHPeerConfigError.api(code: localDaemonSSHPeerMigrationStateChangeNotAllowedCode,
+                                                        statusCode: 409)
+            }
+        )
+
+        do {
+            try await Installer.addPeerToLocalConfig("new-peer",
+                                                     configURL: configURL,
+                                                     scopedWriter: writer,
+                                                     configV2WriteEnabled: true)
+            XCTFail("expected original migration-state error")
+        } catch LocalDaemonSSHPeerConfigError.api(let code, let statusCode) {
+            XCTAssertEqual(code, localDaemonSSHPeerMigrationStateChangeNotAllowedCode)
+            XCTAssertEqual(statusCode, 409)
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+
+        XCTAssertEqual(try Data(contentsOf: configURL), before)
+    }
+
+    func testAddPeerToLocalConfigTreatsRevisionConflictWithExistingConnectPeerAsPresent() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-config-v2-existing-connect-\(UUID().uuidString)")
+        let configURL = root.appendingPathComponent("clipfan/config.json")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        let before = #"{"config_version":2,"config_revision":12,"shared_key":"secret","ssh":{"peers":[{"id":"new-peer","enabled":true,"accept":true,"connect":true,"migration_state":"ssh_keys_ready"}]}}"#
+            .data(using: .utf8)!
+        try before.write(to: configURL)
+
+        var readCalls = 0
+        let writer = ScopedSSHPeerConfigWriter(
+            readPeer: { peerID in
+                readCalls += 1
+                XCTAssertEqual(peerID, "new-peer")
+                return try JSONDecoder.clipfan.decode(LocalDaemonSSHPeerConfigResponse.self, from: """
+                {"peer":{"id":"new-peer","enabled":true,"accept":true,"connect":true,"migration_state":"ssh_keys_ready"},"config_revision":13,"revision_state":"current","config_version":2}
+                """.data(using: .utf8)!)
+            },
+            upsertPeer: { _, _ in
+                throw LocalDaemonSSHPeerConfigError.api(code: localDaemonConfigRevisionConflictCode,
+                                                        statusCode: 409)
+            }
+        )
+
+        try await Installer.addPeerToLocalConfig("new-peer",
+                                                 configURL: configURL,
+                                                 scopedWriter: writer,
+                                                 configV2WriteEnabled: true)
+
+        XCTAssertEqual(readCalls, 1)
+        XCTAssertEqual(try Data(contentsOf: configURL), before)
+    }
+
+    func testAddPeerToLocalConfigRejectsConfigV2WithoutValidRevisionBeforeScopedWrite() async throws {
+        let bodies = [
+            #"{"config_version":2,"shared_key":"secret","static_peers":["existing"]}"#,
+            #"{"config_version":2,"config_revision":0,"shared_key":"secret","static_peers":["existing"]}"#,
+            #"{"config_version":2,"config_revision":-1,"shared_key":"secret","static_peers":["existing"]}"#,
+            #"{"config_version":2,"config_revision":true,"shared_key":"secret","static_peers":["existing"]}"#,
+            #"{"config_version":2,"config_revision":"7","shared_key":"secret","static_peers":["existing"]}"#,
+            #"{"config_version":2,"config_revision":7.5,"shared_key":"secret","static_peers":["existing"]}"#,
+            #"{"config_version":2,"config_revision":18446744073709551616,"shared_key":"secret","static_peers":["existing"]}"#
+        ]
+
+        for body in bodies {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("clipfan-config-v2-bad-revision-\(UUID().uuidString)")
+            let configURL = root.appendingPathComponent("clipfan/config.json")
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            let before = body.data(using: .utf8)!
+            try before.write(to: configURL)
+
+            var calledWriter = false
+            let writer = ScopedSSHPeerConfigWriter { _, _ in
+                calledWriter = true
+                return try JSONDecoder.clipfan.decode(LocalDaemonSSHPeerConfigResponse.self, from: """
+                {"peer":{"id":"new-peer"},"config_revision":8,"revision_state":"current","config_version":2}
+                """.data(using: .utf8)!)
+            }
+
+            do {
+                try await Installer.addPeerToLocalConfig("new-peer",
+                                                         configURL: configURL,
+                                                         scopedWriter: writer,
+                                                         configV2WriteEnabled: true)
+                XCTFail("expected invalid_config_revision for \(body)")
+            } catch {
+                XCTAssertTrue(String(describing: error).contains("invalid_config_revision"),
+                              "error \(error) should include stable code")
+            }
+
+            XCTAssertFalse(calledWriter)
+            XCTAssertEqual(try Data(contentsOf: configURL), before)
+        }
+    }
+
     private func posixMode(_ url: URL) throws -> Int {
         let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
         return (attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0
