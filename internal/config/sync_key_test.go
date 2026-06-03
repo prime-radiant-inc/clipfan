@@ -776,6 +776,356 @@ func TestCreateLocalSyncKeyWithSSHKeygenIntegration(t *testing.T) {
 	}
 }
 
+func TestLoadLocalSyncKeyReturnsExistingIdentity(t *testing.T) {
+	keyPath, created := createSyncKeyFixture(t)
+
+	loaded, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+		KeyPath: keyPath,
+		HostID:  "m4",
+		Checker: localSyncKeyChecker(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.PrivateKeyPath != created.PrivateKeyPath ||
+		loaded.PublicKeyPath != created.PublicKeyPath ||
+		loaded.SidecarPath != created.SidecarPath ||
+		loaded.KeyID != created.KeyID ||
+		loaded.PublicKeySHA256 != created.PublicKeySHA256 ||
+		loaded.PublicKey != created.PublicKey {
+		t.Fatalf("loaded = %#v, want created identity %#v", loaded, created)
+	}
+	if loaded.Metadata != created.Metadata {
+		t.Fatalf("metadata = %#v, want %#v", loaded.Metadata, created.Metadata)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", loaded), "PRIVATE-MATERIAL") {
+		t.Fatalf("loaded result disclosed private material: %+v", loaded)
+	}
+}
+
+func TestLoadLocalSyncKeyAcceptsOpenSSHPublicKeyMode0644(t *testing.T) {
+	keyPath, _ := createSyncKeyFixture(t)
+	if err := os.Chmod(keyPath+".pub", 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := fileMode(t, keyPath+".pub"); got != 0o644 {
+		t.Fatalf("public key mode = %#o, fixture should model OpenSSH 0644 public key", got)
+	}
+
+	if _, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+		KeyPath: keyPath,
+		HostID:  "m4",
+		Checker: localSyncKeyChecker(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadLocalSyncKeyReturnsMissingSyncKeyForMissingMaterial(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path func(string) string
+	}{
+		{name: "private key", path: func(keyPath string) string { return keyPath }},
+		{name: "public key", path: func(keyPath string) string { return keyPath + ".pub" }},
+		{name: "sidecar", path: func(keyPath string) string { return keyPath + ".clipfan.json" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			keyPath, _ := createSyncKeyFixture(t)
+			if err := os.Remove(tc.path(keyPath)); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+				KeyPath: keyPath,
+				HostID:  "m4",
+				Checker: localSyncKeyChecker(),
+			})
+			if !errors.Is(err, ErrMissingSyncKey) {
+				t.Fatalf("error = %v, want ErrMissingSyncKey", err)
+			}
+		})
+	}
+}
+
+func TestLoadLocalSyncKeyRefusesUnsupportedStorageBeforeReadingMaterial(t *testing.T) {
+	keyPath, _ := createSyncKeyFixture(t)
+
+	_, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+		KeyPath: keyPath,
+		HostID:  "m4",
+		Checker: storagecheck.Checker{
+			Probe: fakeSyncKeyProbe(storagecheck.Fact{
+				FilesystemType: "nfs",
+				Local:          boolPtr(false),
+				MountPoint:     filepath.Dir(keyPath),
+			}),
+			Smoke: func(string) error {
+				t.Fatal("smoke should not run for unsupported storage")
+				return nil
+			},
+		},
+	})
+	if !errors.Is(err, storagecheck.ErrUnsupportedRuntimeStorage) {
+		t.Fatalf("error = %v, want ErrUnsupportedRuntimeStorage", err)
+	}
+	if strings.Contains(err.Error(), keyPath) {
+		t.Fatalf("error disclosed sync key path: %v", err)
+	}
+}
+
+func TestLoadLocalSyncKeyRejectsSidecarIdentityMismatches(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(SyncKeyMetadata) SyncKeyMetadata
+	}{
+		{name: "wrong host id", mutate: func(meta SyncKeyMetadata) SyncKeyMetadata {
+			meta.HostID = "other"
+			return meta
+		}},
+		{name: "digest mismatch", mutate: func(meta SyncKeyMetadata) SyncKeyMetadata {
+			meta.PublicKeySHA256 = "SHA256:wrong"
+			return meta
+		}},
+		{name: "key id mismatch", mutate: func(meta SyncKeyMetadata) SyncKeyMetadata {
+			meta.KeyID = "0000000000000000"
+			return meta
+		}},
+		{name: "public key mismatch", mutate: func(meta SyncKeyMetadata) SyncKeyMetadata {
+			meta.PublicKey = "ssh-ed25519 " + base64.StdEncoding.EncodeToString([]byte("other")) + " clipfan:m4"
+			return meta
+		}},
+		{name: "stale schema", mutate: func(meta SyncKeyMetadata) SyncKeyMetadata {
+			meta.Schema = "clipfan-sync-key-v0"
+			return meta
+		}},
+		{name: "missing created_at", mutate: func(meta SyncKeyMetadata) SyncKeyMetadata {
+			meta.CreatedAt = ""
+			return meta
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			keyPath, created := createSyncKeyFixture(t)
+			writeSyncKeyMetadataForTest(t, keyPath+".clipfan.json", tc.mutate(created.Metadata))
+
+			_, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+				KeyPath: keyPath,
+				HostID:  "m4",
+				Checker: localSyncKeyChecker(),
+			})
+			if !errors.Is(err, ErrSyncKeyIdentityMismatch) {
+				t.Fatalf("error = %v, want ErrSyncKeyIdentityMismatch", err)
+			}
+		})
+	}
+}
+
+func TestLoadLocalSyncKeyRejectsInvalidPublicKeyMaterial(t *testing.T) {
+	keyPath, _ := createSyncKeyFixture(t)
+	if err := os.WriteFile(keyPath+".pub", []byte("not-an-ed25519-key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+		KeyPath: keyPath,
+		HostID:  "m4",
+		Checker: localSyncKeyChecker(),
+	})
+	if !errors.Is(err, ErrSyncKeyIdentityMismatch) {
+		t.Fatalf("error = %v, want ErrSyncKeyIdentityMismatch", err)
+	}
+	if strings.Contains(err.Error(), keyPath) || strings.Contains(err.Error(), "PRIVATE-MATERIAL") {
+		t.Fatalf("error disclosed sync key path or private material: %v", err)
+	}
+}
+
+func TestLoadLocalSyncKeyRejectsMalformedOrUnknownSidecar(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "malformed json", body: `{`},
+		{name: "non object", body: `[]`},
+		{name: "missing schema", body: `{"host_id":"m4","key_id":"abc","public_key_sha256":"SHA256:x","public_key":"ssh-ed25519 AAAA","created_at":"2026-06-01T12:34:56Z"}`},
+		{name: "unknown field", body: `{"schema":"clipfan-sync-key-v1","host_id":"m4","key_id":"abc","public_key_sha256":"SHA256:x","public_key":"ssh-ed25519 AAAA","created_at":"2026-06-01T12:34:56Z","future":true}`},
+		{name: "invalid created_at", body: `{"schema":"clipfan-sync-key-v1","host_id":"m4","key_id":"abc","public_key_sha256":"SHA256:x","public_key":"ssh-ed25519 AAAA","created_at":"not-time"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			keyPath, _ := createSyncKeyFixture(t)
+			if err := os.WriteFile(keyPath+".clipfan.json", []byte(tc.body+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+				KeyPath: keyPath,
+				HostID:  "m4",
+				Checker: localSyncKeyChecker(),
+			})
+			if !errors.Is(err, ErrSyncKeyIdentityMismatch) {
+				t.Fatalf("error = %v, want ErrSyncKeyIdentityMismatch", err)
+			}
+		})
+	}
+}
+
+func TestLoadLocalSyncKeyRepairsPrivateSidecarReadModes(t *testing.T) {
+	keyPath, _ := createSyncKeyFixture(t)
+	if err := os.Chmod(keyPath, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(keyPath+".clipfan.json", 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+		KeyPath: keyPath,
+		HostID:  "m4",
+		Checker: localSyncKeyChecker(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := fileMode(t, keyPath); got != 0o600 {
+		t.Fatalf("private key mode = %#o, want repaired 0600", got)
+	}
+	if got := fileMode(t, keyPath+".clipfan.json"); got != 0o600 {
+		t.Fatalf("sidecar mode = %#o, want repaired 0600", got)
+	}
+}
+
+func TestLoadLocalSyncKeyRejectsGroupOrWorldWritableMaterial(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path func(string) string
+		mode os.FileMode
+	}{
+		{name: "private group writable", path: func(keyPath string) string { return keyPath }, mode: 0o620},
+		{name: "public group writable", path: func(keyPath string) string { return keyPath + ".pub" }, mode: 0o664},
+		{name: "sidecar world writable", path: func(keyPath string) string { return keyPath + ".clipfan.json" }, mode: 0o602},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			keyPath, _ := createSyncKeyFixture(t)
+			if err := os.Chmod(tc.path(keyPath), tc.mode); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+				KeyPath: keyPath,
+				HostID:  "m4",
+				Checker: localSyncKeyChecker(),
+			})
+			if !errors.Is(err, ErrSyncKeyIdentityMismatch) {
+				t.Fatalf("error = %v, want ErrSyncKeyIdentityMismatch", err)
+			}
+		})
+	}
+}
+
+func TestLoadLocalSyncKeyRejectsSymlinkMaterial(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path func(string) string
+		body string
+	}{
+		{name: "private", path: func(keyPath string) string { return keyPath }, body: "PRIVATE-MATERIAL"},
+		{name: "public", path: func(keyPath string) string { return keyPath + ".pub" }, body: "ssh-ed25519 " + base64.StdEncoding.EncodeToString([]byte("public")) + " clipfan:m4\n"},
+		{name: "sidecar", path: func(keyPath string) string { return keyPath + ".clipfan.json" }, body: `{"schema":"clipfan-sync-key-v1"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			keyPath, _ := createSyncKeyFixture(t)
+			path := tc.path(keyPath)
+			target := filepath.Join(syncKeyTempDir(t), "target")
+			if err := os.WriteFile(target, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, path); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+				KeyPath: keyPath,
+				HostID:  "m4",
+				Checker: localSyncKeyChecker(),
+			})
+			if !errors.Is(err, ErrSyncKeyIdentityMismatch) {
+				t.Fatalf("error = %v, want ErrSyncKeyIdentityMismatch", err)
+			}
+			if strings.Contains(err.Error(), keyPath) || strings.Contains(err.Error(), target) {
+				t.Fatalf("error disclosed sync key path: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadLocalSyncKeyRejectsHardLinkedMaterial(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path func(string) string
+	}{
+		{name: "private", path: func(keyPath string) string { return keyPath }},
+		{name: "public", path: func(keyPath string) string { return keyPath + ".pub" }},
+		{name: "sidecar", path: func(keyPath string) string { return keyPath + ".clipfan.json" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			keyPath, _ := createSyncKeyFixture(t)
+			if err := os.Link(tc.path(keyPath), tc.path(keyPath)+".hardlink"); err != nil {
+				t.Skipf("hard links unavailable: %v", err)
+			}
+
+			_, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+				KeyPath: keyPath,
+				HostID:  "m4",
+				Checker: localSyncKeyChecker(),
+			})
+			if !errors.Is(err, ErrSyncKeyIdentityMismatch) {
+				t.Fatalf("error = %v, want ErrSyncKeyIdentityMismatch", err)
+			}
+		})
+	}
+}
+
+func TestLoadLocalSyncKeyDoesNotCreateOverwriteOrChmodMismatchedMaterial(t *testing.T) {
+	keyPath, created := createSyncKeyFixture(t)
+	writeSyncKeyMetadataForTest(t, keyPath+".clipfan.json", SyncKeyMetadata{
+		Schema:          created.Metadata.Schema,
+		HostID:          "other",
+		KeyID:           created.Metadata.KeyID,
+		PublicKeySHA256: created.Metadata.PublicKeySHA256,
+		PublicKey:       created.Metadata.PublicKey,
+		CreatedAt:       created.Metadata.CreatedAt,
+	})
+	if err := os.Chmod(keyPath+".pub", 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(keyPath+".clipfan.json", 0o644); err != nil {
+		t.Fatal(err)
+	}
+	privateBefore := readFile(t, keyPath)
+
+	_, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+		KeyPath: keyPath,
+		HostID:  "m4",
+		Checker: localSyncKeyChecker(),
+	})
+	if !errors.Is(err, ErrSyncKeyIdentityMismatch) {
+		t.Fatalf("error = %v, want ErrSyncKeyIdentityMismatch", err)
+	}
+	if strings.Contains(err.Error(), "PRIVATE-MATERIAL") {
+		t.Fatalf("error disclosed private material: %v", err)
+	}
+	if got := readFile(t, keyPath); got != privateBefore {
+		t.Fatalf("private key changed: %q", got)
+	}
+	if got := fileMode(t, keyPath+".pub"); got != 0o644 {
+		t.Fatalf("public key mode = %#o, want unchanged 0644", got)
+	}
+	if got := fileMode(t, keyPath+".clipfan.json"); got != 0o644 {
+		t.Fatalf("sidecar mode = %#o, want unchanged mismatched sidecar mode 0644", got)
+	}
+}
+
 func TestSyncKeygenArgs(t *testing.T) {
 	got := syncKeygenArgs(SyncKeyGenerateRequest{
 		KeyPath: "/Users/jesse/.config/clipfan/ssh/sync_ed25519",
@@ -840,6 +1190,35 @@ func TestSyncKeyCommandErrorRedactsKeyPath(t *testing.T) {
 	}
 	if !strings.Contains(got, "<sync_key_dir>") {
 		t.Fatalf("error = %q, want redacted key directory placeholder", got)
+	}
+}
+
+func createSyncKeyFixture(t *testing.T) (string, SyncKeyCreateResult) {
+	t.Helper()
+	keyPath := filepath.Join(syncKeyTempDir(t), "sync_ed25519")
+	publicKey := "ssh-ed25519 " + base64.StdEncoding.EncodeToString([]byte("public")) + " clipfan:m4"
+	result, err := CreateLocalSyncKey(SyncKeyCreateOptions{
+		KeyPath:   keyPath,
+		HostID:    "m4",
+		Checker:   localSyncKeyChecker(),
+		Now:       func() time.Time { return time.Date(2026, 6, 1, 12, 34, 56, 0, time.UTC) },
+		Generator: fakeSyncKeyGenerator("PRIVATE-MATERIAL", publicKey),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return keyPath, result
+}
+
+func writeSyncKeyMetadataForTest(t *testing.T, path string, meta SyncKeyMetadata) {
+	t.Helper()
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
