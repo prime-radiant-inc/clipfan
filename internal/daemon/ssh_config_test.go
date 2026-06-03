@@ -80,6 +80,28 @@ func TestSSHPeerConfigProofPatchFailsClosedWhenConfigV2WritesDisabled(t *testing
 	}
 }
 
+func TestSSHPeerConfigTransitionFailsClosedWhenConfigV2WritesDisabled(t *testing.T) {
+	sharedKey := config.NewSharedKey()
+	configPath := writeSSHPeerDaemonConfig(t, sharedKey)
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := newSSHPeerConfigDaemon(t, sharedKey, configPath)
+
+	body := []byte(`{"expected_config_revision":7,"from_state":"loopback_unprovisioned","to_state":"ssh_material_staged","reason":"staged","log_id":"peer-log-1780257600"}`)
+	rec := serveSignedDaemonRequest(t, d, http.MethodPost, "/v1/config/ssh/peers/fsck/transition", "ssh-peer-transition-disabled", body, transport.AuthVersionRequestHMAC)
+	requireDaemonSignedError(t, d.auth, rec, "ssh-peer-transition-disabled", http.StatusServiceUnavailable, "config_v2_writes_disabled")
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("disabled ssh peer transition changed config\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
 func TestSSHPeerConfigHandlerErrorMapsValidationFailures(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -124,10 +146,64 @@ func TestSSHPeerConfigHandlerErrorMapsValidationFailures(t *testing.T) {
 			code:   "bad_request",
 		},
 		{
+			name:   "invalid transition field body",
+			err:    errors.New("invalid_ssh_peer_transition_field: remote_secret_absence_proof.verified_at"),
+			status: http.StatusBadRequest,
+			code:   "bad_request",
+		},
+		{
 			name:   "malformed stored proof",
 			err:    errors.New("invalid_ssh_peer_proof: json: cannot unmarshal string into Go value"),
 			status: http.StatusBadRequest,
 			code:   "invalid_ssh_peer_config",
+		},
+		{
+			name:   "malformed stored migration log",
+			err:    errors.New("invalid_ssh_peer_migration_log: json: cannot unmarshal string into Go value"),
+			status: http.StatusBadRequest,
+			code:   "invalid_ssh_peer_config",
+		},
+		{
+			name:   "transition state mismatch",
+			err:    errors.New("ssh_peer_transition_state_mismatch"),
+			status: http.StatusConflict,
+			code:   "ssh_peer_transition_state_mismatch",
+		},
+		{
+			name:   "transition not allowed",
+			err:    errors.New("ssh_peer_transition_not_allowed: loopback_unprovisioned_to_ssh_keys_ready"),
+			status: http.StatusBadRequest,
+			code:   "ssh_peer_transition_not_allowed",
+		},
+		{
+			name:   "transition missing proof",
+			err:    errors.New("ssh_peer_transition_requires_current_proof: invalid_accept_proof"),
+			status: http.StatusBadRequest,
+			code:   "invalid_ssh_peer_transition",
+		},
+		{
+			name:   "transition invalid state",
+			err:    errors.New("invalid_ssh_peer_transition_state: to_state"),
+			status: http.StatusBadRequest,
+			code:   "invalid_ssh_peer_transition",
+		},
+		{
+			name:   "transition invalid reason",
+			err:    errors.New("invalid_ssh_peer_transition_reason: typo"),
+			status: http.StatusBadRequest,
+			code:   "invalid_ssh_peer_transition",
+		},
+		{
+			name:   "transition invalid failed phase",
+			err:    errors.New("invalid_ssh_peer_transition_failed_phase: remote_shared_key_write"),
+			status: http.StatusBadRequest,
+			code:   "invalid_ssh_peer_transition",
+		},
+		{
+			name:   "transition absence proof mismatch",
+			err:    errors.New("ssh_peer_transition_absence_proof_failed_phase_mismatch"),
+			status: http.StatusBadRequest,
+			code:   "invalid_ssh_peer_transition",
 		},
 	}
 	for _, tc := range cases {

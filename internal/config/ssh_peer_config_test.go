@@ -864,6 +864,493 @@ func TestPatchSSHPeerProofRejectsMissingPeerWithoutWriting(t *testing.T) {
 	assertJSONValueEqual(t, before, after)
 }
 
+func TestDecodeSSHPeerTransitionRequestDecodesProof(t *testing.T) {
+	body := `{
+  "expected_config_revision": 7,
+  "from_state": "loopback_unprovisioned",
+  "to_state": "provision_failed",
+  "reason": "provision_failed",
+  "log_id": "log-1",
+  "failed_phase": "host_key_confirmation",
+  "remote_secret_absence_proof": {
+    "failed_phase": "host_key_confirmation",
+    "secret_write_command_spawned": false,
+    "absence_verified_by": "local_config_scan",
+    "verified_at": "2026-06-02T12:34:56Z",
+    "remote_config_revision": 12,
+    "log_id": "log-1"
+  }
+}`
+
+	req, err := DecodeSSHPeerTransitionRequest(strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireUint64Ptr(t, "expected_config_revision", req.ExpectedConfigRevision, 7)
+	if req.FromState != MigrationStateLoopbackUnprovisioned || req.ToState != MigrationStateProvisionFailed {
+		t.Fatalf("states = %s -> %s", req.FromState, req.ToState)
+	}
+	requireStringPtr(t, "failed_phase", req.FailedPhase, "host_key_confirmation")
+	if req.RemoteSecretAbsenceProof == nil {
+		t.Fatal("RemoteSecretAbsenceProof = nil")
+	}
+	requireUint64Ptr(t, "remote_config_revision", req.RemoteSecretAbsenceProof.RemoteConfigRevision, 12)
+	if req.RemoteSecretAbsenceProof.SecretWriteCommandSpawned {
+		t.Fatal("SecretWriteCommandSpawned = true, want false")
+	}
+}
+
+func TestDecodeSSHPeerTransitionRequestRejectsInvalidInput(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		code string
+	}{
+		{
+			name: "unknown wrapper field",
+			body: `{"expected_config_revision":7,"from_state":"loopback_unprovisioned","to_state":"ssh_material_staged","reason":"material_staged","log_id":"log-1","future":true}`,
+			code: "unknown_field: future",
+		},
+		{
+			name: "missing revision",
+			body: `{"from_state":"loopback_unprovisioned","to_state":"ssh_material_staged","reason":"material_staged","log_id":"log-1"}`,
+			code: "missing_ssh_peer_transition_field: expected_config_revision",
+		},
+		{
+			name: "missing from state",
+			body: `{"expected_config_revision":7,"to_state":"ssh_material_staged","reason":"material_staged","log_id":"log-1"}`,
+			code: "missing_ssh_peer_transition_field: from_state",
+		},
+		{
+			name: "missing to state",
+			body: `{"expected_config_revision":7,"from_state":"loopback_unprovisioned","reason":"material_staged","log_id":"log-1"}`,
+			code: "missing_ssh_peer_transition_field: to_state",
+		},
+		{
+			name: "missing reason",
+			body: `{"expected_config_revision":7,"from_state":"loopback_unprovisioned","to_state":"ssh_material_staged","log_id":"log-1"}`,
+			code: "missing_ssh_peer_transition_field: reason",
+		},
+		{
+			name: "missing log id",
+			body: `{"expected_config_revision":7,"from_state":"loopback_unprovisioned","to_state":"ssh_material_staged","reason":"material_staged"}`,
+			code: "missing_ssh_peer_transition_field: log_id",
+		},
+		{
+			name: "empty reason",
+			body: `{"expected_config_revision":7,"from_state":"loopback_unprovisioned","to_state":"ssh_material_staged","reason":" ","log_id":"log-1"}`,
+			code: "invalid_ssh_peer_transition_field: reason",
+		},
+		{
+			name: "unknown proof field",
+			body: `{"expected_config_revision":7,"from_state":"loopback_unprovisioned","to_state":"provision_failed","reason":"provision_failed","log_id":"log-1","failed_phase":"host_key_confirmation","remote_secret_absence_proof":{"failed_phase":"host_key_confirmation","secret_write_command_spawned":false,"absence_verified_by":"local_config_scan","verified_at":"2026-06-02T12:34:56Z","log_id":"log-1","future":true}}`,
+			code: "unknown_field: remote_secret_absence_proof.future",
+		},
+		{
+			name: "missing proof field",
+			body: `{"expected_config_revision":7,"from_state":"loopback_unprovisioned","to_state":"provision_failed","reason":"provision_failed","log_id":"log-1","failed_phase":"host_key_confirmation","remote_secret_absence_proof":{"failed_phase":"host_key_confirmation","secret_write_command_spawned":false,"absence_verified_by":"local_config_scan","log_id":"log-1"}}`,
+			code: "missing_ssh_peer_transition_field: remote_secret_absence_proof.verified_at",
+		},
+		{
+			name: "invalid remote config revision",
+			body: `{"expected_config_revision":7,"from_state":"loopback_unprovisioned","to_state":"provision_failed","reason":"provision_failed","log_id":"log-1","failed_phase":"host_key_confirmation","remote_secret_absence_proof":{"failed_phase":"host_key_confirmation","secret_write_command_spawned":false,"absence_verified_by":"local_config_scan","verified_at":"2026-06-02T12:34:56Z","remote_config_revision":"nope","log_id":"log-1"}}`,
+			code: "invalid_ssh_peer_transition_field: remote_secret_absence_proof.remote_config_revision",
+		},
+		{
+			name: "trailing json",
+			body: `{"expected_config_revision":7,"from_state":"loopback_unprovisioned","to_state":"ssh_material_staged","reason":"material_staged","log_id":"log-1"} {}`,
+			code: "malformed_ssh_peer_transition_request: trailing data",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := DecodeSSHPeerTransitionRequest(strings.NewReader(tc.body))
+			if err == nil || !strings.Contains(err.Error(), tc.code) {
+				t.Fatalf("error = %v, want %s", err, tc.code)
+			}
+		})
+	}
+
+	_, err := DecodeSSHPeerTransitionRequest(strings.NewReader(`{"expected_config_revision":0,"from_state":"loopback_unprovisioned","to_state":"ssh_material_staged","reason":"material_staged","log_id":"log-1"}`))
+	if !errors.Is(err, ErrConfigRevisionConflict) {
+		t.Fatalf("zero revision error = %v, want ErrConfigRevisionConflict", err)
+	}
+}
+
+func TestTransitionSSHPeerAcceptsLegalTransitionsAndWritesAudit(t *testing.T) {
+	cases := []struct {
+		name              string
+		from              MigrationState
+		to                MigrationState
+		req               SSHPeerTransitionRequest
+		includeProof      bool
+		expectProofClear  bool
+		expectSecretClear bool
+	}{
+		{
+			name:         "loopback to staged",
+			from:         MigrationStateLoopbackUnprovisioned,
+			to:           MigrationStateSSHMaterialStaged,
+			req:          validTransitionRequest(7, MigrationStateLoopbackUnprovisioned, MigrationStateSSHMaterialStaged, "material_staged"),
+			includeProof: true,
+		},
+		{
+			name: "loopback to provision failed",
+			from: MigrationStateLoopbackUnprovisioned,
+			to:   MigrationStateProvisionFailed,
+			req:  validProvisionFailedTransitionRequest(7, MigrationStateLoopbackUnprovisioned, false, "host_key_confirmation"),
+		},
+		{
+			name:              "provision failed to loopback",
+			from:              MigrationStateProvisionFailed,
+			to:                MigrationStateLoopbackUnprovisioned,
+			req:               validTransitionRequest(7, MigrationStateProvisionFailed, MigrationStateLoopbackUnprovisioned, "retry_progress"),
+			includeProof:      true,
+			expectProofClear:  true,
+			expectSecretClear: true,
+		},
+		{
+			name:         "provision failed to staged",
+			from:         MigrationStateProvisionFailed,
+			to:           MigrationStateSSHMaterialStaged,
+			req:          validTransitionRequest(7, MigrationStateProvisionFailed, MigrationStateSSHMaterialStaged, "retry_progress"),
+			includeProof: true,
+		},
+		{
+			name:         "staged to shared key written",
+			from:         MigrationStateSSHMaterialStaged,
+			to:           MigrationStateSharedKeyWrittenUnverified,
+			req:          validTransitionRequest(7, MigrationStateSSHMaterialStaged, MigrationStateSharedKeyWrittenUnverified, "remote_shared_key_written"),
+			includeProof: true,
+		},
+		{
+			name:         "staged to shared key unknown outcome",
+			from:         MigrationStateSSHMaterialStaged,
+			to:           MigrationStateSharedKeyWrittenUnverified,
+			req:          validTransitionRequest(7, MigrationStateSSHMaterialStaged, MigrationStateSharedKeyWrittenUnverified, "secret_write_outcome_unknown"),
+			includeProof: true,
+		},
+		{
+			name:         "shared key written to ready",
+			from:         MigrationStateSharedKeyWrittenUnverified,
+			to:           MigrationStateSSHKeysReady,
+			req:          validTransitionRequest(7, MigrationStateSharedKeyWrittenUnverified, MigrationStateSSHKeysReady, "gateway_version_verified"),
+			includeProof: true,
+		},
+		{
+			name:         "shared key written to staged",
+			from:         MigrationStateSharedKeyWrittenUnverified,
+			to:           MigrationStateSSHMaterialStaged,
+			req:          validTransitionRequest(7, MigrationStateSharedKeyWrittenUnverified, MigrationStateSSHMaterialStaged, "remote_shared_key_cleanup_verified"),
+			includeProof: true,
+		},
+		{
+			name:         "ready to staged",
+			from:         MigrationStateSSHKeysReady,
+			to:           MigrationStateSSHMaterialStaged,
+			req:          validTransitionRequest(7, MigrationStateSSHKeysReady, MigrationStateSSHMaterialStaged, "remote_shared_key_cleanup_verified"),
+			includeProof: true,
+		},
+		{
+			name:              "ready to loopback",
+			from:              MigrationStateSSHKeysReady,
+			to:                MigrationStateLoopbackUnprovisioned,
+			req:               validTransitionRequest(7, MigrationStateSSHKeysReady, MigrationStateLoopbackUnprovisioned, "identity_reset_prepared"),
+			includeProof:      true,
+			expectProofClear:  true,
+			expectSecretClear: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfigForV2Test(t, transitionBaseConfig(tc.from, tc.includeProof))
+			before := readJSONMap(t, path)
+
+			status, err := transitionSSHPeerWithGate(path, true, "fsck", tc.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.ConfigRevision == nil || *status.ConfigRevision != 8 {
+				t.Fatalf("ConfigRevision = %v, want 8", status.ConfigRevision)
+			}
+			assertJSONValueEqual(t, string(tc.to), status.Peer["migration_state"])
+			statusData, err := json.Marshal(status.Peer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(statusData, []byte("peer-secret")) || bytes.Contains(statusData, []byte("peer-private")) {
+				t.Fatalf("transition response leaked secret material: %s", statusData)
+			}
+			if _, ok := status.Peer["shared_key"]; ok {
+				t.Fatalf("transition response exposed shared_key: %#v", status.Peer)
+			}
+			if _, ok := status.Peer["private_key"]; ok {
+				t.Fatalf("transition response exposed private_key: %#v", status.Peer)
+			}
+
+			after := readJSONMap(t, path)
+			assertJSONNumber(t, after["config_revision"], 8)
+			assertJSONValueEqual(t, before["shared_key"], after["shared_key"])
+			assertJSONValueEqual(t, before["future_top"], after["future_top"])
+			peer := after["ssh"].(map[string]any)["peers"].([]any)[0].(map[string]any)
+			assertJSONValueEqual(t, string(tc.to), peer["migration_state"])
+			if tc.expectSecretClear {
+				if _, ok := peer["shared_key"]; ok {
+					t.Fatalf("shared_key was not cleared: %#v", peer["shared_key"])
+				}
+				if _, ok := peer["private_key"]; ok {
+					t.Fatalf("private_key was not cleared: %#v", peer["private_key"])
+				}
+			} else {
+				assertJSONValueEqual(t, "peer-secret", peer["shared_key"])
+				assertJSONValueEqual(t, "peer-private", peer["private_key"])
+			}
+			assertJSONValueEqual(t, map[string]any{"keep": true}, peer["future_peer"])
+			if tc.expectProofClear {
+				if _, ok := peer["proof"]; ok {
+					t.Fatalf("proof was not cleared: %#v", peer["proof"])
+				}
+			}
+			log := peer["migration_log"].([]any)
+			if len(log) != 2 {
+				t.Fatalf("migration_log len = %d, want 2", len(log))
+			}
+			entry := log[1].(map[string]any)
+			assertJSONValueEqual(t, string(tc.from), entry["from_state"])
+			assertJSONValueEqual(t, string(tc.to), entry["to_state"])
+			assertJSONValueEqual(t, tc.req.Reason, entry["reason"])
+			assertJSONValueEqual(t, tc.req.LogID, entry["log_id"])
+			data, err := json.Marshal(entry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(data, []byte("peer-secret")) || bytes.Contains(data, []byte("peer-private")) {
+				t.Fatalf("audit entry leaked secret material: %s", data)
+			}
+		})
+	}
+}
+
+func TestTransitionSSHPeerLoopbackRecursivelyScrubsSecretLikeFields(t *testing.T) {
+	body := strings.Replace(
+		transitionBaseConfig(MigrationStateSSHKeysReady, true),
+		`"future_peer": {"keep": true}`,
+		`"future_peer": {"keep": true, "shared_key": "nested-secret", "nested": [{"keep": "item", "auth_token": "nested-token"}]}`,
+		1,
+	)
+	path := writeConfigForV2Test(t, body)
+
+	_, err := transitionSSHPeerWithGate(path, true, "fsck", validTransitionRequest(7, MigrationStateSSHKeysReady, MigrationStateLoopbackUnprovisioned, "identity_reset_prepared"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after := readJSONMap(t, path)
+	peer := after["ssh"].(map[string]any)["peers"].([]any)[0].(map[string]any)
+	future := peer["future_peer"].(map[string]any)
+	assertJSONValueEqual(t, true, future["keep"])
+	if _, ok := future["shared_key"]; ok {
+		t.Fatalf("nested shared_key was not scrubbed: %#v", future)
+	}
+	nested := future["nested"].([]any)[0].(map[string]any)
+	assertJSONValueEqual(t, "item", nested["keep"])
+	if _, ok := nested["auth_token"]; ok {
+		t.Fatalf("nested auth_token was not scrubbed: %#v", nested)
+	}
+	data, err := json.Marshal(peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("nested-secret")) || bytes.Contains(data, []byte("nested-token")) {
+		t.Fatalf("loopback peer retained nested secret material: %s", data)
+	}
+}
+
+func TestTransitionSSHPeerLoopbackPreservesAbsenceProofAuditHistory(t *testing.T) {
+	body := strings.Replace(
+		transitionBaseConfig(MigrationStateProvisionFailed, false),
+		`"migration_log": [{"from_state":"initial","to_state":"provision_failed","reason":"existing","log_id":"existing-log"}]`,
+		`"migration_log": [{"from_state":"loopback_unprovisioned","to_state":"provision_failed","reason":"provision_failed","log_id":"existing-log","remote_secret_absence_proof":{"failed_phase":"host_key_confirmation","secret_write_command_spawned":false,"absence_verified_by":"local_config_scan","verified_at":"2026-06-02T12:34:56Z","log_id":"existing-log"}}]`,
+		1,
+	)
+	path := writeConfigForV2Test(t, body)
+
+	_, err := transitionSSHPeerWithGate(path, true, "fsck", validTransitionRequest(7, MigrationStateProvisionFailed, MigrationStateLoopbackUnprovisioned, "retry_progress"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after := readJSONMap(t, path)
+	peer := after["ssh"].(map[string]any)["peers"].([]any)[0].(map[string]any)
+	log := peer["migration_log"].([]any)
+	if len(log) != 2 {
+		t.Fatalf("migration_log len = %d, want 2", len(log))
+	}
+	proof := log[0].(map[string]any)["remote_secret_absence_proof"].(map[string]any)
+	assertJSONValueEqual(t, "host_key_confirmation", proof["failed_phase"])
+	assertJSONValueEqual(t, false, proof["secret_write_command_spawned"])
+	assertJSONValueEqual(t, "local_config_scan", proof["absence_verified_by"])
+}
+
+func TestTransitionSSHPeerRejectsInvalidRequestsWithoutWriting(t *testing.T) {
+	cases := []struct {
+		name       string
+		configBody string
+		req        SSHPeerTransitionRequest
+		code       string
+	}{
+		{
+			name: "runtime ui state",
+			req:  validTransitionRequest(7, MigrationStateLoopbackUnprovisioned, MigrationState("never_connected"), "material_staged"),
+			code: "invalid_ssh_peer_transition_state: to_state",
+		},
+		{
+			name: "missing log id",
+			req: SSHPeerTransitionRequest{
+				ExpectedConfigRevision: uint64Ptr(7),
+				FromState:              MigrationStateLoopbackUnprovisioned,
+				ToState:                MigrationStateSSHMaterialStaged,
+				Reason:                 "material_staged",
+			},
+			code: "missing_ssh_peer_transition_field: log_id",
+		},
+		{
+			name: "missing absence proof",
+			req:  SSHPeerTransitionRequest{ExpectedConfigRevision: uint64Ptr(7), FromState: MigrationStateLoopbackUnprovisioned, ToState: MigrationStateProvisionFailed, Reason: "provision_failed", LogID: "log-1", FailedPhase: stringPtr("host_key_confirmation")},
+			code: "missing_ssh_peer_transition_field: remote_secret_absence_proof",
+		},
+		{
+			name: "pre secret phase strict when command not spawned",
+			req:  validProvisionFailedTransitionRequest(7, MigrationStateLoopbackUnprovisioned, false, "remote_shared_key_write"),
+			code: "invalid_ssh_peer_transition_failed_phase",
+		},
+		{
+			name: "provision failed proof timestamp must be valid",
+			req: func() SSHPeerTransitionRequest {
+				req := validProvisionFailedTransitionRequest(7, MigrationStateLoopbackUnprovisioned, false, "host_key_confirmation")
+				req.RemoteSecretAbsenceProof.VerifiedAt = "not-a-timestamp"
+				return req
+			}(),
+			code: "invalid_ssh_peer_transition_field: remote_secret_absence_proof.verified_at",
+		},
+		{
+			name: "provision failed phase must match absence proof",
+			req: func() SSHPeerTransitionRequest {
+				req := validProvisionFailedTransitionRequest(7, MigrationStateLoopbackUnprovisioned, false, "host_key_confirmation")
+				req.RemoteSecretAbsenceProof.FailedPhase = "local_peer_create"
+				return req
+			}(),
+			code: "ssh_peer_transition_absence_proof_failed_phase_mismatch",
+		},
+		{
+			name: "current state mismatch",
+			req:  validTransitionRequest(7, MigrationStateSSHMaterialStaged, MigrationStateSharedKeyWrittenUnverified, "remote_shared_key_written"),
+			code: "ssh_peer_transition_state_mismatch",
+		},
+		{
+			name: "valid states but transition not allowed",
+			req:  validTransitionRequest(7, MigrationStateLoopbackUnprovisioned, MigrationStateSSHKeysReady, "gateway_version_verified"),
+			code: "ssh_peer_transition_not_allowed",
+		},
+		{
+			name:       "missing accept material",
+			configBody: strings.Replace(transitionBaseConfig(MigrationStateLoopbackUnprovisioned, true), `      "gateway_path": "/home/jesse/.local/bin/clipfan",`+"\n", "", 1),
+			req:        validTransitionRequest(7, MigrationStateLoopbackUnprovisioned, MigrationStateSSHMaterialStaged, "material_staged"),
+			code:       "ssh_peer_transition_requires_accept_material",
+		},
+		{
+			name:       "missing connect material",
+			configBody: strings.Replace(transitionBaseConfig(MigrationStateLoopbackUnprovisioned, true), `      "install_path": "/home/jesse/.local/bin/clipfan",`+"\n", "", 1),
+			req:        validTransitionRequest(7, MigrationStateLoopbackUnprovisioned, MigrationStateSSHMaterialStaged, "material_staged"),
+			code:       "ssh_peer_transition_requires_connect_material",
+		},
+		{
+			name:       "missing promotion proof",
+			configBody: transitionBaseConfig(MigrationStateSharedKeyWrittenUnverified, false),
+			req:        validTransitionRequest(7, MigrationStateSharedKeyWrittenUnverified, MigrationStateSSHKeysReady, "gateway_version_verified"),
+			code:       "ssh_peer_transition_requires_current_proof",
+		},
+		{
+			name: "failed phase rejected outside provision failed",
+			req: SSHPeerTransitionRequest{
+				ExpectedConfigRevision: uint64Ptr(7),
+				FromState:              MigrationStateLoopbackUnprovisioned,
+				ToState:                MigrationStateSSHMaterialStaged,
+				Reason:                 "material_staged",
+				LogID:                  "log-1",
+				FailedPhase:            stringPtr("host_key_confirmation"),
+			},
+			code: "invalid_ssh_peer_transition_field: failed_phase",
+		},
+		{
+			name: "absence proof rejected outside provision failed",
+			req: SSHPeerTransitionRequest{
+				ExpectedConfigRevision: uint64Ptr(7),
+				FromState:              MigrationStateLoopbackUnprovisioned,
+				ToState:                MigrationStateSSHMaterialStaged,
+				Reason:                 "material_staged",
+				LogID:                  "log-1",
+				RemoteSecretAbsenceProof: &SSHPeerRemoteSecretAbsenceProof{
+					FailedPhase:               "host_key_confirmation",
+					SecretWriteCommandSpawned: false,
+					AbsenceVerifiedBy:         "local_config_scan",
+					VerifiedAt:                "not-a-timestamp",
+					LogID:                     "log-1",
+				},
+			},
+			code: "invalid_ssh_peer_transition_field: remote_secret_absence_proof",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configBody := tc.configBody
+			if configBody == "" {
+				configBody = transitionBaseConfig(MigrationStateLoopbackUnprovisioned, true)
+			}
+			path := writeConfigForV2Test(t, configBody)
+			before := readJSONMap(t, path)
+			_, err := transitionSSHPeerWithGate(path, true, "fsck", tc.req)
+			if err == nil || !strings.Contains(err.Error(), tc.code) {
+				t.Fatalf("error = %v, want %s", err, tc.code)
+			}
+			after := readJSONMap(t, path)
+			assertJSONValueEqual(t, before, after)
+		})
+	}
+}
+
+func TestTransitionSSHPeerRejectsStaleRevisionAndGateDisabledWithoutWriting(t *testing.T) {
+	path := writeConfigForV2Test(t, transitionBaseConfig(MigrationStateLoopbackUnprovisioned, true))
+	before := readJSONMap(t, path)
+
+	_, err := transitionSSHPeerWithGate(path, true, "fsck", validTransitionRequest(6, MigrationStateLoopbackUnprovisioned, MigrationStateSSHMaterialStaged, "material_staged"))
+	if !errors.Is(err, ErrConfigRevisionConflict) {
+		t.Fatalf("stale revision error = %v, want ErrConfigRevisionConflict", err)
+	}
+	after := readJSONMap(t, path)
+	assertJSONValueEqual(t, before, after)
+
+	_, err = transitionSSHPeerWithGate(path, false, "fsck", validTransitionRequest(7, MigrationStateLoopbackUnprovisioned, MigrationStateSSHMaterialStaged, "material_staged"))
+	if !errors.Is(err, ErrConfigV2WritesDisabled) {
+		t.Fatalf("gate disabled error = %v, want ErrConfigV2WritesDisabled", err)
+	}
+	after = readJSONMap(t, path)
+	assertJSONValueEqual(t, before, after)
+}
+
+func TestTransitionSSHPeerRejectsMissingPeerWithoutWriting(t *testing.T) {
+	path := writeConfigForV2Test(t, transitionBaseConfig(MigrationStateLoopbackUnprovisioned, true))
+	before := readJSONMap(t, path)
+
+	_, err := transitionSSHPeerWithGate(path, true, "missing", validTransitionRequest(7, MigrationStateLoopbackUnprovisioned, MigrationStateSSHMaterialStaged, "material_staged"))
+	if err == nil || !strings.Contains(err.Error(), "ssh_peer_not_found: missing") {
+		t.Fatalf("missing peer error = %v, want ssh_peer_not_found", err)
+	}
+	after := readJSONMap(t, path)
+	assertJSONValueEqual(t, before, after)
+}
+
 func TestDecodeSSHPeerUpsertRequestDecodesAllFields(t *testing.T) {
 	body := `{
   "expected_config_revision": 7,
@@ -1022,6 +1509,80 @@ func validAcceptProofPatchRequest(revision uint64) SSHPeerProofPatchRequest {
 			GatewayPath: "/home/jesse/.local/bin/clipfan",
 			VerifiedAt:  "2026-06-02T12:34:56Z",
 			VerifiedBy:  ProofVerifiedByLocalFile,
+		},
+	}
+}
+
+func transitionBaseConfig(state MigrationState, includeProof bool) string {
+	proof := ""
+	if includeProof {
+		proof = `,
+    "proof": {
+      "accept_key_id": "accept-key-1",
+      "accept_gateway_path": "/home/jesse/.local/bin/clipfan",
+      "accept_verified_at": "2026-06-02T12:34:56Z",
+      "accept_verified_by": "local_file",
+      "connect_key_id": "connect-key-1",
+      "connect_gateway_path": "/home/jesse/.local/bin/clipfan",
+      "connect_verified_at": "2026-06-02T12:35:56Z",
+      "connect_verified_by": "regular_ssh"
+    }`
+	}
+	return `{
+  "config_version": 2,
+  "config_revision": 7,
+  "shared_key": "k",
+  "hostname": "m4",
+  "transport": "ssh",
+  "future_top": {"keep": true},
+  "ssh": {
+    "future_ssh": {"keep": true},
+    "peers": [{
+      "id": "fsck",
+      "enabled": true,
+      "accept": true,
+      "connect": true,
+      "persistent": true,
+      "ssh_host": "fsck.com",
+      "ssh_user": "jesse",
+      "ssh_port": 22,
+      "install_path": "/home/jesse/.local/bin/clipfan",
+      "gateway_path": "/home/jesse/.local/bin/clipfan",
+      "migration_state": "` + string(state) + `",
+      "shared_key": "peer-secret",
+      "private_key": "peer-private",
+      "future_peer": {"keep": true},
+      "migration_log": [{"from_state":"initial","to_state":"` + string(state) + `","reason":"existing","log_id":"existing-log"}]` + proof + `
+    }]
+  }
+}`
+}
+
+func validTransitionRequest(revision uint64, from MigrationState, to MigrationState, reason string) SSHPeerTransitionRequest {
+	return SSHPeerTransitionRequest{
+		ExpectedConfigRevision: uint64Ptr(revision),
+		FromState:              from,
+		ToState:                to,
+		Reason:                 reason,
+		LogID:                  "log-1",
+	}
+}
+
+func validProvisionFailedTransitionRequest(revision uint64, from MigrationState, secretWriteCommandSpawned bool, failedPhase string) SSHPeerTransitionRequest {
+	return SSHPeerTransitionRequest{
+		ExpectedConfigRevision: uint64Ptr(revision),
+		FromState:              from,
+		ToState:                MigrationStateProvisionFailed,
+		Reason:                 "provision_failed",
+		LogID:                  "log-1",
+		FailedPhase:            stringPtr(failedPhase),
+		RemoteSecretAbsenceProof: &SSHPeerRemoteSecretAbsenceProof{
+			FailedPhase:               failedPhase,
+			SecretWriteCommandSpawned: secretWriteCommandSpawned,
+			AbsenceVerifiedBy:         "local_config_scan",
+			VerifiedAt:                "2026-06-02T12:34:56Z",
+			RemoteConfigRevision:      uint64Ptr(12),
+			LogID:                     "log-1",
 		},
 	}
 }

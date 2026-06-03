@@ -41,6 +41,18 @@ func (d *Daemon) sshPeerConfigProofPatchHandler(peerID string, body []byte) (any
 	return status, nil
 }
 
+func (d *Daemon) sshPeerConfigTransitionHandler(peerID string, body []byte) (any, *transport.HandlerError) {
+	req, err := config.DecodeSSHPeerTransitionRequest(bytes.NewReader(body))
+	if err != nil {
+		return nil, sshPeerConfigHandlerError(err)
+	}
+	status, err := config.TransitionSSHPeer(d.configPath, peerID, req)
+	if err != nil {
+		return nil, sshPeerConfigHandlerError(err)
+	}
+	return status, nil
+}
+
 func sshPeerConfigHandlerError(err error) *transport.HandlerError {
 	if err == nil {
 		return nil
@@ -61,10 +73,13 @@ func sshPeerConfigHandlerError(err error) *transport.HandlerError {
 		"unknown_field",
 		"missing_ssh_peer_upsert_field",
 		"missing_ssh_peer_proof_patch_field",
+		"missing_ssh_peer_transition_field",
 		"malformed_ssh_peer_upsert_request",
 		"malformed_ssh_peer_proof_patch_request",
+		"malformed_ssh_peer_transition_request",
 		"invalid_ssh_peer_upsert_field",
 		"invalid_ssh_peer_proof_patch_field",
+		"invalid_ssh_peer_transition_field",
 		"ssh_peer_proof_patch_empty",
 		"invalid_expected_config_revision"):
 		return &transport.HandlerError{Status: 400, Code: "bad_request"}
@@ -78,6 +93,18 @@ func sshPeerConfigHandlerError(err error) *transport.HandlerError {
 		return &transport.HandlerError{Status: 409, Code: "ssh_peer_migration_state_change_not_allowed"}
 	case hasErrorPrefix(text, "proof_mismatch"):
 		return &transport.HandlerError{Status: 409, Code: "proof_mismatch"}
+	case hasErrorPrefix(text, "ssh_peer_transition_state_mismatch"):
+		return &transport.HandlerError{Status: 409, Code: "ssh_peer_transition_state_mismatch"}
+	case hasErrorPrefix(text, "ssh_peer_transition_not_allowed"):
+		return &transport.HandlerError{Status: 400, Code: "ssh_peer_transition_not_allowed"}
+	case hasErrorPrefix(text,
+		"invalid_ssh_peer_transition_state",
+		"invalid_ssh_peer_transition_reason",
+		"invalid_ssh_peer_transition_failed_phase",
+		"ssh_peer_transition_absence_proof_failed_phase_mismatch"):
+		return &transport.HandlerError{Status: 400, Code: "invalid_ssh_peer_transition"}
+	case hasErrorPrefix(text, "ssh_peer_transition_requires_"):
+		return &transport.HandlerError{Status: 400, Code: "invalid_ssh_peer_transition"}
 	case hasErrorPrefix(text, "ssh_peer_create_requires_loopback_unprovisioned"):
 		return &transport.HandlerError{Status: 400, Code: "ssh_peer_create_requires_loopback_unprovisioned"}
 	case hasErrorPrefix(text, "ssh_peer_create_requires_"):
@@ -102,6 +129,7 @@ func sshPeerConfigHandlerError(err error) *transport.HandlerError {
 		"invalid_ssh_max_sessions_per_peer",
 		"invalid_ssh_log_limit_bytes",
 		"invalid_ssh_peer_proof",
+		"invalid_ssh_peer_migration_log",
 		"invalid_accept_proof",
 		"invalid_connect_proof"):
 		return &transport.HandlerError{Status: 400, Code: "invalid_ssh_peer_config"}

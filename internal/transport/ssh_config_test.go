@@ -19,6 +19,8 @@ func TestSSHPeerConfigRoutesRequireHKDFAndDispatch(t *testing.T) {
 	var gotPutBody []byte
 	var gotPatchPeer string
 	var gotPatchBody []byte
+	var gotTransitionPeer string
+	var gotTransitionBody []byte
 	s.SetSSHPeerConfig(
 		func(peerID string) (any, *HandlerError) {
 			gotReadPeer = peerID
@@ -34,6 +36,11 @@ func TestSSHPeerConfigRoutesRequireHKDFAndDispatch(t *testing.T) {
 		gotPatchPeer = peerID
 		gotPatchBody = append([]byte(nil), body...)
 		return map[string]any{"peer_id": peerID, "config_revision": 9}, nil
+	})
+	s.SetSSHPeerConfigTransition(func(peerID string, body []byte) (any, *HandlerError) {
+		gotTransitionPeer = peerID
+		gotTransitionBody = append([]byte(nil), body...)
+		return map[string]any{"peer_id": peerID, "config_revision": 10}, nil
 	})
 
 	getReq := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodGet, "/v1/config/ssh/peers/fsck", "1780257600", "ssh-peer-get", nil, AuthVersionRequestHMAC)
@@ -89,6 +96,26 @@ func TestSSHPeerConfigRoutesRequireHKDFAndDispatch(t *testing.T) {
 		t.Fatalf("PATCH response signature: %v", err)
 	}
 
+	transitionBody := []byte(`{"expected_config_revision":9,"from_state":"loopback_unprovisioned","to_state":"ssh_material_staged","reason":"staged","log_id":"peer-log-1780257600"}`)
+	transitionReq := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodPost, "/v1/config/ssh/peers/fsck/transition", "1780257600", "ssh-peer-transition", transitionBody, AuthVersionRequestHMAC)
+	transitionRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(transitionRec, transitionReq)
+	if transitionRec.Code != http.StatusOK {
+		t.Fatalf("POST transition status = %d body=%q, want 200", transitionRec.Code, transitionRec.Body.String())
+	}
+	if gotTransitionPeer != "fsck" {
+		t.Fatalf("transition peer = %q, want fsck", gotTransitionPeer)
+	}
+	if !bytes.Equal(gotTransitionBody, transitionBody) {
+		t.Fatalf("transition body = %q, want %q", gotTransitionBody, transitionBody)
+	}
+	if transitionRec.Header().Get(HeaderAuthVersion) != AuthVersionRequestHMAC {
+		t.Fatalf("transition response auth version = %q", transitionRec.Header().Get(HeaderAuthVersion))
+	}
+	if err := auth.VerifyResponseWithAuthVersion("ssh-peer-transition", transitionRec.Body.Bytes(), transitionRec.Header().Get("X-Clipfan-Response-Sig"), AuthVersionRequestHMAC); err != nil {
+		t.Fatalf("transition response signature: %v", err)
+	}
+
 	rawReq := signedRequestWithTimestampAndNonce(t, auth, http.MethodGet, "/v1/config/ssh/peers/fsck", "1780257600", "ssh-peer-raw", nil)
 	rawRec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rawRec, rawReq)
@@ -113,6 +140,9 @@ func TestSSHPeerConfigRoutesRejectRemoteAndMapHandlerErrors(t *testing.T) {
 	s.SetSSHPeerConfigProofPatch(func(peerID string, body []byte) (any, *HandlerError) {
 		return nil, &HandlerError{Status: http.StatusConflict, Code: "proof_mismatch"}
 	})
+	s.SetSSHPeerConfigTransition(func(peerID string, body []byte) (any, *HandlerError) {
+		return nil, &HandlerError{Status: http.StatusBadRequest, Code: "bad_request"}
+	})
 
 	remoteGetReq := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodGet, "/v1/config/ssh/peers/fsck", "1780257600", "ssh-peer-remote-get", nil, AuthVersionRequestHMAC)
 	remoteGetReq.RemoteAddr = "192.0.2.10:1234"
@@ -128,6 +158,14 @@ func TestSSHPeerConfigRoutesRejectRemoteAndMapHandlerErrors(t *testing.T) {
 	s.Handler().ServeHTTP(remotePatchRec, remotePatchReq)
 	if remotePatchRec.Code != http.StatusForbidden {
 		t.Fatalf("remote PATCH status = %d, want 403", remotePatchRec.Code)
+	}
+
+	remoteTransitionReq := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodPost, "/v1/config/ssh/peers/fsck/transition", "1780257600", "ssh-peer-remote-transition", []byte(`{}`), AuthVersionRequestHMAC)
+	remoteTransitionReq.RemoteAddr = "192.0.2.10:1234"
+	remoteTransitionRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(remoteTransitionRec, remoteTransitionReq)
+	if remoteTransitionRec.Code != http.StatusForbidden {
+		t.Fatalf("remote transition status = %d, want 403", remoteTransitionRec.Code)
 	}
 
 	req := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodGet, "/v1/config/ssh/peers/missing", "1780257600", "ssh-peer-missing", nil, AuthVersionRequestHMAC)
@@ -148,5 +186,15 @@ func TestSSHPeerConfigRoutesRejectRemoteAndMapHandlerErrors(t *testing.T) {
 	}
 	if err := auth.VerifyResponseWithAuthVersion("ssh-peer-proof-mismatch", patchRec.Body.Bytes(), patchRec.Header().Get("X-Clipfan-Response-Sig"), AuthVersionRequestHMAC); err != nil {
 		t.Fatalf("PATCH error response signature: %v", err)
+	}
+
+	transitionReq := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodPost, "/v1/config/ssh/peers/fsck/transition", "1780257600", "ssh-peer-transition-bad", []byte(`{}`), AuthVersionRequestHMAC)
+	transitionRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(transitionRec, transitionReq)
+	if transitionRec.Code != http.StatusBadRequest || !bytes.Contains(transitionRec.Body.Bytes(), []byte("bad_request")) {
+		t.Fatalf("transition handler error status/body = %d %q", transitionRec.Code, transitionRec.Body.String())
+	}
+	if err := auth.VerifyResponseWithAuthVersion("ssh-peer-transition-bad", transitionRec.Body.Bytes(), transitionRec.Header().Get("X-Clipfan-Response-Sig"), AuthVersionRequestHMAC); err != nil {
+		t.Fatalf("transition error response signature: %v", err)
 	}
 }

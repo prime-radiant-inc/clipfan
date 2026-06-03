@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
 )
@@ -26,6 +27,25 @@ type SSHPeerProofPatchRequest struct {
 	ExpectedConfigRevision *uint64                       `json:"expected_config_revision"`
 	AcceptProof            *SSHPeerDirectionalProofPatch `json:"accept_proof,omitempty"`
 	ConnectProof           *SSHPeerDirectionalProofPatch `json:"connect_proof,omitempty"`
+}
+
+type SSHPeerTransitionRequest struct {
+	ExpectedConfigRevision   *uint64                          `json:"expected_config_revision"`
+	FromState                MigrationState                   `json:"from_state"`
+	ToState                  MigrationState                   `json:"to_state"`
+	Reason                   string                           `json:"reason"`
+	LogID                    string                           `json:"log_id"`
+	FailedPhase              *string                          `json:"failed_phase,omitempty"`
+	RemoteSecretAbsenceProof *SSHPeerRemoteSecretAbsenceProof `json:"remote_secret_absence_proof,omitempty"`
+}
+
+type SSHPeerRemoteSecretAbsenceProof struct {
+	FailedPhase               string  `json:"failed_phase"`
+	SecretWriteCommandSpawned bool    `json:"secret_write_command_spawned"`
+	AbsenceVerifiedBy         string  `json:"absence_verified_by"`
+	VerifiedAt                string  `json:"verified_at"`
+	RemoteConfigRevision      *uint64 `json:"remote_config_revision,omitempty"`
+	LogID                     string  `json:"log_id"`
 }
 
 type SSHPeerDirectionalProofPatch struct {
@@ -158,6 +178,77 @@ func DecodeSSHPeerProofPatchRequest(r io.Reader) (SSHPeerProofPatchRequest, erro
 	return req, nil
 }
 
+func DecodeSSHPeerTransitionRequest(r io.Reader) (SSHPeerTransitionRequest, error) {
+	decoder := json.NewDecoder(r)
+	var raw map[string]json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
+		return SSHPeerTransitionRequest{}, fmt.Errorf("malformed_ssh_peer_transition_request: %w", err)
+	}
+	if raw == nil {
+		return SSHPeerTransitionRequest{}, fmt.Errorf("malformed_ssh_peer_transition_request: expected object")
+	}
+	if err := rejectTrailingJSON(decoder, "malformed_ssh_peer_transition_request"); err != nil {
+		return SSHPeerTransitionRequest{}, err
+	}
+	for field := range raw {
+		switch field {
+		case "expected_config_revision", "from_state", "to_state", "reason", "log_id", "failed_phase", "remote_secret_absence_proof":
+		default:
+			return SSHPeerTransitionRequest{}, fmt.Errorf("unknown_field: %s", field)
+		}
+	}
+	if _, ok := raw["expected_config_revision"]; !ok {
+		return SSHPeerTransitionRequest{}, fmt.Errorf("missing_ssh_peer_transition_field: expected_config_revision")
+	}
+	revision, err := decodeSSHPeerExpectedRevision(raw)
+	if err != nil {
+		return SSHPeerTransitionRequest{}, err
+	}
+	if revision == nil || *revision == 0 {
+		return SSHPeerTransitionRequest{}, ErrConfigRevisionConflict
+	}
+
+	fromState, err := decodeRequiredTransitionStringField(raw, "from_state")
+	if err != nil {
+		return SSHPeerTransitionRequest{}, err
+	}
+	toState, err := decodeRequiredTransitionStringField(raw, "to_state")
+	if err != nil {
+		return SSHPeerTransitionRequest{}, err
+	}
+	reason, err := decodeRequiredTransitionStringField(raw, "reason")
+	if err != nil {
+		return SSHPeerTransitionRequest{}, err
+	}
+	logID, err := decodeRequiredTransitionStringField(raw, "log_id")
+	if err != nil {
+		return SSHPeerTransitionRequest{}, err
+	}
+
+	req := SSHPeerTransitionRequest{
+		ExpectedConfigRevision: revision,
+		FromState:              MigrationState(fromState),
+		ToState:                MigrationState(toState),
+		Reason:                 reason,
+		LogID:                  logID,
+	}
+	if value, ok := raw["failed_phase"]; ok {
+		failedPhase, err := decodeTransitionStringValue(value, "failed_phase")
+		if err != nil {
+			return SSHPeerTransitionRequest{}, err
+		}
+		req.FailedPhase = &failedPhase
+	}
+	if value, ok := raw["remote_secret_absence_proof"]; ok {
+		proof, err := decodeSSHPeerRemoteSecretAbsenceProof(value)
+		if err != nil {
+			return SSHPeerTransitionRequest{}, err
+		}
+		req.RemoteSecretAbsenceProof = &proof
+	}
+	return req, nil
+}
+
 func decodeSSHPeerExpectedRevision(raw map[string]json.RawMessage) (*uint64, error) {
 	value, ok := raw["expected_config_revision"]
 	if !ok || isJSONNull(value) {
@@ -179,6 +270,10 @@ func UpsertSSHPeer(path string, peerID string, req SSHPeerUpsertRequest) (SSHPee
 
 func PatchSSHPeerProof(path string, peerID string, req SSHPeerProofPatchRequest) (SSHPeerConfigReadResult, error) {
 	return patchSSHPeerProofWithGate(path, releaseflags.ConfigV2WriteEnabled, peerID, req)
+}
+
+func TransitionSSHPeer(path string, peerID string, req SSHPeerTransitionRequest) (SSHPeerConfigReadResult, error) {
+	return transitionSSHPeerWithGate(path, releaseflags.ConfigV2WriteEnabled, peerID, req)
 }
 
 func upsertSSHPeerWithGate(path string, gateEnabled bool, peerID string, req SSHPeerUpsertRequest) (SSHPeerConfigReadResult, error) {
@@ -229,6 +324,23 @@ func patchSSHPeerProofWithGate(path string, gateEnabled bool, peerID string, req
 	return result, nil
 }
 
+func transitionSSHPeerWithGate(path string, gateEnabled bool, peerID string, req SSHPeerTransitionRequest) (SSHPeerConfigReadResult, error) {
+	if err := ValidateHostID(peerID); err != nil {
+		return SSHPeerConfigReadResult{}, fmt.Errorf("invalid_ssh_peer_id: %w", err)
+	}
+	if req.ExpectedConfigRevision == nil || *req.ExpectedConfigRevision == 0 {
+		return SSHPeerConfigReadResult{}, ErrConfigRevisionConflict
+	}
+	expected := RevisionExpectation{State: RevisionStateVersioned, Revision: copyUint64Ptr(req.ExpectedConfigRevision)}
+
+	var result SSHPeerConfigReadResult
+	err := updateSSHPeerTransitionConfigRaw(path, gateEnabled, expected, peerID, req, &result)
+	if err != nil {
+		return SSHPeerConfigReadResult{}, err
+	}
+	return result, nil
+}
+
 func updateSSHPeerConfigRaw(path string, gateEnabled bool, expected RevisionExpectation, peerID string, req SSHPeerUpsertRequest, result *SSHPeerConfigReadResult) error {
 	return withSSHPeerConfigUpdate(path, gateEnabled, expected, result, func(cfg *Config, raw map[string]json.RawMessage) (map[string]json.RawMessage, error) {
 		updatedPeer, err := applySSHPeerUpsert(cfg, raw, peerID, req)
@@ -248,6 +360,12 @@ func updateSSHPeerConfigRaw(path string, gateEnabled bool, expected RevisionExpe
 func updateSSHPeerProofConfigRaw(path string, gateEnabled bool, expected RevisionExpectation, peerID string, req SSHPeerProofPatchRequest, result *SSHPeerConfigReadResult) error {
 	return withSSHPeerConfigUpdate(path, gateEnabled, expected, result, func(cfg *Config, raw map[string]json.RawMessage) (map[string]json.RawMessage, error) {
 		return applySSHPeerProofPatch(cfg, raw, peerID, req)
+	})
+}
+
+func updateSSHPeerTransitionConfigRaw(path string, gateEnabled bool, expected RevisionExpectation, peerID string, req SSHPeerTransitionRequest, result *SSHPeerConfigReadResult) error {
+	return withSSHPeerConfigUpdate(path, gateEnabled, expected, result, func(cfg *Config, raw map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+		return applySSHPeerTransition(cfg, raw, peerID, req)
 	})
 }
 
@@ -462,6 +580,117 @@ func decodeRequiredProofPatchStringField(fields map[string]json.RawMessage, wrap
 	return out, nil
 }
 
+func decodeSSHPeerRemoteSecretAbsenceProof(raw json.RawMessage) (SSHPeerRemoteSecretAbsenceProof, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return SSHPeerRemoteSecretAbsenceProof{}, fmt.Errorf("invalid_ssh_peer_transition_field: remote_secret_absence_proof")
+	}
+	if fields == nil {
+		return SSHPeerRemoteSecretAbsenceProof{}, fmt.Errorf("invalid_ssh_peer_transition_field: remote_secret_absence_proof")
+	}
+	allowed := map[string]bool{
+		"failed_phase": true, "secret_write_command_spawned": true, "absence_verified_by": true,
+		"verified_at": true, "remote_config_revision": true, "log_id": true,
+	}
+	for field := range fields {
+		if !allowed[field] {
+			return SSHPeerRemoteSecretAbsenceProof{}, fmt.Errorf("unknown_field: remote_secret_absence_proof.%s", field)
+		}
+	}
+
+	failedPhase, err := decodeRequiredRemoteAbsenceProofStringField(fields, "failed_phase")
+	if err != nil {
+		return SSHPeerRemoteSecretAbsenceProof{}, err
+	}
+	spawned, err := decodeRequiredRemoteAbsenceProofBoolField(fields, "secret_write_command_spawned")
+	if err != nil {
+		return SSHPeerRemoteSecretAbsenceProof{}, err
+	}
+	absenceVerifiedBy, err := decodeRequiredRemoteAbsenceProofStringField(fields, "absence_verified_by")
+	if err != nil {
+		return SSHPeerRemoteSecretAbsenceProof{}, err
+	}
+	verifiedAt, err := decodeRequiredRemoteAbsenceProofStringField(fields, "verified_at")
+	if err != nil {
+		return SSHPeerRemoteSecretAbsenceProof{}, err
+	}
+	logID, err := decodeRequiredRemoteAbsenceProofStringField(fields, "log_id")
+	if err != nil {
+		return SSHPeerRemoteSecretAbsenceProof{}, err
+	}
+	proof := SSHPeerRemoteSecretAbsenceProof{
+		FailedPhase:               failedPhase,
+		SecretWriteCommandSpawned: spawned,
+		AbsenceVerifiedBy:         absenceVerifiedBy,
+		VerifiedAt:                verifiedAt,
+		LogID:                     logID,
+	}
+	if value, ok := fields["remote_config_revision"]; ok {
+		if isJSONNull(value) {
+			return SSHPeerRemoteSecretAbsenceProof{}, fmt.Errorf("invalid_ssh_peer_transition_field: remote_secret_absence_proof.remote_config_revision")
+		}
+		remoteRevision, err := parseJSONUint(value, "invalid_ssh_peer_transition_field: remote_secret_absence_proof.remote_config_revision")
+		if err != nil {
+			return SSHPeerRemoteSecretAbsenceProof{}, err
+		}
+		proof.RemoteConfigRevision = &remoteRevision
+	}
+	return proof, nil
+}
+
+func decodeRequiredTransitionStringField(fields map[string]json.RawMessage, field string) (string, error) {
+	value, ok := fields[field]
+	if !ok || isJSONNull(value) {
+		return "", fmt.Errorf("missing_ssh_peer_transition_field: %s", field)
+	}
+	out, err := decodeTransitionStringValue(value, field)
+	if err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+func decodeTransitionStringValue(value json.RawMessage, field string) (string, error) {
+	if isJSONNull(value) {
+		return "", fmt.Errorf("invalid_ssh_peer_transition_field: %s", field)
+	}
+	var out string
+	if err := json.Unmarshal(value, &out); err != nil {
+		return "", fmt.Errorf("invalid_ssh_peer_transition_field: %s", field)
+	}
+	if strings.TrimSpace(out) == "" {
+		return "", fmt.Errorf("invalid_ssh_peer_transition_field: %s", field)
+	}
+	return out, nil
+}
+
+func decodeRequiredRemoteAbsenceProofStringField(fields map[string]json.RawMessage, field string) (string, error) {
+	value, ok := fields[field]
+	if !ok || isJSONNull(value) {
+		return "", fmt.Errorf("missing_ssh_peer_transition_field: remote_secret_absence_proof.%s", field)
+	}
+	var out string
+	if err := json.Unmarshal(value, &out); err != nil {
+		return "", fmt.Errorf("invalid_ssh_peer_transition_field: remote_secret_absence_proof.%s", field)
+	}
+	if strings.TrimSpace(out) == "" {
+		return "", fmt.Errorf("invalid_ssh_peer_transition_field: remote_secret_absence_proof.%s", field)
+	}
+	return out, nil
+}
+
+func decodeRequiredRemoteAbsenceProofBoolField(fields map[string]json.RawMessage, field string) (bool, error) {
+	value, ok := fields[field]
+	if !ok || isJSONNull(value) {
+		return false, fmt.Errorf("missing_ssh_peer_transition_field: remote_secret_absence_proof.%s", field)
+	}
+	var out bool
+	if err := json.Unmarshal(value, &out); err != nil {
+		return false, fmt.Errorf("invalid_ssh_peer_transition_field: remote_secret_absence_proof.%s", field)
+	}
+	return out, nil
+}
+
 func decodeBoolField(raw json.RawMessage, field string) (bool, error) {
 	if isJSONNull(raw) {
 		return false, fmt.Errorf("invalid_ssh_peer_upsert_field: peer.%s", field)
@@ -498,20 +727,11 @@ func applySSHPeerUpsert(cfg *Config, raw map[string]json.RawMessage, peerID stri
 	if err != nil {
 		return nil, err
 	}
-	index := -1
-	var peer map[string]json.RawMessage
-	for i, candidate := range peers {
-		id, err := rawPeerID(candidate)
-		if err != nil {
-			return nil, err
-		}
-		if id == peerID {
-			index = i
-			peer = cloneRawMap(candidate)
-			break
-		}
+	index, peer, found, err := findRawPeerForUpdate(peers, peerID)
+	if err != nil {
+		return nil, err
 	}
-	creating := index == -1
+	creating := !found
 	if creating {
 		peer = map[string]json.RawMessage{}
 		setRaw(peer, "id", peerID)
@@ -571,20 +791,11 @@ func applySSHPeerProofPatch(cfg *Config, raw map[string]json.RawMessage, peerID 
 	if err != nil {
 		return nil, err
 	}
-	index := -1
-	var peer map[string]json.RawMessage
-	for i, candidate := range peers {
-		id, err := rawPeerID(candidate)
-		if err != nil {
-			return nil, err
-		}
-		if id == peerID {
-			index = i
-			peer = cloneRawMap(candidate)
-			break
-		}
+	index, peer, found, err := findRawPeerForUpdate(peers, peerID)
+	if err != nil {
+		return nil, err
 	}
-	if index == -1 {
+	if !found {
 		return nil, fmt.Errorf("ssh_peer_not_found: %s", peerID)
 	}
 
@@ -613,6 +824,240 @@ func applySSHPeerProofPatch(cfg *Config, raw map[string]json.RawMessage, peerID 
 
 	peers[index] = peer
 	return peer, rebuildTypedSSHPeersAndWriteBack(cfg, raw, sshRaw, peers)
+}
+
+func applySSHPeerTransition(cfg *Config, raw map[string]json.RawMessage, peerID string, req SSHPeerTransitionRequest) (map[string]json.RawMessage, error) {
+	sshRaw, peers, err := rawSSHPeers(raw)
+	if err != nil {
+		return nil, err
+	}
+	index, peer, found, err := findRawPeerForUpdate(peers, peerID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("ssh_peer_not_found: %s", peerID)
+	}
+
+	currentState, err := rawPeerMigrationState(peer)
+	if err != nil {
+		return nil, err
+	}
+	if currentState != req.FromState {
+		return nil, fmt.Errorf("ssh_peer_transition_state_mismatch")
+	}
+	if err := validateSSHPeerTransitionRequest(peer, req); err != nil {
+		return nil, err
+	}
+
+	if req.ToState == MigrationStateLoopbackUnprovisioned {
+		delete(peer, "proof")
+		if _, err := scrubSecretLikeRawFields(peer, map[string]struct{}{"migration_log": {}}); err != nil {
+			return nil, err
+		}
+	}
+	setRaw(peer, "migration_state", req.ToState)
+	if err := appendSSHPeerMigrationLog(peer, req); err != nil {
+		return nil, err
+	}
+
+	peers[index] = peer
+	return peer, rebuildTypedSSHPeersAndWriteBack(cfg, raw, sshRaw, peers)
+}
+
+func validateSSHPeerTransitionRequest(peer map[string]json.RawMessage, req SSHPeerTransitionRequest) error {
+	if !validSSHPeerTransitionState(req.FromState) {
+		return fmt.Errorf("invalid_ssh_peer_transition_state: from_state")
+	}
+	if !validSSHPeerTransitionState(req.ToState) {
+		return fmt.Errorf("invalid_ssh_peer_transition_state: to_state")
+	}
+	if strings.TrimSpace(req.Reason) == "" {
+		return fmt.Errorf("missing_ssh_peer_transition_field: reason")
+	}
+	if strings.TrimSpace(req.LogID) == "" {
+		return fmt.Errorf("missing_ssh_peer_transition_field: log_id")
+	}
+	if req.FromState == req.ToState {
+		return fmt.Errorf("ssh_peer_transition_not_allowed: %s_to_%s", req.FromState, req.ToState)
+	}
+	if req.ToState != MigrationStateProvisionFailed {
+		if req.FailedPhase != nil {
+			return fmt.Errorf("invalid_ssh_peer_transition_field: failed_phase")
+		}
+		if req.RemoteSecretAbsenceProof != nil {
+			return fmt.Errorf("invalid_ssh_peer_transition_field: remote_secret_absence_proof")
+		}
+	}
+
+	typedPeer, err := typedPeerFromRaw(peer)
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case req.FromState == MigrationStateLoopbackUnprovisioned && req.ToState == MigrationStateSSHMaterialStaged:
+		return validateSSHPeerTransitionTargetStaged(typedPeer)
+	case (req.FromState == MigrationStateLoopbackUnprovisioned || req.FromState == MigrationStateSSHMaterialStaged) && req.ToState == MigrationStateProvisionFailed:
+		return validateSSHPeerProvisionFailedTransition(req)
+	case req.FromState == MigrationStateProvisionFailed && (req.ToState == MigrationStateLoopbackUnprovisioned || req.ToState == MigrationStateSSHMaterialStaged):
+		if req.Reason != "retry_progress" {
+			return fmt.Errorf("invalid_ssh_peer_transition_reason: %s", req.Reason)
+		}
+		if req.ToState == MigrationStateSSHMaterialStaged {
+			return validateSSHPeerTransitionTargetStaged(typedPeer)
+		}
+		return nil
+	case req.FromState == MigrationStateSSHMaterialStaged && req.ToState == MigrationStateSharedKeyWrittenUnverified:
+		if req.Reason != "remote_shared_key_written" && req.Reason != "secret_write_outcome_unknown" {
+			return fmt.Errorf("invalid_ssh_peer_transition_reason: %s", req.Reason)
+		}
+		return nil
+	case req.FromState == MigrationStateSharedKeyWrittenUnverified && req.ToState == MigrationStateSSHKeysReady:
+		if req.Reason != "gateway_version_verified" {
+			return fmt.Errorf("invalid_ssh_peer_transition_reason: %s", req.Reason)
+		}
+		return validateSSHPeerTransitionEnabledProofs(typedPeer)
+	case (req.FromState == MigrationStateSharedKeyWrittenUnverified || req.FromState == MigrationStateSSHKeysReady) && req.ToState == MigrationStateSSHMaterialStaged:
+		if req.Reason != "remote_shared_key_cleanup_verified" {
+			return fmt.Errorf("invalid_ssh_peer_transition_reason: %s", req.Reason)
+		}
+		return nil
+	case req.FromState == MigrationStateSSHKeysReady && req.ToState == MigrationStateLoopbackUnprovisioned:
+		if !identityResetOrRemovalPrepReason(req.Reason) {
+			return fmt.Errorf("invalid_ssh_peer_transition_reason: %s", req.Reason)
+		}
+		return nil
+	default:
+		return fmt.Errorf("ssh_peer_transition_not_allowed: %s_to_%s", req.FromState, req.ToState)
+	}
+}
+
+func validSSHPeerTransitionState(state MigrationState) bool {
+	switch state {
+	case MigrationStateLoopbackUnprovisioned,
+		MigrationStateSSHMaterialStaged,
+		MigrationStateProvisionFailed,
+		MigrationStateSharedKeyWrittenUnverified,
+		MigrationStateSSHKeysReady:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateSSHPeerTransitionTargetStaged(peer SSHPeer) error {
+	if !peer.Enabled {
+		return nil
+	}
+	if peer.Accept && peer.GatewayPath == "" {
+		return fmt.Errorf("ssh_peer_transition_requires_accept_material")
+	}
+	if peer.Connect {
+		if peer.SSHHost == "" || peer.SSHUser == "" || peer.SSHPort == 0 || peer.InstallPath == "" || peer.GatewayPath == "" {
+			return fmt.Errorf("ssh_peer_transition_requires_connect_material")
+		}
+	}
+	return validateSSHPeerTransitionEnabledProofs(peer)
+}
+
+func validateSSHPeerTransitionEnabledProofs(peer SSHPeer) error {
+	if err := ValidateDirectionalProof(peer, DirectionAccept); err != nil {
+		return fmt.Errorf("ssh_peer_transition_requires_current_proof: %w", err)
+	}
+	if err := ValidateDirectionalProof(peer, DirectionConnect); err != nil {
+		return fmt.Errorf("ssh_peer_transition_requires_current_proof: %w", err)
+	}
+	return nil
+}
+
+func validateSSHPeerProvisionFailedTransition(req SSHPeerTransitionRequest) error {
+	if req.FailedPhase == nil || strings.TrimSpace(*req.FailedPhase) == "" {
+		return fmt.Errorf("missing_ssh_peer_transition_field: failed_phase")
+	}
+	if req.RemoteSecretAbsenceProof == nil {
+		return fmt.Errorf("missing_ssh_peer_transition_field: remote_secret_absence_proof")
+	}
+	proof := req.RemoteSecretAbsenceProof
+	if proof.FailedPhase != *req.FailedPhase {
+		return fmt.Errorf("ssh_peer_transition_absence_proof_failed_phase_mismatch")
+	}
+	if _, err := time.Parse(time.RFC3339, proof.VerifiedAt); err != nil {
+		return fmt.Errorf("invalid_ssh_peer_transition_field: remote_secret_absence_proof.verified_at: %w", err)
+	}
+	if !proof.SecretWriteCommandSpawned && !preSecretProvisionFailedPhase(proof.FailedPhase) {
+		return fmt.Errorf("invalid_ssh_peer_transition_failed_phase: %s", proof.FailedPhase)
+	}
+	return nil
+}
+
+func preSecretProvisionFailedPhase(phase string) bool {
+	switch phase {
+	case "host_key_confirmation",
+		"upload_install",
+		"identity_probe",
+		"daemon_stop",
+		"required_sync_key_provision",
+		"known_hosts_provision",
+		"non_secret_config_write",
+		"managed_authorized_keys_write",
+		"pre_secret_forced_command_probe",
+		"local_peer_create",
+		"local_proof_patch",
+		"staged_transition":
+		return true
+	default:
+		return false
+	}
+}
+
+func identityResetOrRemovalPrepReason(reason string) bool {
+	switch reason {
+	case "identity_reset_prepared",
+		"identity_removal_prepared":
+		return true
+	default:
+		return false
+	}
+}
+
+func appendSSHPeerMigrationLog(peer map[string]json.RawMessage, req SSHPeerTransitionRequest) error {
+	var log []json.RawMessage
+	if value, ok := peer["migration_log"]; ok && !isJSONNull(value) {
+		if err := json.Unmarshal(value, &log); err != nil {
+			return fmt.Errorf("invalid_ssh_peer_migration_log: %w", err)
+		}
+	}
+
+	entry := map[string]any{
+		"from_state": req.FromState,
+		"to_state":   req.ToState,
+		"reason":     req.Reason,
+		"log_id":     req.LogID,
+	}
+	if req.FailedPhase != nil {
+		entry["failed_phase"] = *req.FailedPhase
+	}
+	if req.RemoteSecretAbsenceProof != nil {
+		proof := map[string]any{
+			"failed_phase":                 req.RemoteSecretAbsenceProof.FailedPhase,
+			"secret_write_command_spawned": req.RemoteSecretAbsenceProof.SecretWriteCommandSpawned,
+			"absence_verified_by":          req.RemoteSecretAbsenceProof.AbsenceVerifiedBy,
+			"verified_at":                  req.RemoteSecretAbsenceProof.VerifiedAt,
+			"log_id":                       req.RemoteSecretAbsenceProof.LogID,
+		}
+		if req.RemoteSecretAbsenceProof.RemoteConfigRevision != nil {
+			proof["remote_config_revision"] = *req.RemoteSecretAbsenceProof.RemoteConfigRevision
+		}
+		entry["remote_secret_absence_proof"] = proof
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	log = append(log, data)
+	setRaw(peer, "migration_log", log)
+	return nil
 }
 
 func rebuildTypedSSHPeersAndWriteBack(cfg *Config, raw map[string]json.RawMessage, sshRaw map[string]json.RawMessage, peers []map[string]json.RawMessage) error {
@@ -757,6 +1202,19 @@ func rawSSHPeerByID(raw map[string]json.RawMessage, peerID string) (map[string]j
 	return nil, -1, fmt.Errorf("ssh_peer_not_found: %s", peerID)
 }
 
+func findRawPeerForUpdate(peers []map[string]json.RawMessage, peerID string) (int, map[string]json.RawMessage, bool, error) {
+	for i, candidate := range peers {
+		id, err := rawPeerID(candidate)
+		if err != nil {
+			return -1, nil, false, err
+		}
+		if id == peerID {
+			return i, cloneRawMap(candidate), true, nil
+		}
+	}
+	return -1, nil, false, nil
+}
+
 func rawPeerID(peer map[string]json.RawMessage) (string, error) {
 	value, ok := peer["id"]
 	if !ok {
@@ -859,6 +1317,84 @@ func redactDecodedPeerValue(value any) any {
 		return out
 	default:
 		return value
+	}
+}
+
+func scrubSecretLikeRawFields(raw map[string]json.RawMessage, preserveKeys map[string]struct{}) (bool, error) {
+	changed := false
+	for key, value := range raw {
+		if _, preserve := preserveKeys[key]; preserve {
+			continue
+		}
+		if secretLikePeerField(key) {
+			delete(raw, key)
+			changed = true
+			continue
+		}
+		scrubbed, valueChanged, err := scrubSecretLikeRawValue(value)
+		if err != nil {
+			return false, err
+		}
+		if valueChanged {
+			raw[key] = scrubbed
+			changed = true
+		}
+	}
+	return changed, nil
+}
+
+func scrubSecretLikeRawValue(raw json.RawMessage) (json.RawMessage, bool, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return raw, false, nil
+	}
+	switch trimmed[0] {
+	case '{':
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &object); err != nil {
+			return nil, false, fmt.Errorf("invalid_ssh_peer_secret_scrub: %w", err)
+		}
+		if object == nil {
+			return raw, false, nil
+		}
+		changed, err := scrubSecretLikeRawFields(object, nil)
+		if err != nil {
+			return nil, false, err
+		}
+		if !changed {
+			return raw, false, nil
+		}
+		out, err := json.Marshal(object)
+		if err != nil {
+			return nil, false, err
+		}
+		return out, true, nil
+	case '[':
+		var values []json.RawMessage
+		if err := json.Unmarshal(raw, &values); err != nil {
+			return nil, false, fmt.Errorf("invalid_ssh_peer_secret_scrub: %w", err)
+		}
+		changed := false
+		for i, value := range values {
+			scrubbed, nestedChanged, err := scrubSecretLikeRawValue(value)
+			if err != nil {
+				return nil, false, err
+			}
+			if nestedChanged {
+				values[i] = scrubbed
+				changed = true
+			}
+		}
+		if !changed {
+			return raw, false, nil
+		}
+		out, err := json.Marshal(values)
+		if err != nil {
+			return nil, false, err
+		}
+		return out, true, nil
+	default:
+		return raw, false, nil
 	}
 }
 
