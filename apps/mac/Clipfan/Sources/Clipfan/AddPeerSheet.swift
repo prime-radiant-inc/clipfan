@@ -1,7 +1,14 @@
+import AppKit
 import SwiftUI
 
 func isAddPeerInstallDisabled(installCount: Int, installing: Bool, policy: SSHTransportGatePolicy = .current) -> Bool {
     installCount == 0 || installing || !policy.addPeerProvisioningEnabled
+}
+
+func addPeerInstallButtonTitle(installing: Bool, installCount: Int, failure: AddPeerOperationFailure?) -> String {
+    if installing { return "Installing…" }
+    if failure != nil { return "Retry" }
+    return installCount <= 1 ? "Install" : "Install on \(installCount) hosts"
 }
 
 struct AddPeerSheet: View {
@@ -19,6 +26,8 @@ struct AddPeerSheet: View {
 
     @State private var installing = false
     @State private var progress: String = ""
+    @State private var log: AddPeerOperationLog?
+    @State private var failure: AddPeerOperationFailure?
 
     private var installCount: Int {
         tailnetSelected.count + (host.isEmpty ? 0 : 1)
@@ -45,7 +54,9 @@ struct AddPeerSheet: View {
                 }
             }
 
-            if !progress.isEmpty {
+            if let failure {
+                failureSection(failure)
+            } else if !progress.isEmpty {
                 Text(progress).font(.callout).foregroundStyle(.secondary)
             }
 
@@ -54,18 +65,17 @@ struct AddPeerSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                Button(installing ? "Installing…" : installLabel) { install() }
+                Button(addPeerInstallButtonTitle(installing: installing,
+                                                 installCount: installCount,
+                                                 failure: failure)) { install() }
                     .keyboardShortcut(.return)
                     .disabled(isAddPeerInstallDisabled(installCount: installCount, installing: installing))
             }
         }
         .padding(20)
-        .frame(width: 560, height: tailnetAvailable ? 560 : 420)
+        .frame(width: 560)
+        .frame(minHeight: tailnetAvailable ? 620 : 500)
         .task { await loadTailnet() }
-    }
-
-    private var installLabel: String {
-        installCount <= 1 ? "Install" : "Install on \(installCount) hosts"
     }
 
     // MARK: tailnet
@@ -122,6 +132,35 @@ struct AddPeerSheet: View {
         }
     }
 
+    private func failureSection(_ failure: AddPeerOperationFailure) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(failure.message)
+                .font(.callout)
+                .foregroundStyle(.orange)
+            HStack {
+                Text("Log")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Copy Log") { copyFailureLog(failure) }
+                    .font(.caption)
+                    .disabled(failure.logText.isEmpty)
+            }
+            ScrollView {
+                Text(failure.logText)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+            }
+            .frame(minHeight: 110)
+            .background(Color.orange.opacity(0.06))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.20)))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
     // MARK: actions
 
     private func loadTailnet() async {
@@ -136,6 +175,8 @@ struct AddPeerSheet: View {
     private func install() {
         installing = true
         progress = ""
+        failure = nil
+        log = nil
         Task {
             var targets: [(user: String, host: String, port: Int, key: String)] = []
             for peer in tailnet where tailnetSelected.contains(peer.id) {
@@ -146,17 +187,34 @@ struct AddPeerSheet: View {
             }
 
             for t in targets {
-                await MainActor.run { progress = "Installing on \(t.host)…" }
+                await MainActor.run {
+                    progress = "Installing on \(t.host)…"
+                    log = AddPeerOperationLog(host: t.host)
+                }
                 do {
                     try await Installer.install(
                         user: t.user, host: t.host, port: t.port, sshKey: t.key,
                         withTmux: withTmux,
-                        onProgress: { p in let s = friendly(p, host: t.host); Task { @MainActor in progress = s } }
+                        onProgress: { @MainActor p in
+                            let s = friendly(p, host: t.host)
+                            progress = s
+                            if var currentLog = log {
+                                currentLog.record(p)
+                                log = currentLog
+                            }
+                        }
                     )
                     await MainActor.run { progress = "Installed on \(t.host)." }
                 } catch {
-                    await MainActor.run { progress = "Failed on \(t.host): \(error.localizedDescription)" }
-                    await MainActor.run { installing = false }
+                    await MainActor.run {
+                        var currentLog = log ?? AddPeerOperationLog(host: t.host)
+                        currentLog.recordFailure(error)
+                        let operationFailure = AddPeerOperationFailure(host: t.host, error: error, log: currentLog)
+                        log = currentLog
+                        failure = operationFailure
+                        progress = operationFailure.message
+                        installing = false
+                    }
                     return
                 }
             }
@@ -180,5 +238,10 @@ struct AddPeerSheet: View {
         default:        phrase = "Working"
         }
         return "\(host): \(phrase)…"
+    }
+
+    private func copyFailureLog(_ failure: AddPeerOperationFailure) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(failure.logText, forType: .string)
     }
 }
