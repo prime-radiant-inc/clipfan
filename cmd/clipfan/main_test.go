@@ -74,3 +74,31 @@ func TestRunVersionJSONCommandPrintsConfigV2CapabilityWithoutConfigLoad(t *testi
 		t.Fatalf("version --json touched config file: stat err = %v", err)
 	}
 }
+
+func TestRunSSHGatewayCommandDispatchesForcedCommandProbe(t *testing.T) {
+	oldVersion := version.Version
+	version.Version = "test-version"
+	defer func() { version.Version = oldVersion }()
+	t.Setenv("SSH_ORIGINAL_COMMAND", "probe-authorized-key")
+
+	var stdout, stderr bytes.Buffer
+	exitCode := run([]string{"ssh-gateway", "--authorized-peer", "linux-a", "--authorized-key-id", "key-123456"}, &stdout, &stderr)
+
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	var payload struct {
+		Status string `json:"status"`
+		PeerID string `json:"peer_id"`
+		KeyID  string `json:"key_id"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if payload.Status != "ok" || payload.PeerID != "linux-a" || payload.KeyID != "key-123456" {
+		t.Fatalf("payload = %#v", payload)
+	}
+}

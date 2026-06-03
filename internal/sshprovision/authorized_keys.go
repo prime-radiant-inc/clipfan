@@ -47,7 +47,7 @@ func NewManagedAuthorizedKey(entry ManagedAuthorizedKey) (ManagedAuthorizedKey, 
 	if err := config.ValidateHostID(entry.PeerID); err != nil {
 		return ManagedAuthorizedKey{}, fmt.Errorf("%w: invalid peer id: %v", ErrInvalidAuthorizedKey, err)
 	}
-	if !authorizedKeyIDPattern.MatchString(entry.KeyID) {
+	if err := ValidateManagedAuthorizedKeyID(entry.KeyID); err != nil {
 		return ManagedAuthorizedKey{}, fmt.Errorf("%w: invalid key id", ErrInvalidAuthorizedKey)
 	}
 	if err := config.ValidateSSHExecutablePath(entry.GatewayPath); err != nil {
@@ -61,6 +61,13 @@ func NewManagedAuthorizedKey(entry ManagedAuthorizedKey) (ManagedAuthorizedKey, 
 		return ManagedAuthorizedKey{}, fmt.Errorf("%w: unsupported public key type %q", ErrInvalidAuthorizedKey, keyType)
 	}
 	return entry, nil
+}
+
+func ValidateManagedAuthorizedKeyID(keyID string) error {
+	if !authorizedKeyIDPattern.MatchString(keyID) {
+		return fmt.Errorf("invalid_authorized_key_id")
+	}
+	return nil
 }
 
 func (entry ManagedAuthorizedKey) ForcedCommand() string {

@@ -20,7 +20,7 @@ import (
 )
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: clipfan [daemon|copy|paste|version] [flags]")
+	fmt.Fprintln(w, "usage: clipfan [daemon|copy|paste|ssh-gateway|version] [flags]")
 	fmt.Fprintln(w, "  (no subcommand) — run the daemon (back-compat)")
 	fmt.Fprintln(w, "  daemon          — explicitly run the daemon")
 	fmt.Fprintln(w, "  copy [--osc52 /dev/tty] [--image] [--no-daemon] [--no-osc52]")
@@ -29,6 +29,8 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  storage-preflight — check local runtime storage and print offline repair guidance")
 	fmt.Fprintln(w, "  local-fleet-reset --confirm \"RESET LOCAL CLIPFAN FLEET\"")
 	fmt.Fprintln(w, "                  — destructively reset local fleet credentials when recovery requires it")
+	fmt.Fprintln(w, "  ssh-gateway --authorized-peer <peer> --authorized-key-id <key>")
+	fmt.Fprintln(w, "                  — command-locked SSH gateway entrypoint")
 	fmt.Fprintln(w, "  version         — print the build version")
 }
 
@@ -60,6 +62,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		case "local-fleet-reset":
 			if err := cli.RunLocalFleetReset(args[1:], stdout, stderr); err != nil {
 				fmt.Fprintln(stderr, "clipfan local-fleet-reset:", err)
+				return 1
+			}
+			return 0
+		case "ssh-gateway":
+			if err := cli.RunSSHGateway(args[1:], stdout, stderr); err != nil {
+				fmt.Fprintln(stderr, "clipfan ssh-gateway:", err)
 				return 1
 			}
 			return 0
