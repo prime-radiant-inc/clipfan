@@ -271,6 +271,52 @@ final class DaemonClient: ObservableObject {
         await refreshHistory()
     }
 
+    func readSSHPeerConfig(peerID: String) async throws -> LocalDaemonSSHPeerConfigResponse {
+        try await sshPeerConfigClient().read(peerID: peerID)
+    }
+
+    func upsertSSHPeerConfig(peerID: String,
+                             request: LocalDaemonSSHPeerUpsertRequest) async throws -> LocalDaemonSSHPeerConfigResponse {
+        try requireSSHPeerConfigMutationAvailable()
+        return try await sshPeerConfigClient().upsertWithRevisionRetry(peerID: peerID, request: request)
+    }
+
+    func patchSSHPeerProof(peerID: String,
+                           request: LocalDaemonSSHPeerProofPatchRequest) async throws -> LocalDaemonSSHPeerConfigResponse {
+        try requireSSHPeerConfigMutationAvailable()
+        return try await sshPeerConfigClient().patchProofWithRevisionRetry(peerID: peerID, request: request)
+    }
+
+    func transitionSSHPeer(peerID: String,
+                           request: LocalDaemonSSHPeerTransitionRequest) async throws -> LocalDaemonSSHPeerConfigResponse {
+        try requireSSHPeerConfigMutationAvailable()
+        return try await sshPeerConfigClient().transitionWithRevisionRetry(peerID: peerID, request: request)
+    }
+
+    func disableSSHPeer(peerID: String,
+                        expectedConfigRevision: UInt64,
+                        reason: String) async throws -> LocalDaemonSSHPeerConfigResponse {
+        try requireSSHPeerConfigMutationAvailable()
+        return try await sshPeerConfigClient().disableWithRevisionRetry(
+            peerID: peerID,
+            expectedConfigRevision: expectedConfigRevision,
+            reason: reason
+        )
+    }
+
+    func deleteSSHPeer(peerID: String,
+                       expectedConfigRevision: UInt64,
+                       reason: String,
+                       logID: String) async throws -> LocalDaemonSSHPeerConfigResponse {
+        try requireSSHPeerConfigMutationAvailable()
+        return try await sshPeerConfigClient().deleteWithRevisionRetry(
+            peerID: peerID,
+            expectedConfigRevision: expectedConfigRevision,
+            reason: reason,
+            logID: logID
+        )
+    }
+
     private func signedRequest(method: String, path: String, body: [String: Any]) async {
         guard safeModeStatus?.active != true else { return }
         guard let key = loadSharedKey(),
@@ -359,5 +405,19 @@ final class DaemonClient: ObservableObject {
     private func authenticatedData(for prepared: LocalDaemonPreparedRequest, key: Data) async throws -> Data {
         let (data, response) = try await URLSession.shared.data(for: prepared.request)
         return try authenticatedClipfanData(data, response: response, requestNonce: prepared.requestNonce, key: key)
+    }
+
+    private func requireSSHPeerConfigMutationAvailable() throws {
+        guard safeModeStatus?.active != true else {
+            throw LocalDaemonSSHPeerConfigError.api(code: "safe_mode_active", statusCode: 503)
+        }
+    }
+
+    private func sshPeerConfigClient() throws -> LocalDaemonSSHPeerConfigClient {
+        guard let key = loadSharedKey() else {
+            throw LocalDaemonSSHPeerConfigError.api(code: "missing_shared_key", statusCode: 503)
+        }
+        let endpoint = LocalDaemonEndpoint(url: base, port: base.port ?? LocalDaemonDiscovery.defaultPort, purpose: .signed)
+        return LocalDaemonSSHPeerConfigClient(endpoint: endpoint, sharedKey: key)
     }
 }

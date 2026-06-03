@@ -307,6 +307,387 @@ struct LocalDaemonSafeModeLogEntry: Codable, Equatable, Identifiable {
     }
 }
 
+struct LocalDaemonSSHPeerConfigResponse: Codable, Equatable {
+    let peer: LocalDaemonSSHPeer
+    let config_revision: UInt64?
+    let revision_state: String
+    let config_version: Int?
+
+    var configRevision: UInt64? { config_revision }
+    var revisionState: String { revision_state }
+    var configVersion: Int? { config_version }
+}
+
+struct LocalDaemonSSHPeer: Codable, Equatable {
+    let id: String
+    let enabled: Bool?
+    let accept: Bool?
+    let connect: Bool?
+    let persistent: Bool?
+    let on_demand: Bool?
+    let ssh_host: String?
+    let ssh_user: String?
+    let ssh_port: Int?
+    let install_path: String?
+    let gateway_path: String?
+    let migration_state: String?
+    let proof: [String: LocalDaemonJSONValue]?
+    let cleanup_status: [String: LocalDaemonJSONValue]?
+    let additionalFields: [String: LocalDaemonJSONValue]
+
+    var sshHost: String? { ssh_host }
+    var sshUser: String? { ssh_user }
+    var sshPort: Int? { ssh_port }
+    var installPath: String? { install_path }
+    var gatewayPath: String? { gateway_path }
+    var migrationState: String? { migration_state }
+    var cleanupStatus: [String: LocalDaemonJSONValue]? { cleanup_status }
+    var sharedKey: String? { nil }
+    var privateKey: String? { nil }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case id
+        case enabled
+        case accept
+        case connect
+        case persistent
+        case on_demand
+        case ssh_host
+        case ssh_user
+        case ssh_port
+        case install_path
+        case gateway_path
+        case migration_state
+        case proof
+        case cleanup_status
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled)
+        accept = try container.decodeIfPresent(Bool.self, forKey: .accept)
+        connect = try container.decodeIfPresent(Bool.self, forKey: .connect)
+        persistent = try container.decodeIfPresent(Bool.self, forKey: .persistent)
+        on_demand = try container.decodeIfPresent(Bool.self, forKey: .on_demand)
+        ssh_host = try container.decodeIfPresent(String.self, forKey: .ssh_host)
+        ssh_user = try container.decodeIfPresent(String.self, forKey: .ssh_user)
+        ssh_port = try container.decodeIfPresent(Int.self, forKey: .ssh_port)
+        install_path = try container.decodeIfPresent(String.self, forKey: .install_path)
+        gateway_path = try container.decodeIfPresent(String.self, forKey: .gateway_path)
+        migration_state = try container.decodeIfPresent(String.self, forKey: .migration_state)
+        proof = Self.redactingSecretLikeFields(in: try container.decodeIfPresent([String: LocalDaemonJSONValue].self, forKey: .proof))
+        cleanup_status = Self.redactingSecretLikeFields(in: try container.decodeIfPresent([String: LocalDaemonJSONValue].self, forKey: .cleanup_status))
+
+        let dynamic = try decoder.container(keyedBy: LocalDaemonDynamicCodingKey.self)
+        var extras: [String: LocalDaemonJSONValue] = [:]
+        let known = Set(CodingKeys.allCases.map(\.stringValue))
+        for key in dynamic.allKeys where !known.contains(key.stringValue) && !LocalDaemonSSHPeer.secretLikeField(key.stringValue) {
+            extras[key.stringValue] = try dynamic.decode(LocalDaemonJSONValue.self, forKey: key)
+                .redactingSecretLikeFields(LocalDaemonSSHPeer.secretLikeField)
+        }
+        additionalFields = extras
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(enabled, forKey: .enabled)
+        try container.encodeIfPresent(accept, forKey: .accept)
+        try container.encodeIfPresent(connect, forKey: .connect)
+        try container.encodeIfPresent(persistent, forKey: .persistent)
+        try container.encodeIfPresent(on_demand, forKey: .on_demand)
+        try container.encodeIfPresent(ssh_host, forKey: .ssh_host)
+        try container.encodeIfPresent(ssh_user, forKey: .ssh_user)
+        try container.encodeIfPresent(ssh_port, forKey: .ssh_port)
+        try container.encodeIfPresent(install_path, forKey: .install_path)
+        try container.encodeIfPresent(gateway_path, forKey: .gateway_path)
+        try container.encodeIfPresent(migration_state, forKey: .migration_state)
+        try container.encodeIfPresent(proof, forKey: .proof)
+        try container.encodeIfPresent(cleanup_status, forKey: .cleanup_status)
+
+        var dynamic = encoder.container(keyedBy: LocalDaemonDynamicCodingKey.self)
+        let known = Set(CodingKeys.allCases.map(\.stringValue))
+        for (key, value) in additionalFields where !known.contains(key) && !Self.secretLikeField(key) {
+            try dynamic.encode(value, forKey: LocalDaemonDynamicCodingKey(stringValue: key))
+        }
+    }
+
+    private static func secretLikeField(_ field: String) -> Bool {
+        let lower = field.lowercased()
+        return lower == "shared_key" ||
+            lower == "private_key" ||
+            lower == "private_key_path" ||
+            lower == "sync_key" ||
+            lower == "sync_key_path" ||
+            lower == "accept_proof" ||
+            lower == "connect_proof" ||
+            lower.contains("shared_key") ||
+            lower.contains("secret") ||
+            lower.contains("token") ||
+            lower.contains("seed") ||
+            lower.contains("password") ||
+            lower.contains("credential") ||
+            lower.contains("private") ||
+            lower.contains("hmac") ||
+            lower.contains("nonce") ||
+            lower.contains("encrypted") ||
+            lower.contains("clipboard") ||
+            lower.contains("signed_frame")
+    }
+
+    private static func redactingSecretLikeFields(in fields: [String: LocalDaemonJSONValue]?) -> [String: LocalDaemonJSONValue]? {
+        guard let fields else { return nil }
+        return LocalDaemonJSONValue.object(fields)
+            .redactingSecretLikeFields(secretLikeField)
+            .objectValue
+    }
+}
+
+struct LocalDaemonSSHPeerUpsertRequest: Codable, Equatable {
+    let expected_config_revision: UInt64
+    let peer: LocalDaemonSSHPeerUpsertFields
+
+    init(expectedConfigRevision: UInt64, peer: LocalDaemonSSHPeerUpsertFields) {
+        self.expected_config_revision = expectedConfigRevision
+        self.peer = peer
+    }
+}
+
+struct LocalDaemonSSHPeerUpsertFields: Codable, Equatable {
+    let id: String?
+    let enabled: Bool?
+    let accept: Bool?
+    let connect: Bool?
+    let persistent: Bool?
+    let on_demand: Bool?
+    let ssh_host: String?
+    let ssh_user: String?
+    let ssh_port: Int?
+    let install_path: String?
+    let gateway_path: String?
+    let migration_state: String?
+
+    init(id: String? = nil,
+         enabled: Bool? = nil,
+         accept: Bool? = nil,
+         connect: Bool? = nil,
+         persistent: Bool? = nil,
+         onDemand: Bool? = nil,
+         sshHost: String? = nil,
+         sshUser: String? = nil,
+         sshPort: Int? = nil,
+         installPath: String? = nil,
+         gatewayPath: String? = nil,
+         migrationState: String? = nil) {
+        self.id = id
+        self.enabled = enabled
+        self.accept = accept
+        self.connect = connect
+        self.persistent = persistent
+        self.on_demand = onDemand
+        self.ssh_host = sshHost
+        self.ssh_user = sshUser
+        self.ssh_port = sshPort
+        self.install_path = installPath
+        self.gateway_path = gatewayPath
+        self.migration_state = migrationState
+    }
+}
+
+struct LocalDaemonSSHPeerProofPatchRequest: Codable, Equatable {
+    let expected_config_revision: UInt64
+    let accept_proof: LocalDaemonSSHPeerDirectionalProofPatch?
+    let connect_proof: LocalDaemonSSHPeerDirectionalProofPatch?
+
+    init(expectedConfigRevision: UInt64,
+         acceptProof: LocalDaemonSSHPeerDirectionalProofPatch? = nil,
+         connectProof: LocalDaemonSSHPeerDirectionalProofPatch? = nil) {
+        self.expected_config_revision = expectedConfigRevision
+        self.accept_proof = acceptProof
+        self.connect_proof = connectProof
+    }
+}
+
+struct LocalDaemonSSHPeerDirectionalProofPatch: Codable, Equatable {
+    let key_id: String
+    let gateway_path: String
+    let verified_at: String
+    let verified_by: String
+
+    init(keyID: String, gatewayPath: String, verifiedAt: String, verifiedBy: String) {
+        self.key_id = keyID
+        self.gateway_path = gatewayPath
+        self.verified_at = verifiedAt
+        self.verified_by = verifiedBy
+    }
+}
+
+struct LocalDaemonSSHPeerTransitionRequest: Codable, Equatable {
+    let expected_config_revision: UInt64
+    let from_state: String
+    let to_state: String
+    let reason: String
+    let log_id: String
+    let failed_phase: String?
+    let remote_secret_absence_proof: LocalDaemonSSHPeerRemoteSecretAbsenceProof?
+
+    init(expectedConfigRevision: UInt64,
+         fromState: String,
+         toState: String,
+         reason: String,
+         logID: String,
+         failedPhase: String? = nil,
+         remoteSecretAbsenceProof: LocalDaemonSSHPeerRemoteSecretAbsenceProof? = nil) {
+        self.expected_config_revision = expectedConfigRevision
+        self.from_state = fromState
+        self.to_state = toState
+        self.reason = reason
+        self.log_id = logID
+        self.failed_phase = failedPhase
+        self.remote_secret_absence_proof = remoteSecretAbsenceProof
+    }
+}
+
+struct LocalDaemonSSHPeerRemoteSecretAbsenceProof: Codable, Equatable {
+    let failed_phase: String
+    let secret_write_command_spawned: Bool
+    let absence_verified_by: String
+    let verified_at: String
+    let remote_config_revision: UInt64?
+    let log_id: String
+
+    init(failedPhase: String,
+         secretWriteCommandSpawned: Bool,
+         absenceVerifiedBy: String,
+         verifiedAt: String,
+         remoteConfigRevision: UInt64? = nil,
+         logID: String) {
+        self.failed_phase = failedPhase
+        self.secret_write_command_spawned = secretWriteCommandSpawned
+        self.absence_verified_by = absenceVerifiedBy
+        self.verified_at = verifiedAt
+        self.remote_config_revision = remoteConfigRevision
+        self.log_id = logID
+    }
+}
+
+struct LocalDaemonSSHPeerDisableRequest: Codable, Equatable {
+    let expected_config_revision: UInt64
+    let reason: String
+
+    init(expectedConfigRevision: UInt64, reason: String) {
+        self.expected_config_revision = expectedConfigRevision
+        self.reason = reason
+    }
+}
+
+struct LocalDaemonSSHPeerDeleteRequest: Codable, Equatable {
+    let expected_config_revision: UInt64
+    let reason: String
+    let log_id: String
+
+    init(expectedConfigRevision: UInt64, reason: String, logID: String) {
+        self.expected_config_revision = expectedConfigRevision
+        self.reason = reason
+        self.log_id = logID
+    }
+}
+
+struct LocalDaemonAPIErrorResponse: Codable, Equatable {
+    let error: String?
+    let code: String?
+
+    var stableCode: String? { code ?? error }
+}
+
+enum LocalDaemonJSONValue: Codable, Equatable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case object([String: LocalDaemonJSONValue])
+    case array([LocalDaemonJSONValue])
+    case null
+
+    var stringValue: String? {
+        if case .string(let value) = self { return value }
+        return nil
+    }
+
+    var boolValue: Bool? {
+        if case .bool(let value) = self { return value }
+        return nil
+    }
+
+    var objectValue: [String: LocalDaemonJSONValue]? {
+        if case .object(let value) = self { return value }
+        return nil
+    }
+
+    func redactingSecretLikeFields(_ isSecretLike: (String) -> Bool) -> LocalDaemonJSONValue {
+        switch self {
+        case .object(let fields):
+            var redacted: [String: LocalDaemonJSONValue] = [:]
+            for (key, value) in fields where !isSecretLike(key) {
+                redacted[key] = value.redactingSecretLikeFields(isSecretLike)
+            }
+            return .object(redacted)
+        case .array(let values):
+            return .array(values.map { $0.redactingSecretLikeFields(isSecretLike) })
+        case .string, .number, .bool, .null:
+            return self
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([String: LocalDaemonJSONValue].self) {
+            self = .object(value)
+        } else {
+            self = .array(try container.decode([LocalDaemonJSONValue].self))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .number(let value):
+            try container.encode(value)
+        case .bool(let value):
+            try container.encode(value)
+        case .object(let value):
+            try container.encode(value)
+        case .array(let value):
+            try container.encode(value)
+        case .null:
+            try container.encodeNil()
+        }
+    }
+}
+
+private struct LocalDaemonDynamicCodingKey: CodingKey, Hashable {
+    let stringValue: String
+    let intValue: Int? = nil
+
+    init(stringValue: String) {
+        self.stringValue = stringValue
+    }
+
+    init?(intValue: Int) {
+        nil
+    }
+}
+
 struct TailscalePeer: Identifiable, Hashable {
     var id: String { hostName }
     let hostName: String
