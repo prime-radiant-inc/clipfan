@@ -2,6 +2,8 @@ package sshprovision
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -244,6 +246,278 @@ func TestParseManagedAuthorizedKeyMetadata(t *testing.T) {
 	}
 }
 
+func TestUpsertManagedAuthorizedKeyFileCreatesSSHDirectoryAndFile(t *testing.T) {
+	t.Parallel()
+
+	home := knownHostsTempDir(t)
+	path := filepath.Join(home, ".ssh", "authorized_keys")
+	entry := mustManagedAuthorizedKey(t, ManagedAuthorizedKey{
+		PeerID:      "linux-a",
+		KeyID:       "key-123456",
+		GatewayPath: "/home/jesse/.local/bin/clipfan",
+		PublicKey:   testEd25519Key,
+	})
+
+	changed, err := UpsertManagedAuthorizedKeyFile(home, entry)
+	if err != nil {
+		t.Fatalf("UpsertManagedAuthorizedKeyFile() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("UpsertManagedAuthorizedKeyFile() changed = false, want true")
+	}
+	assertFileBody(t, path, entry.Line()+"\n")
+	assertMode(t, filepath.Dir(path), 0o700)
+	assertMode(t, path, 0o600)
+	assertMode(t, path+".lock", 0o600)
+
+	if err := VerifyManagedAuthorizedKeyFile(home, entry); err != nil {
+		t.Fatalf("VerifyManagedAuthorizedKeyFile() error = %v", err)
+	}
+}
+
+func TestUpsertManagedAuthorizedKeyFileIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	home := knownHostsTempDir(t)
+	path := filepath.Join(home, ".ssh", "authorized_keys")
+	entry := mustManagedAuthorizedKey(t, ManagedAuthorizedKey{
+		PeerID:      "linux-a",
+		KeyID:       "key-123456",
+		GatewayPath: "/home/jesse/.local/bin/clipfan",
+		PublicKey:   testEd25519Key,
+	})
+
+	changed, err := UpsertManagedAuthorizedKeyFile(home, entry)
+	if err != nil {
+		t.Fatalf("initial UpsertManagedAuthorizedKeyFile() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("initial UpsertManagedAuthorizedKeyFile() changed = false")
+	}
+	before := mustReadFile(t, path)
+
+	changed, err = UpsertManagedAuthorizedKeyFile(home, entry)
+	if err != nil {
+		t.Fatalf("second UpsertManagedAuthorizedKeyFile() error = %v", err)
+	}
+	if changed {
+		t.Fatal("second UpsertManagedAuthorizedKeyFile() changed = true, want false")
+	}
+	assertFileBody(t, path, before)
+}
+
+func TestVerifyManagedAuthorizedKeyFileReportsMissing(t *testing.T) {
+	t.Parallel()
+
+	home := knownHostsTempDir(t)
+	path := filepath.Join(home, ".ssh", "authorized_keys")
+	entry := mustManagedAuthorizedKey(t, ManagedAuthorizedKey{
+		PeerID:      "linux-a",
+		KeyID:       "key-123456",
+		GatewayPath: "/home/jesse/.local/bin/clipfan",
+		PublicKey:   testEd25519Key,
+	})
+	if err := os.Mkdir(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir .ssh: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("ssh-ed25519 "+testOtherEd25519Key+" user@example\n"), 0o600); err != nil {
+		t.Fatalf("write authorized_keys: %v", err)
+	}
+
+	err := VerifyManagedAuthorizedKeyFile(home, entry)
+	if !errors.Is(err, ErrAuthorizedKeyNotFound) {
+		t.Fatalf("VerifyManagedAuthorizedKeyFile() error = %v, want ErrAuthorizedKeyNotFound", err)
+	}
+}
+
+func TestUpsertManagedAuthorizedKeyFileRejectsCrossPeerKeyIDConflictWithoutWriting(t *testing.T) {
+	t.Parallel()
+
+	home := knownHostsTempDir(t)
+	path := filepath.Join(home, ".ssh", "authorized_keys")
+	if err := os.Mkdir(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir .ssh: %v", err)
+	}
+	existing := mustManagedAuthorizedKey(t, ManagedAuthorizedKey{
+		PeerID:      "linux-b",
+		KeyID:       "key-123456",
+		GatewayPath: "/home/jesse/.local/bin/clipfan",
+		PublicKey:   testOtherEd25519Key,
+	})
+	before := existing.Line() + "\n"
+	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+		t.Fatalf("write authorized_keys: %v", err)
+	}
+	entry := mustManagedAuthorizedKey(t, ManagedAuthorizedKey{
+		PeerID:      "linux-a",
+		KeyID:       "key-123456",
+		GatewayPath: "/home/jesse/.local/bin/clipfan",
+		PublicKey:   testEd25519Key,
+	})
+
+	changed, err := UpsertManagedAuthorizedKeyFile(home, entry)
+	if !errors.Is(err, ErrAuthorizedKeyConflict) {
+		t.Fatalf("UpsertManagedAuthorizedKeyFile() error = %v, want ErrAuthorizedKeyConflict", err)
+	}
+	if changed {
+		t.Fatal("UpsertManagedAuthorizedKeyFile() changed = true on conflict")
+	}
+	assertFileBody(t, path, before)
+	assertNoAuthorizedKeysTemps(t, filepath.Dir(path))
+}
+
+func TestManagedAuthorizedKeyFileRejectsUnsafePaths(t *testing.T) {
+	t.Parallel()
+
+	entry := mustManagedAuthorizedKey(t, ManagedAuthorizedKey{
+		PeerID:      "linux-a",
+		KeyID:       "key-123456",
+		GatewayPath: "/home/jesse/.local/bin/clipfan",
+		PublicKey:   testEd25519Key,
+	})
+
+	t.Run("invalid home path", func(t *testing.T) {
+		t.Parallel()
+
+		if _, err := ManagedAuthorizedKeysPath("relative/home"); !errors.Is(err, ErrAuthorizedKeysUnsafe) {
+			t.Fatalf("ManagedAuthorizedKeysPath() error = %v, want ErrAuthorizedKeysUnsafe", err)
+		}
+		if _, err := UpsertManagedAuthorizedKeyFile(knownHostsTempDir(t)+"/home/../other", entry); !errors.Is(err, ErrAuthorizedKeysUnsafe) {
+			t.Fatalf("UpsertManagedAuthorizedKeyFile() error = %v, want ErrAuthorizedKeysUnsafe", err)
+		}
+	})
+
+	t.Run("symlink file", func(t *testing.T) {
+		t.Parallel()
+
+		home := knownHostsTempDir(t)
+		dir := filepath.Join(home, ".ssh")
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatalf("mkdir .ssh: %v", err)
+		}
+		target := filepath.Join(dir, "target")
+		path := filepath.Join(dir, "authorized_keys")
+		if err := os.WriteFile(target, []byte("target"), 0o600); err != nil {
+			t.Fatalf("write target: %v", err)
+		}
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+
+		_, err := UpsertManagedAuthorizedKeyFile(home, entry)
+		if !errors.Is(err, ErrAuthorizedKeysUnsafe) {
+			t.Fatalf("UpsertManagedAuthorizedKeyFile() error = %v, want ErrAuthorizedKeysUnsafe", err)
+		}
+		assertFileBody(t, target, "target")
+	})
+
+	t.Run("symlink ancestor", func(t *testing.T) {
+		t.Parallel()
+
+		targetRoot := knownHostsTempDir(t)
+		linkRoot := filepath.Join(knownHostsTempDir(t), "home-link")
+		if err := os.Symlink(targetRoot, linkRoot); err != nil {
+			t.Fatalf("symlink ancestor: %v", err)
+		}
+		_, err := UpsertManagedAuthorizedKeyFile(linkRoot, entry)
+		if !errors.Is(err, ErrAuthorizedKeysUnsafe) {
+			t.Fatalf("UpsertManagedAuthorizedKeyFile() error = %v, want ErrAuthorizedKeysUnsafe", err)
+		}
+		if _, statErr := os.Lstat(filepath.Join(targetRoot, ".ssh")); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("redirected .ssh exists after symlink ancestor rejection: %v", statErr)
+		}
+	})
+
+	t.Run("symlink ssh directory", func(t *testing.T) {
+		t.Parallel()
+
+		home := knownHostsTempDir(t)
+		targetDir := filepath.Join(knownHostsTempDir(t), "target-ssh")
+		if err := os.Mkdir(targetDir, 0o700); err != nil {
+			t.Fatalf("mkdir target .ssh: %v", err)
+		}
+		if err := os.Symlink(targetDir, filepath.Join(home, ".ssh")); err != nil {
+			t.Fatalf("symlink .ssh: %v", err)
+		}
+
+		_, err := UpsertManagedAuthorizedKeyFile(home, entry)
+		if !errors.Is(err, ErrAuthorizedKeysUnsafe) {
+			t.Fatalf("UpsertManagedAuthorizedKeyFile() error = %v, want ErrAuthorizedKeysUnsafe", err)
+		}
+		if _, statErr := os.Lstat(filepath.Join(targetDir, "authorized_keys")); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("redirected authorized_keys exists after .ssh symlink rejection: %v", statErr)
+		}
+	})
+
+	t.Run("hardlink file", func(t *testing.T) {
+		t.Parallel()
+
+		home := knownHostsTempDir(t)
+		dir := filepath.Join(home, ".ssh")
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatalf("mkdir .ssh: %v", err)
+		}
+		target := filepath.Join(dir, "target")
+		path := filepath.Join(dir, "authorized_keys")
+		if err := os.WriteFile(target, []byte("target"), 0o600); err != nil {
+			t.Fatalf("write target: %v", err)
+		}
+		if err := os.Link(target, path); err != nil {
+			t.Fatalf("link: %v", err)
+		}
+
+		_, err := UpsertManagedAuthorizedKeyFile(home, entry)
+		if !errors.Is(err, ErrAuthorizedKeysUnsafe) {
+			t.Fatalf("UpsertManagedAuthorizedKeyFile() error = %v, want ErrAuthorizedKeysUnsafe", err)
+		}
+		assertFileBody(t, target, "target")
+	})
+
+	t.Run("symlink lock", func(t *testing.T) {
+		t.Parallel()
+
+		home := knownHostsTempDir(t)
+		dir := filepath.Join(home, ".ssh")
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatalf("mkdir .ssh: %v", err)
+		}
+		target := filepath.Join(dir, "lock-target")
+		if err := os.WriteFile(target, []byte("lock"), 0o600); err != nil {
+			t.Fatalf("write lock target: %v", err)
+		}
+		if err := os.Symlink(target, filepath.Join(dir, "authorized_keys.lock")); err != nil {
+			t.Fatalf("symlink lock: %v", err)
+		}
+
+		_, err := UpsertManagedAuthorizedKeyFile(home, entry)
+		if !errors.Is(err, ErrAuthorizedKeysUnsafe) {
+			t.Fatalf("UpsertManagedAuthorizedKeyFile() error = %v, want ErrAuthorizedKeysUnsafe", err)
+		}
+		assertFileBody(t, target, "lock")
+	})
+
+	t.Run("too open file", func(t *testing.T) {
+		t.Parallel()
+
+		home := knownHostsTempDir(t)
+		dir := filepath.Join(home, ".ssh")
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatalf("mkdir .ssh: %v", err)
+		}
+		path := filepath.Join(dir, "authorized_keys")
+		before := "ssh-ed25519 " + testOtherEd25519Key + " user@example\n"
+		if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+			t.Fatalf("write authorized_keys: %v", err)
+		}
+
+		_, err := UpsertManagedAuthorizedKeyFile(home, entry)
+		if !errors.Is(err, ErrAuthorizedKeysUnsafe) {
+			t.Fatalf("UpsertManagedAuthorizedKeyFile() error = %v, want ErrAuthorizedKeysUnsafe", err)
+		}
+		assertFileBody(t, path, before)
+	})
+}
+
 func mustManagedAuthorizedKey(t *testing.T, entry ManagedAuthorizedKey) ManagedAuthorizedKey {
 	t.Helper()
 	managed, err := NewManagedAuthorizedKey(entry)
@@ -251,4 +525,17 @@ func mustManagedAuthorizedKey(t *testing.T, entry ManagedAuthorizedKey) ManagedA
 		t.Fatalf("NewManagedAuthorizedKey() error = %v", err)
 	}
 	return managed
+}
+
+func assertNoAuthorizedKeysTemps(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir %s: %v", dir, err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".authorized-keys-") {
+			t.Fatalf("left temporary authorized_keys file %s", entry.Name())
+		}
+	}
 }
