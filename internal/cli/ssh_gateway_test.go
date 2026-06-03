@@ -29,7 +29,7 @@ func TestRunSSHGatewayAllowsProbeCommand(t *testing.T) {
 		&stderr,
 		func(key string) string {
 			if key == "SSH_ORIGINAL_COMMAND" {
-				return SSHGatewayProbeCommand
+				return sshprovision.SSHGatewayProbeCommand
 			}
 			return ""
 		},
@@ -64,19 +64,19 @@ func TestRunSSHGatewayRejectsShellAndUnknownCommands(t *testing.T) {
 		command string
 	}{
 		{name: "empty command", command: ""},
-		{name: "leading whitespace", command: " " + SSHGatewayProbeCommand},
-		{name: "trailing whitespace", command: SSHGatewayProbeCommand + " "},
-		{name: "newline", command: SSHGatewayProbeCommand + "\n"},
+		{name: "leading whitespace", command: " " + sshprovision.SSHGatewayProbeCommand},
+		{name: "trailing whitespace", command: sshprovision.SSHGatewayProbeCommand + " "},
+		{name: "newline", command: sshprovision.SSHGatewayProbeCommand + "\n"},
 		{name: "shell command", command: "sh"},
-		{name: "probe plus extra token", command: SSHGatewayProbeCommand + " --shell"},
-		{name: "probe shell separator", command: SSHGatewayProbeCommand + ";sh"},
+		{name: "probe plus extra token", command: sshprovision.SSHGatewayProbeCommand + " --shell"},
+		{name: "probe shell separator", command: sshprovision.SSHGatewayProbeCommand + ";sh"},
 		{name: "scp", command: "scp -t file"},
 		{name: "sftp", command: "sftp"},
 		{name: "version", command: "version"},
 		{name: "receive", command: "receive"},
 		{name: "sync stream", command: "sync-stream"},
-		{name: "peer metadata in command", command: SSHGatewayProbeCommand + " --authorized-peer linux-a"},
-		{name: "key metadata in command", command: SSHGatewayProbeCommand + " --authorized-key-id key-123456"},
+		{name: "peer metadata in command", command: sshprovision.SSHGatewayProbeCommand + " --authorized-peer linux-a"},
+		{name: "key metadata in command", command: sshprovision.SSHGatewayProbeCommand + " --authorized-key-id key-123456"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -120,7 +120,7 @@ func TestRunSSHGatewayRejectsInvalidIdentity(t *testing.T) {
 			t.Parallel()
 
 			var stdout, stderr bytes.Buffer
-			err := runSSHGateway(tc.args, &stdout, &stderr, func(string) string { return SSHGatewayProbeCommand })
+			err := runSSHGateway(tc.args, &stdout, &stderr, func(string) string { return sshprovision.SSHGatewayProbeCommand })
 			if err == nil {
 				t.Fatal("runSSHGateway() error = nil, want error")
 			}
@@ -149,8 +149,8 @@ func TestSSHGatewayForcedCommandMatchesManagedAuthorizedKey(t *testing.T) {
 	if got := managed.ForcedCommand(); got != want {
 		t.Fatalf("ForcedCommand() = %q, want %q", got, want)
 	}
-	if SSHGatewayProbeCommand != "probe-authorized-key" {
-		t.Fatalf("SSHGatewayProbeCommand = %q, want probe-authorized-key", SSHGatewayProbeCommand)
+	if sshprovision.SSHGatewayProbeCommand != "probe-authorized-key" {
+		t.Fatalf("SSHGatewayProbeCommand = %q, want probe-authorized-key", sshprovision.SSHGatewayProbeCommand)
 	}
 }
 

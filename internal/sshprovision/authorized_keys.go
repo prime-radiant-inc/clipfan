@@ -18,6 +18,7 @@ import (
 const (
 	authorizedKeyMarkerPrefix = "clipfan-sync:"
 	managedKeyType            = "ssh-ed25519"
+	SSHGatewayProbeCommand    = "probe-authorized-key"
 )
 
 var (

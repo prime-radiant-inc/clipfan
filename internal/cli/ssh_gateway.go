@@ -13,8 +13,6 @@ import (
 	"github.com/prime-radiant-inc/clipfan/internal/version"
 )
 
-const SSHGatewayProbeCommand = "probe-authorized-key"
-
 var ErrSSHGatewayCommandRejected = errors.New("ssh_gateway_command_rejected")
 
 func RunSSHGateway(args []string, stdout io.Writer, stderr io.Writer) error {
@@ -40,7 +38,7 @@ func runSSHGateway(args []string, stdout io.Writer, stderr io.Writer, getenv fun
 	}
 
 	switch getenv("SSH_ORIGINAL_COMMAND") {
-	case SSHGatewayProbeCommand:
+	case sshprovision.SSHGatewayProbeCommand:
 		return json.NewEncoder(stdout).Encode(map[string]string{
 			"status":  "ok",
 			"peer_id": *peerID,
