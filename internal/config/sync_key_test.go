@@ -1126,6 +1126,162 @@ func TestLoadLocalSyncKeyDoesNotCreateOverwriteOrChmodMismatchedMaterial(t *test
 	}
 }
 
+func TestResetLocalSyncKeyRegeneratesMismatchedMaterial(t *testing.T) {
+	keyPath, created := createSyncKeyFixture(t)
+	writeSyncKeyMetadataForTest(t, keyPath+".clipfan.json", SyncKeyMetadata{
+		Schema:          created.Metadata.Schema,
+		HostID:          "old-host",
+		KeyID:           created.Metadata.KeyID,
+		PublicKeySHA256: created.Metadata.PublicKeySHA256,
+		PublicKey:       created.Metadata.PublicKey,
+		CreatedAt:       created.Metadata.CreatedAt,
+	})
+	oldPrivate := readFile(t, keyPath)
+	newPublicBlob := []byte("reset public")
+	newPublicKey := "ssh-ed25519 " + base64.StdEncoding.EncodeToString(newPublicBlob) + " clipfan:m4"
+
+	result, err := ResetLocalSyncKey(SyncKeyResetOptions{
+		KeyPath:   keyPath,
+		HostID:    "m4",
+		Checker:   localSyncKeyChecker(),
+		Now:       func() time.Time { return time.Date(2026, 6, 3, 9, 10, 11, 0, time.UTC) },
+		Generator: fakeSyncKeyGenerator("NEW-PRIVATE-MATERIAL", newPublicKey),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PrivateKeyPath != keyPath || result.PublicKeyPath != keyPath+".pub" || result.SidecarPath != keyPath+".clipfan.json" {
+		t.Fatalf("result paths = %#v, want final key paths", result)
+	}
+	if got := readFile(t, keyPath); got != "NEW-PRIVATE-MATERIAL" {
+		t.Fatalf("private key = %q, want regenerated material", got)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", result), oldPrivate) || strings.Contains(fmt.Sprintf("%+v", result), "NEW-PRIVATE-MATERIAL") {
+		t.Fatalf("reset result disclosed private material: %+v", result)
+	}
+
+	loaded, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+		KeyPath: keyPath,
+		HostID:  "m4",
+		Checker: localSyncKeyChecker(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.PublicKey != newPublicKey || loaded.Metadata.HostID != "m4" || loaded.Metadata.CreatedAt != "2026-06-03T09:10:11Z" {
+		t.Fatalf("loaded regenerated key = %#v", loaded)
+	}
+}
+
+func TestResetLocalSyncKeyWithSSHKeygenIntegration(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen unavailable")
+	}
+	keyPath, created := createSyncKeyFixture(t)
+	result, err := ResetLocalSyncKey(SyncKeyResetOptions{
+		KeyPath: keyPath,
+		HostID:  "m4",
+		Checker: localSyncKeyChecker(),
+		Now:     func() time.Time { return time.Date(2026, 6, 3, 9, 10, 11, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PrivateKeyPath != keyPath || result.PublicKeyPath != keyPath+".pub" || result.SidecarPath != keyPath+".clipfan.json" {
+		t.Fatalf("result paths = %#v, want final key paths", result)
+	}
+	if result.PublicKey == created.PublicKey || result.KeyID == created.KeyID {
+		t.Fatalf("reset reused original public identity: reset=%#v created=%#v", result, created)
+	}
+	if got := fileMode(t, keyPath); got != 0o600 {
+		t.Fatalf("private key mode = %#o, want 0600", got)
+	}
+	loaded, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+		KeyPath: keyPath,
+		HostID:  "m4",
+		Checker: localSyncKeyChecker(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.PublicKey != result.PublicKey || loaded.KeyID != result.KeyID || loaded.Metadata.CreatedAt != "2026-06-03T09:10:11Z" {
+		t.Fatalf("loaded reset key = %#v, want %#v", loaded, result)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", result), "PRIVATE-MATERIAL") || strings.Contains(fmt.Sprintf("%+v", loaded), "PRIVATE-MATERIAL") {
+		t.Fatalf("reset exposed old private material: result=%+v loaded=%+v", result, loaded)
+	}
+}
+
+func TestResetLocalSyncKeySweepsStaleScratch(t *testing.T) {
+	keyPath, _ := createSyncKeyFixture(t)
+	base := filepath.Base(keyPath)
+	dir := filepath.Dir(keyPath)
+	stalePaths := []string{
+		filepath.Join(dir, "."+base+".reset.123.456"),
+		filepath.Join(dir, "."+base+".reset.123.456.pub"),
+		filepath.Join(dir, "."+base+".reset.123.456.clipfan.json"),
+		filepath.Join(dir, base+".reset-old.123.456"),
+		filepath.Join(dir, base+".pub.reset-old.123.456"),
+		filepath.Join(dir, base+".clipfan.json.reset-old.123.456"),
+	}
+	for _, path := range stalePaths {
+		if err := os.WriteFile(path, []byte("STALE-PRIVATE-MATERIAL"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keptPath := filepath.Join(dir, base+".reset-old.not-a-counter")
+	if err := os.WriteFile(keptPath, []byte("not clipfan scratch"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newPublicKey := "ssh-ed25519 " + base64.StdEncoding.EncodeToString([]byte("new public")) + " clipfan:m4"
+
+	_, err := ResetLocalSyncKey(SyncKeyResetOptions{
+		KeyPath:   keyPath,
+		HostID:    "m4",
+		Checker:   localSyncKeyChecker(),
+		Generator: fakeSyncKeyGenerator("NEW-PRIVATE-MATERIAL", newPublicKey),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range stalePaths {
+		assertNoPath(t, path)
+	}
+	if got := readFile(t, keptPath); got != "not clipfan scratch" {
+		t.Fatalf("non-scratch file changed: %q", got)
+	}
+	assertNoSyncKeyResetScratch(t, keyPath)
+}
+
+func TestLoadLocalSyncKeyRejectsSidecarBoundToPreviousHostIdentity(t *testing.T) {
+	keyPath, created := createSyncKeyFixture(t)
+	if err := os.Chmod(keyPath+".clipfan.json", 0o644); err != nil {
+		t.Fatal(err)
+	}
+	privateBefore := readFile(t, keyPath)
+
+	_, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+		KeyPath: keyPath,
+		HostID:  "renamed-host",
+		Checker: localSyncKeyChecker(),
+	})
+	if !errors.Is(err, ErrSyncKeyIdentityMismatch) {
+		t.Fatalf("error = %v, want ErrSyncKeyIdentityMismatch", err)
+	}
+	if strings.Contains(err.Error(), privateBefore) {
+		t.Fatalf("error disclosed private material: %v", err)
+	}
+	if got := readFile(t, keyPath); got != privateBefore {
+		t.Fatalf("private key changed from %q to %q", privateBefore, got)
+	}
+	if got := fileMode(t, keyPath+".clipfan.json"); got != 0o644 {
+		t.Fatalf("stale sidecar mode = %#o, want unchanged 0644", got)
+	}
+	if created.Metadata.HostID != "m4" {
+		t.Fatalf("fixture HostID = %q, want old host m4", created.Metadata.HostID)
+	}
+}
+
 func TestSyncKeygenArgs(t *testing.T) {
 	got := syncKeygenArgs(SyncKeyGenerateRequest{
 		KeyPath: "/Users/jesse/.config/clipfan/ssh/sync_ed25519",
@@ -1249,6 +1405,20 @@ func assertNoPath(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Lstat(%s) err = %v, want not exist", path, err)
+	}
+}
+
+func assertNoSyncKeyResetScratch(t *testing.T, keyPath string) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Dir(keyPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Base(keyPath)
+	for _, entry := range entries {
+		if isSyncKeyResetScratchName(base, entry.Name()) {
+			t.Fatalf("found stale sync key reset scratch file %s", entry.Name())
+		}
 	}
 }
 

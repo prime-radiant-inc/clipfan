@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -79,6 +80,22 @@ type SyncKeyLoadOptions struct {
 	Checker storagecheck.Checker
 }
 
+type SyncKeyResetOptions struct {
+	KeyPath   string
+	HostID    string
+	Checker   storagecheck.Checker
+	Now       func() time.Time
+	Generator SyncKeyGenerator
+}
+
+var syncKeyResetTempCounter uint64
+
+type stagedSyncKeyReset struct {
+	result  SyncKeyCreateResult
+	keyPath string
+	backups []syncKeyResetBackup
+}
+
 // CreateLocalSyncKey creates a new local sync key at KeyPath and writes its
 // public metadata sidecar. KeyPath's parent directory must already exist and be
 // pre-resolved by the caller; symlinked parent ancestry is rejected.
@@ -104,9 +121,47 @@ func CreateLocalSyncKey(opts SyncKeyCreateOptions) (SyncKeyCreateResult, error) 
 	}
 	defer func() { _ = releaseLock() }()
 
+	return createLocalSyncKeyLocked(opts)
+}
+
+// ResetLocalSyncKey regenerates the sync key at KeyPath after explicit local
+// fleet-reset confirmation. Existing private/public/sidecar material is moved
+// aside only after replacement material has been generated successfully.
+func ResetLocalSyncKey(opts SyncKeyResetOptions) (SyncKeyCreateResult, error) {
+	var result SyncKeyCreateResult
+	if err := ValidateSyncKeyPath(opts.KeyPath); err != nil {
+		return result, fmt.Errorf("invalid_sync_key: %w", err)
+	}
+	if err := ValidateHostID(opts.HostID); err != nil {
+		return result, err
+	}
+
+	if err := validateSyncKeyParentDirectory(opts.KeyPath); err != nil {
+		return result, err
+	}
+	if err := syncKeyStoragePreflight(opts.Checker, opts.KeyPath); err != nil {
+		return result, err
+	}
+
+	releaseLock, err := acquireSyncKeyCreateLock(opts.KeyPath)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = releaseLock() }()
+
+	staged, err := stageLocalSyncKeyResetLocked(opts)
+	if err != nil {
+		return result, err
+	}
+	staged.commit()
+	return staged.result, nil
+}
+
+func createLocalSyncKeyLocked(opts SyncKeyCreateOptions) (SyncKeyCreateResult, error) {
+	var result SyncKeyCreateResult
 	publicKeyPath := opts.KeyPath + ".pub"
 	sidecarPath := opts.KeyPath + ".clipfan.json"
-	for _, path := range []string{opts.KeyPath, publicKeyPath, sidecarPath} {
+	for _, path := range syncKeyMaterialPaths(opts.KeyPath) {
 		if exists, err := pathExists(path); err != nil {
 			return result, err
 		} else if exists {
@@ -175,6 +230,221 @@ func CreateLocalSyncKey(opts SyncKeyCreateOptions) (SyncKeyCreateResult, error) 
 		PublicKey:       publicKey,
 		Metadata:        metadata,
 	}, nil
+}
+
+func stageLocalSyncKeyReset(opts SyncKeyResetOptions) (stagedSyncKeyReset, error) {
+	if err := ValidateSyncKeyPath(opts.KeyPath); err != nil {
+		return stagedSyncKeyReset{}, fmt.Errorf("invalid_sync_key: %w", err)
+	}
+	if err := ValidateHostID(opts.HostID); err != nil {
+		return stagedSyncKeyReset{}, err
+	}
+	if err := validateSyncKeyParentDirectory(opts.KeyPath); err != nil {
+		return stagedSyncKeyReset{}, err
+	}
+	if err := syncKeyStoragePreflight(opts.Checker, opts.KeyPath); err != nil {
+		return stagedSyncKeyReset{}, err
+	}
+	releaseLock, err := acquireSyncKeyCreateLock(opts.KeyPath)
+	if err != nil {
+		return stagedSyncKeyReset{}, err
+	}
+	defer func() { _ = releaseLock() }()
+	return stageLocalSyncKeyResetLocked(opts)
+}
+
+func stageLocalSyncKeyResetLocked(opts SyncKeyResetOptions) (stagedSyncKeyReset, error) {
+	if err := removeStaleSyncKeyResetScratch(opts.KeyPath); err != nil {
+		return stagedSyncKeyReset{}, err
+	}
+	tempPath := syncKeyResetTempPath(opts.KeyPath)
+	tempOpts := SyncKeyCreateOptions{
+		KeyPath:   tempPath,
+		HostID:    opts.HostID,
+		Checker:   opts.Checker,
+		Now:       opts.Now,
+		Generator: opts.Generator,
+	}
+	tempResult, err := createLocalSyncKeyLocked(tempOpts)
+	if err != nil {
+		removeSyncKeyMaterialBestEffort(tempPath)
+		return stagedSyncKeyReset{}, err
+	}
+	cleanupTemp := true
+	defer func() {
+		if cleanupTemp {
+			removeSyncKeyMaterialBestEffort(tempPath)
+		}
+	}()
+
+	backups, err := moveExistingSyncKeyMaterialForReset(opts.KeyPath)
+	if err != nil {
+		return stagedSyncKeyReset{}, err
+	}
+	restoreBackups := true
+	defer func() {
+		if restoreBackups {
+			rollbackInstalledSyncKeyReset(opts.KeyPath, backups)
+		}
+	}()
+
+	if err := installResetSyncKeyMaterial(tempPath, opts.KeyPath); err != nil {
+		return stagedSyncKeyReset{}, err
+	}
+	cleanupTemp = false
+	restoreBackups = false
+
+	tempResult.PrivateKeyPath = opts.KeyPath
+	tempResult.PublicKeyPath = opts.KeyPath + ".pub"
+	tempResult.SidecarPath = opts.KeyPath + ".clipfan.json"
+	return stagedSyncKeyReset{result: tempResult, keyPath: opts.KeyPath, backups: backups}, nil
+}
+
+func (s stagedSyncKeyReset) commit() {
+	removeSyncKeyResetBackups(s.backups)
+}
+
+func (s stagedSyncKeyReset) rollback() {
+	rollbackInstalledSyncKeyReset(s.keyPath, s.backups)
+}
+
+func syncKeyMaterialPaths(keyPath string) []string {
+	return []string{keyPath, keyPath + ".pub", keyPath + ".clipfan.json"}
+}
+
+func syncKeyResetTempPath(keyPath string) string {
+	return filepath.Join(filepath.Dir(keyPath), fmt.Sprintf(".%s.reset.%d.%d", filepath.Base(keyPath), os.Getpid(), atomic.AddUint64(&syncKeyResetTempCounter, 1)))
+}
+
+func removeStaleSyncKeyResetScratch(keyPath string) error {
+	entries, err := os.ReadDir(filepath.Dir(keyPath))
+	if err != nil {
+		return ErrSyncKeyDirectoryUnsafe
+	}
+	base := filepath.Base(keyPath)
+	for _, entry := range entries {
+		if entry.IsDir() || !isSyncKeyResetScratchName(base, entry.Name()) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(filepath.Dir(keyPath), entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return ErrSyncKeyWriteFailed
+		}
+	}
+	return nil
+}
+
+func isSyncKeyResetScratchName(base, name string) bool {
+	if suffix, ok := strings.CutPrefix(name, "."+base+".reset."); ok {
+		for _, materialSuffix := range []string{"", ".pub", ".clipfan.json"} {
+			if counterSuffix, ok := strings.CutSuffix(suffix, materialSuffix); ok && hasResetCounterSuffix(counterSuffix) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, materialSuffix := range []string{"", ".pub", ".clipfan.json"} {
+		if suffix, ok := strings.CutPrefix(name, base+materialSuffix+".reset-old."); ok {
+			return hasResetCounterSuffix(suffix)
+		}
+	}
+	return false
+}
+
+func hasResetCounterSuffix(value string) bool {
+	pid, counter, ok := strings.Cut(value, ".")
+	return ok && isDecimalString(pid) && isDecimalString(counter)
+}
+
+func isDecimalString(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+type syncKeyResetBackup struct {
+	final  string
+	backup string
+}
+
+func moveExistingSyncKeyMaterialForReset(keyPath string) ([]syncKeyResetBackup, error) {
+	unique := fmt.Sprintf(".reset-old.%d.%d", os.Getpid(), atomic.AddUint64(&syncKeyResetTempCounter, 1))
+	backups := make([]syncKeyResetBackup, 0, 3)
+	for _, finalPath := range syncKeyMaterialPaths(keyPath) {
+		info, err := os.Lstat(finalPath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			restoreSyncKeyResetBackups(backups)
+			return nil, ErrSyncKeyPathUnavailable
+		}
+		if info.IsDir() {
+			restoreSyncKeyResetBackups(backups)
+			return nil, ErrSyncKeyIdentityMismatch
+		}
+		backupPath := finalPath + unique
+		if exists, err := pathExists(backupPath); err != nil || exists {
+			restoreSyncKeyResetBackups(backups)
+			if err != nil {
+				return nil, err
+			}
+			return nil, ErrSyncKeyPathUnavailable
+		}
+		if err := os.Rename(finalPath, backupPath); err != nil {
+			restoreSyncKeyResetBackups(backups)
+			return nil, ErrSyncKeyWriteFailed
+		}
+		backups = append(backups, syncKeyResetBackup{final: finalPath, backup: backupPath})
+	}
+	return backups, nil
+}
+
+func installResetSyncKeyMaterial(tempPath, finalPath string) error {
+	tempPaths := syncKeyMaterialPaths(tempPath)
+	finalPaths := syncKeyMaterialPaths(finalPath)
+	installed := make([]string, 0, len(finalPaths))
+	for i := range tempPaths {
+		if err := os.Rename(tempPaths[i], finalPaths[i]); err != nil {
+			removePathsBestEffort(installed)
+			return ErrSyncKeyWriteFailed
+		}
+		installed = append(installed, finalPaths[i])
+	}
+	return nil
+}
+
+func rollbackInstalledSyncKeyReset(keyPath string, backups []syncKeyResetBackup) {
+	removePathsBestEffort(syncKeyMaterialPaths(keyPath))
+	restoreSyncKeyResetBackups(backups)
+}
+
+func restoreSyncKeyResetBackups(backups []syncKeyResetBackup) {
+	for i := len(backups) - 1; i >= 0; i-- {
+		_ = os.Remove(backups[i].final)
+		_ = os.Rename(backups[i].backup, backups[i].final)
+	}
+}
+
+func removeSyncKeyResetBackups(backups []syncKeyResetBackup) {
+	for _, backup := range backups {
+		_ = os.Remove(backup.backup)
+	}
+}
+
+func removeSyncKeyMaterialBestEffort(keyPath string) {
+	removePathsBestEffort(syncKeyMaterialPaths(keyPath))
+}
+
+func removePathsBestEffort(paths []string) {
+	for _, path := range paths {
+		_ = os.Remove(path)
+	}
 }
 
 // LoadLocalSyncKey validates local sync-key file hygiene and sidecar/public-key

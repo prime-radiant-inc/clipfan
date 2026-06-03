@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
+	"github.com/prime-radiant-inc/clipfan/internal/storagecheck"
 )
 
 const LocalFleetResetConfirmation = "RESET LOCAL CLIPFAN FLEET"
@@ -71,14 +72,29 @@ func ResetLocalFleetWithBackup(path, stateDir string, req LocalFleetResetRequest
 }
 
 func resetLocalFleetWithGate(path, stateDir string, gateEnabled bool, req LocalFleetResetRequest, backupPath string, deriveHostID func() (string, error), newSharedKey func() string) (LocalFleetResetResult, error) {
+	return resetLocalFleetWithGateAndDeps(path, stateDir, gateEnabled, req, backupPath, localFleetResetDeps{
+		deriveHostID: deriveHostID,
+		newSharedKey: newSharedKey,
+	})
+}
+
+type localFleetResetDeps struct {
+	deriveHostID     func() (string, error)
+	newSharedKey     func() string
+	syncKeyChecker   storagecheck.Checker
+	syncKeyGenerator SyncKeyGenerator
+	now              func() time.Time
+}
+
+func resetLocalFleetWithGateAndDeps(path, stateDir string, gateEnabled bool, req LocalFleetResetRequest, backupPath string, deps localFleetResetDeps) (LocalFleetResetResult, error) {
 	var result LocalFleetResetResult
 	if req.Confirmation != LocalFleetResetConfirmation {
 		return result, ErrFleetResetConfirmationRequired
 	}
-	if deriveHostID == nil {
+	if deps.deriveHostID == nil {
 		return result, fmt.Errorf("missing host ID derivation")
 	}
-	if newSharedKey == nil {
+	if deps.newSharedKey == nil {
 		return result, fmt.Errorf("missing shared key generator")
 	}
 	if stateDir == "" {
@@ -88,6 +104,7 @@ func resetLocalFleetWithGate(path, stateDir string, gateEnabled bool, req LocalF
 		State:    req.ExpectedRevisionState,
 		Revision: copyUint64Ptr(req.ExpectedConfigRevision),
 	}
+	var stagedSyncKey *stagedSyncKeyReset
 	err := updateConfigV2ScopedRawWithBackupAndLock(path, gateEnabled, expected, backupPath, tryConfigFileLock, func(cfg *Config, raw map[string]json.RawMessage) error {
 		if cfg == nil {
 			return fmt.Errorf("missing config")
@@ -98,13 +115,13 @@ func resetLocalFleetWithGate(path, stateDir string, gateEnabled bool, req LocalF
 		if sharedKeyIsStandard32Bytes(cfg.SharedKey) {
 			return ErrFleetResetSharedKeyStillValid
 		}
-		if localFleetResetHasSSHMaterial(raw, filepath.Dir(path), stateDir) {
+		if localFleetResetHasUnsupportedSSHMaterial(*cfg, raw, filepath.Dir(path), stateDir) {
 			return ErrFleetResetSSHMaterialPresent
 		}
 
 		hostID := cfg.Hostname
 		if hostID == "" {
-			derived, err := deriveHostID()
+			derived, err := deps.deriveHostID()
 			if err != nil {
 				return fmt.Errorf("derive_host_id: %w", err)
 			}
@@ -113,9 +130,33 @@ func resetLocalFleetWithGate(path, stateDir string, gateEnabled bool, req LocalF
 		if err := ValidateHostID(hostID); err != nil {
 			return err
 		}
-		key := newSharedKey()
+		key := deps.newSharedKey()
 		if !sharedKeyIsStandard32Bytes(key) {
 			return fmt.Errorf("invalid_generated_shared_key")
+		}
+
+		syncKeyPath := localFleetResetSyncKeyPathForReset(*cfg, filepath.Dir(path))
+		if syncKeyPath != "" {
+			if cfg.SSH == nil {
+				cfg.SSH = &SSHConfig{}
+			}
+			if cfg.SSH.SyncKey == "" {
+				cfg.SSH.SyncKey = syncKeyPath
+			}
+			if err := ValidateSSHExecutablePath(syncKeyPath); err != nil {
+				return fmt.Errorf("invalid_sync_key: %w", err)
+			}
+			stage, err := stageLocalSyncKeyReset(SyncKeyResetOptions{
+				KeyPath:   syncKeyPath,
+				HostID:    hostID,
+				Checker:   deps.syncKeyChecker,
+				Now:       deps.now,
+				Generator: deps.syncKeyGenerator,
+			})
+			if err != nil {
+				return err
+			}
+			stagedSyncKey = &stage
 		}
 
 		plan := PlanListener(*cfg, true)
@@ -139,7 +180,13 @@ func resetLocalFleetWithGate(path, stateDir string, gateEnabled bool, req LocalF
 		return nil
 	})
 	if err != nil {
+		if stagedSyncKey != nil {
+			stagedSyncKey.rollback()
+		}
 		return LocalFleetResetResult{}, err
+	}
+	if stagedSyncKey != nil {
+		stagedSyncKey.commit()
 	}
 
 	doc, err := readConfigDocumentLocked(path)
@@ -171,7 +218,7 @@ func localFleetResetStatusFromDocument(doc *configDocument, configDir, stateDir 
 		RevisionState:     doc.RevisionState,
 		SafeListener:      !PlanListener(doc.Config, true).SafeMode,
 		SharedKeyInvalid:  !sharedKeyIsStandard32Bytes(doc.Config.SharedKey),
-		SSHMaterialAbsent: !localFleetResetHasSSHMaterial(doc.raw, configDir, stateDir),
+		SSHMaterialAbsent: !localFleetResetHasUnsupportedSSHMaterial(doc.Config, doc.raw, configDir, stateDir),
 	}
 }
 
@@ -186,9 +233,10 @@ func sharedKeyIsStandard32Bytes(value string) bool {
 	return base64.StdEncoding.EncodeToString(decoded) == value
 }
 
-func localFleetResetHasSSHMaterial(raw map[string]json.RawMessage, configDir, stateDir string) bool {
+func localFleetResetHasUnsupportedSSHMaterial(cfg Config, raw map[string]json.RawMessage, configDir, stateDir string) bool {
+	resettable := localFleetResetResettableSyncKeyPaths(cfg, configDir)
 	for key, value := range raw {
-		if localFleetResetSSHMaterialField(key, value) {
+		if localFleetResetUnsupportedSSHMaterialField(key, value) {
 			return true
 		}
 	}
@@ -201,6 +249,9 @@ func localFleetResetHasSSHMaterial(raw map[string]json.RawMessage, configDir, st
 		}
 		for _, rel := range rels {
 			path := filepath.Join(root, rel)
+			if _, ok := resettable[filepath.Clean(path)]; ok {
+				continue
+			}
 			if _, err := os.Lstat(path); err == nil {
 				return true
 			}
@@ -209,15 +260,16 @@ func localFleetResetHasSSHMaterial(raw map[string]json.RawMessage, configDir, st
 	return false
 }
 
-func localFleetResetSSHMaterialField(key string, value json.RawMessage) bool {
+func localFleetResetUnsupportedSSHMaterialField(key string, value json.RawMessage) bool {
 	trimmed := bytes.TrimSpace(value)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return false
 	}
 	lower := strings.ToLower(key)
 	switch lower {
-	case "ssh",
-		"sync_key_path",
+	case "ssh":
+		return localFleetResetSSHObjectHasUnsupportedMaterial(trimmed)
+	case "sync_key_path",
 		"sync_private_key_path",
 		"sync_public_key_path",
 		"private_key_path",
@@ -238,6 +290,81 @@ func localFleetResetSSHMaterialField(key string, value json.RawMessage) bool {
 	}
 }
 
+func localFleetResetSSHObjectHasUnsupportedMaterial(value json.RawMessage) bool {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(value, &raw); err != nil || raw == nil {
+		return true
+	}
+	for key, field := range raw {
+		trimmed := bytes.TrimSpace(field)
+		if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+			continue
+		}
+		switch strings.ToLower(key) {
+		case "sync_key",
+			"max_sessions",
+			"max_sessions_per_peer",
+			"log_limit_bytes":
+			continue
+		case "peers":
+			var peers []json.RawMessage
+			if err := json.Unmarshal(trimmed, &peers); err != nil {
+				return true
+			}
+			if len(peers) > 0 {
+				return true
+			}
+		case "known_hosts":
+			var knownHosts string
+			if err := json.Unmarshal(trimmed, &knownHosts); err != nil {
+				return true
+			}
+			if knownHosts != "" {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+func localFleetResetConfiguredSyncKeyPath(cfg Config) string {
+	if cfg.SSH == nil {
+		return ""
+	}
+	return cfg.SSH.SyncKey
+}
+
+func localFleetResetSyncKeyPathForReset(cfg Config, configDir string) string {
+	if path := localFleetResetConfiguredSyncKeyPath(cfg); path != "" {
+		return path
+	}
+	defaultPath := localFleetResetDefaultSyncKeyPath(configDir)
+	for _, path := range syncKeyMaterialPaths(defaultPath) {
+		if _, err := os.Lstat(path); err == nil {
+			return defaultPath
+		}
+	}
+	return ""
+}
+
+func localFleetResetDefaultSyncKeyPath(configDir string) string {
+	return filepath.Join(configDir, "ssh", "sync_ed25519")
+}
+
+func localFleetResetResettableSyncKeyPaths(cfg Config, configDir string) map[string]struct{} {
+	syncKeyPath := localFleetResetSyncKeyPathForReset(cfg, configDir)
+	if syncKeyPath == "" {
+		return nil
+	}
+	paths := make(map[string]struct{}, 3)
+	for _, path := range syncKeyMaterialPaths(syncKeyPath) {
+		paths[filepath.Clean(path)] = struct{}{}
+	}
+	return paths
+}
+
 func localFleetResetStateMaterialPaths() []string {
 	return []string{
 		"transport-current",
@@ -246,7 +373,10 @@ func localFleetResetStateMaterialPaths() []string {
 		filepath.Join("ssh", "transport_current"),
 		filepath.Join("ssh", "sync_ed25519"),
 		filepath.Join("ssh", "sync_ed25519.pub"),
+		filepath.Join("ssh", "sync_ed25519.clipfan.json"),
 		filepath.Join("ssh", "sync_ed25519.next"),
+		filepath.Join("ssh", "sync_ed25519.next.pub"),
+		filepath.Join("ssh", "sync_ed25519.next.clipfan.json"),
 		filepath.Join("ssh", "known_hosts"),
 		filepath.Join("ssh", "managed_authorized_keys.json"),
 		filepath.Join("ssh", "authorized_keys.metadata.json"),
@@ -257,8 +387,10 @@ func localFleetResetConfigMaterialPaths() []string {
 	return []string{
 		filepath.Join("ssh", "sync_ed25519"),
 		filepath.Join("ssh", "sync_ed25519.pub"),
+		filepath.Join("ssh", "sync_ed25519.clipfan.json"),
 		filepath.Join("ssh", "sync_ed25519.next"),
 		filepath.Join("ssh", "sync_ed25519.next.pub"),
+		filepath.Join("ssh", "sync_ed25519.next.clipfan.json"),
 		filepath.Join("ssh", "known_hosts"),
 		filepath.Join("ssh", "managed_authorized_keys.json"),
 		filepath.Join("ssh", "authorized_keys.metadata.json"),

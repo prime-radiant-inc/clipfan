@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -191,6 +192,10 @@ func TestResetLocalFleetRejectsSSHMaterialAndState(t *testing.T) {
 			body: `{"config_version":2,"config_revision":7,"shared_key":"","listen":"127.0.0.1:7853","ssh":{"peers":[{"id":"p1"}]}}`,
 		},
 		{
+			name: "ssh known hosts",
+			body: `{"config_version":2,"config_revision":7,"shared_key":"","listen":"127.0.0.1:7853","ssh":{"known_hosts":"/tmp/known_hosts"}}`,
+		},
+		{
 			name: "sync key path",
 			body: `{"config_version":2,"config_revision":7,"shared_key":"","listen":"127.0.0.1:7853","sync_key_path":"/tmp/key"}`,
 		},
@@ -210,11 +215,6 @@ func TestResetLocalFleetRejectsSSHMaterialAndState(t *testing.T) {
 			name:      "transport current file",
 			body:      `{"config_version":2,"config_revision":7,"shared_key":"","listen":"127.0.0.1:7853"}`,
 			statePath: filepath.Join("ssh", "transport-current"),
-		},
-		{
-			name:       "default config sync key",
-			body:       `{"config_version":2,"config_revision":7,"shared_key":"","listen":"127.0.0.1:7853"}`,
-			configPath: filepath.Join("ssh", "sync_ed25519"),
 		},
 		{
 			name:       "default config known hosts",
@@ -273,6 +273,293 @@ func TestResetLocalFleetRejectsSSHMaterialAndState(t *testing.T) {
 				t.Fatalf("SSH-material reset changed config\nbefore: %s\nafter: %s", before, after)
 			}
 		})
+	}
+}
+
+func TestResetLocalFleetRegeneratesConfiguredSyncKey(t *testing.T) {
+	keyPath, _ := createSyncKeyForHost(t, "old-host", "OLD-PRIVATE-MATERIAL", "old public")
+	path := writeConfigForV2Test(t, `{
+		"config_version": 2,
+		"config_revision": 7,
+		"shared_key": "",
+		"listen": "127.0.0.1:7853",
+		"hostname": "m4",
+		"ssh": {"sync_key": "`+jsonStringForTest(keyPath)+`"},
+		"future_top": {"keep": true}
+	}`)
+	status, err := ReadLocalFleetResetStatus(path, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.SSHMaterialAbsent {
+		t.Fatalf("status treated configured sync key as unsupported SSH material: %#v", status)
+	}
+	newSharedKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x77}, 32))
+	newPublicKey := "ssh-ed25519 " + base64.StdEncoding.EncodeToString([]byte("new public")) + " clipfan:m4"
+
+	result, err := resetLocalFleetWithGateAndDeps(path, t.TempDir(), true, LocalFleetResetRequest{
+		Confirmation:           LocalFleetResetConfirmation,
+		ExpectedRevisionState:  RevisionStateVersioned,
+		ExpectedConfigRevision: uint64Ptr(7),
+	}, path+".bak", localFleetResetDeps{
+		deriveHostID:     func() (string, error) { return "unused", nil },
+		newSharedKey:     func() string { return newSharedKey },
+		syncKeyChecker:   localSyncKeyChecker(),
+		syncKeyGenerator: fakeSyncKeyGenerator("NEW-PRIVATE-MATERIAL", newPublicKey),
+		now:              func() time.Time { return time.Date(2026, 6, 3, 9, 10, 11, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", result), "OLD-PRIVATE-MATERIAL") || strings.Contains(fmt.Sprintf("%+v", result), "NEW-PRIVATE-MATERIAL") {
+		t.Fatalf("reset result disclosed private key material: %+v", result)
+	}
+
+	loaded, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+		KeyPath: keyPath,
+		HostID:  "m4",
+		Checker: localSyncKeyChecker(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.PublicKey != newPublicKey || loaded.Metadata.HostID != "m4" || loaded.Metadata.CreatedAt != "2026-06-03T09:10:11Z" {
+		t.Fatalf("loaded regenerated key = %#v", loaded)
+	}
+	if got := readFile(t, keyPath); got != "NEW-PRIVATE-MATERIAL" {
+		t.Fatalf("private key = %q, want regenerated material", got)
+	}
+
+	after := readJSONMap(t, path)
+	assertJSONNumber(t, after["config_revision"], 8)
+	assertJSONValueEqual(t, map[string]any{"keep": true}, after["future_top"])
+	ssh, ok := after["ssh"].(map[string]any)
+	if !ok {
+		t.Fatalf("ssh = %#v, want object", after["ssh"])
+	}
+	assertJSONValueEqual(t, keyPath, ssh["sync_key"])
+}
+
+func TestResetLocalFleetRestoresSyncKeyWhenBackupWriteFails(t *testing.T) {
+	keyPath, _ := createSyncKeyForHost(t, "m4", "OLD-PRIVATE-MATERIAL", "old public")
+	oldPrivate := readBytes(t, keyPath)
+	oldPublic := readBytes(t, keyPath+".pub")
+	oldSidecar := readBytes(t, keyPath+".clipfan.json")
+	path := writeConfigForV2Test(t, `{
+		"config_version": 2,
+		"config_revision": 7,
+		"shared_key": "",
+		"listen": "127.0.0.1:7853",
+		"hostname": "m4",
+		"ssh": {"sync_key": "`+jsonStringForTest(keyPath)+`"}
+	}`)
+	beforeConfig := readBytes(t, path)
+	backupPath := path + ".bak"
+	if err := os.WriteFile(backupPath, []byte("existing backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newPublicKey := "ssh-ed25519 " + base64.StdEncoding.EncodeToString([]byte("new public")) + " clipfan:m4"
+
+	_, err := resetLocalFleetWithGateAndDeps(path, t.TempDir(), true, LocalFleetResetRequest{
+		Confirmation:           LocalFleetResetConfirmation,
+		ExpectedRevisionState:  RevisionStateVersioned,
+		ExpectedConfigRevision: uint64Ptr(7),
+	}, backupPath, localFleetResetDeps{
+		deriveHostID:     func() (string, error) { return "unused", nil },
+		newSharedKey:     func() string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x7c}, 32)) },
+		syncKeyChecker:   localSyncKeyChecker(),
+		syncKeyGenerator: fakeSyncKeyGenerator("NEW-PRIVATE-MATERIAL", newPublicKey),
+	})
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("error = %v, want backup exists error", err)
+	}
+	if !bytes.Equal(readBytes(t, path), beforeConfig) {
+		t.Fatalf("failed reset changed config\nbefore: %s\nafter: %s", beforeConfig, readBytes(t, path))
+	}
+	if got := readBytes(t, keyPath); !bytes.Equal(got, oldPrivate) {
+		t.Fatalf("private key changed after rollback\nbefore: %q\nafter: %q", oldPrivate, got)
+	}
+	if got := readBytes(t, keyPath+".pub"); !bytes.Equal(got, oldPublic) {
+		t.Fatalf("public key changed after rollback\nbefore: %q\nafter: %q", oldPublic, got)
+	}
+	if got := readBytes(t, keyPath+".clipfan.json"); !bytes.Equal(got, oldSidecar) {
+		t.Fatalf("sidecar changed after rollback\nbefore: %s\nafter: %s", oldSidecar, got)
+	}
+	assertNoSyncKeyResetScratch(t, keyPath)
+	if strings.Contains(fmt.Sprint(err), "NEW-PRIVATE-MATERIAL") || strings.Contains(fmt.Sprint(err), "OLD-PRIVATE-MATERIAL") {
+		t.Fatalf("error disclosed private material: %v", err)
+	}
+}
+
+func TestResetLocalFleetRegeneratesDefaultSyncKeyAndPersistsPath(t *testing.T) {
+	path := writeFleetResetConfigForSyncKeyTest(t, `{
+		"config_version": 2,
+		"config_revision": 7,
+		"shared_key": "",
+		"listen": "127.0.0.1:7853",
+		"hostname": "m4"
+	}`)
+	keyPath := filepath.Join(filepath.Dir(path), "ssh", "sync_ed25519")
+	createSyncKeyAtPathForHost(t, keyPath, "old-host", "OLD-PRIVATE-MATERIAL", "old public")
+	status, err := ReadLocalFleetResetStatus(path, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.SSHMaterialAbsent {
+		t.Fatalf("status treated default sync key as unsupported SSH material: %#v", status)
+	}
+	newPublicKey := "ssh-ed25519 " + base64.StdEncoding.EncodeToString([]byte("default new public")) + " clipfan:m4"
+
+	_, err = resetLocalFleetWithGateAndDeps(path, t.TempDir(), true, LocalFleetResetRequest{
+		Confirmation:           LocalFleetResetConfirmation,
+		ExpectedRevisionState:  RevisionStateVersioned,
+		ExpectedConfigRevision: uint64Ptr(7),
+	}, path+".bak", localFleetResetDeps{
+		deriveHostID:     func() (string, error) { return "unused", nil },
+		newSharedKey:     func() string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x78}, 32)) },
+		syncKeyChecker:   localSyncKeyChecker(),
+		syncKeyGenerator: fakeSyncKeyGenerator("NEW-PRIVATE-MATERIAL", newPublicKey),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+		KeyPath: keyPath,
+		HostID:  "m4",
+		Checker: localSyncKeyChecker(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.PublicKey != newPublicKey || strings.Contains(fmt.Sprintf("%+v", loaded), "NEW-PRIVATE-MATERIAL") {
+		t.Fatalf("loaded regenerated default key = %#v", loaded)
+	}
+	after := readJSONMap(t, path)
+	ssh, ok := after["ssh"].(map[string]any)
+	if !ok {
+		t.Fatalf("ssh = %#v, want object with sync_key", after["ssh"])
+	}
+	assertJSONValueEqual(t, keyPath, ssh["sync_key"])
+}
+
+func TestResetLocalFleetRejectsDefaultSyncKeyWhenCustomSyncKeyConfigured(t *testing.T) {
+	customKeyPath := filepath.Join(syncKeyTempDir(t), "custom", "sync_ed25519")
+	path := writeFleetResetConfigForSyncKeyTest(t, `{
+		"config_version": 2,
+		"config_revision": 7,
+		"shared_key": "",
+		"listen": "127.0.0.1:7853",
+		"hostname": "m4",
+		"ssh": {"sync_key": "`+jsonStringForTest(customKeyPath)+`"}
+	}`)
+	defaultKeyPath := filepath.Join(filepath.Dir(path), "ssh", "sync_ed25519")
+	createSyncKeyAtPathForHost(t, defaultKeyPath, "old-host", "OLD-PRIVATE-MATERIAL", "old public")
+	beforeDefaultPrivate := readFile(t, defaultKeyPath)
+	status, err := ReadLocalFleetResetStatus(path, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.SSHMaterialAbsent {
+		t.Fatalf("status ignored default sync key material with custom configured path: %#v", status)
+	}
+
+	_, err = resetLocalFleetWithGateAndDeps(path, t.TempDir(), true, LocalFleetResetRequest{
+		Confirmation:           LocalFleetResetConfirmation,
+		ExpectedRevisionState:  RevisionStateVersioned,
+		ExpectedConfigRevision: uint64Ptr(7),
+	}, path+".bak", localFleetResetDeps{
+		deriveHostID:     func() (string, error) { return "unused", nil },
+		newSharedKey:     func() string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x79}, 32)) },
+		syncKeyChecker:   localSyncKeyChecker(),
+		syncKeyGenerator: fakeSyncKeyGenerator("NEW-PRIVATE-MATERIAL", "ssh-ed25519 "+base64.StdEncoding.EncodeToString([]byte("new"))+" clipfan:m4"),
+	})
+	if !errors.Is(err, ErrFleetResetSSHMaterialPresent) {
+		t.Fatalf("error = %v, want ErrFleetResetSSHMaterialPresent", err)
+	}
+	if got := readFile(t, defaultKeyPath); got != beforeDefaultPrivate {
+		t.Fatalf("default private key changed from %q to %q", beforeDefaultPrivate, got)
+	}
+	if _, err := os.Lstat(customKeyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("custom key stat err = %v, want not exist", err)
+	}
+}
+
+func TestResetLocalFleetCreatesMissingConfiguredSyncKey(t *testing.T) {
+	keyPath := filepath.Join(syncKeyTempDir(t), "missing", "sync_ed25519")
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := writeConfigForV2Test(t, `{
+		"config_version": 2,
+		"config_revision": 7,
+		"shared_key": "",
+		"listen": "127.0.0.1:7853",
+		"hostname": "m4",
+		"ssh": {"sync_key": "`+jsonStringForTest(keyPath)+`"}
+	}`)
+	newPublicKey := "ssh-ed25519 " + base64.StdEncoding.EncodeToString([]byte("created public")) + " clipfan:m4"
+
+	_, err := resetLocalFleetWithGateAndDeps(path, t.TempDir(), true, LocalFleetResetRequest{
+		Confirmation:           LocalFleetResetConfirmation,
+		ExpectedRevisionState:  RevisionStateVersioned,
+		ExpectedConfigRevision: uint64Ptr(7),
+	}, path+".bak", localFleetResetDeps{
+		deriveHostID:     func() (string, error) { return "unused", nil },
+		newSharedKey:     func() string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x7a}, 32)) },
+		syncKeyChecker:   localSyncKeyChecker(),
+		syncKeyGenerator: fakeSyncKeyGenerator("NEW-PRIVATE-MATERIAL", newPublicKey),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadLocalSyncKey(SyncKeyLoadOptions{
+		KeyPath: keyPath,
+		HostID:  "m4",
+		Checker: localSyncKeyChecker(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.PublicKey != newPublicKey || strings.Contains(fmt.Sprintf("%+v", loaded), "NEW-PRIVATE-MATERIAL") {
+		t.Fatalf("loaded created key = %#v", loaded)
+	}
+}
+
+func TestResetLocalFleetRejectsPersistedInvalidSyncKeyPathBeforeRotation(t *testing.T) {
+	keyPath := filepath.Join(syncKeyTempDir(t), "Application Support", "clipfan", "ssh", "sync_ed25519")
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := writeConfigForV2Test(t, `{
+		"config_version": 2,
+		"config_revision": 7,
+		"shared_key": "",
+		"listen": "127.0.0.1:7853",
+		"hostname": "m4",
+		"ssh": {"sync_key": "`+jsonStringForTest(keyPath)+`"}
+	}`)
+
+	_, err := resetLocalFleetWithGateAndDeps(path, t.TempDir(), true, LocalFleetResetRequest{
+		Confirmation:           LocalFleetResetConfirmation,
+		ExpectedRevisionState:  RevisionStateVersioned,
+		ExpectedConfigRevision: uint64Ptr(7),
+	}, path+".bak", localFleetResetDeps{
+		deriveHostID:     func() (string, error) { return "unused", nil },
+		newSharedKey:     func() string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x7b}, 32)) },
+		syncKeyChecker:   localSyncKeyChecker(),
+		syncKeyGenerator: fakeSyncKeyGenerator("NEW-PRIVATE-MATERIAL", "ssh-ed25519 "+base64.StdEncoding.EncodeToString([]byte("new"))+" clipfan:m4"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid_sync_key") {
+		t.Fatalf("error = %v, want invalid_sync_key", err)
+	}
+	if strings.Contains(fmt.Sprint(err), "NEW-PRIVATE-MATERIAL") {
+		t.Fatalf("error disclosed private material: %v", err)
+	}
+	for _, path := range syncKeyMaterialPaths(keyPath) {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Lstat(%s) err = %v, want not exist", path, err)
+		}
 	}
 }
 
@@ -356,4 +643,47 @@ func TestResetLocalFleetLeavesAuthorizedKeysUntouched(t *testing.T) {
 	if string(after) != body {
 		t.Fatalf("authorized_keys changed to %q, want %q", after, body)
 	}
+}
+
+func createSyncKeyForHost(t *testing.T, hostID, privateKey, publicBlob string) (string, SyncKeyCreateResult) {
+	t.Helper()
+	keyPath := filepath.Join(syncKeyTempDir(t), "sync_ed25519")
+	return keyPath, createSyncKeyAtPathForHost(t, keyPath, hostID, privateKey, publicBlob)
+}
+
+func createSyncKeyAtPathForHost(t *testing.T, keyPath, hostID, privateKey, publicBlob string) SyncKeyCreateResult {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	publicKey := "ssh-ed25519 " + base64.StdEncoding.EncodeToString([]byte(publicBlob)) + " clipfan:" + hostID
+	result, err := CreateLocalSyncKey(SyncKeyCreateOptions{
+		KeyPath:   keyPath,
+		HostID:    hostID,
+		Checker:   localSyncKeyChecker(),
+		Now:       func() time.Time { return time.Date(2026, 6, 1, 12, 34, 56, 0, time.UTC) },
+		Generator: fakeSyncKeyGenerator(privateKey, publicKey),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func jsonStringForTest(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	return strings.ReplaceAll(value, `"`, `\"`)
+}
+
+func writeFleetResetConfigForSyncKeyTest(t *testing.T, body string) string {
+	t.Helper()
+	dir := filepath.Join(syncKeyTempDir(t), "clipfan")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
