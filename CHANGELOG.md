@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.10] - 2026-06-04
+
+### Added
+
+- Private direct SSH mesh provisioning for live three-host testing with macOS and Linux hosts.
+- Add Peer now exposes remote host rows for direct SSH mesh setup while keeping public Add Peer release gates closed.
+- The app can bootstrap remote daemon payloads, tmux setup, shared sync key material, and direct SSH mesh config without the old peer HTTP deploy path.
+- Config v2 parsing, revision validation, gated scoped config updates, and safe-mode recovery plumbing for the SSH transport rollout.
+
+### Changed
+
+- Peer HTTP fanout and version checks are skipped when the generated SSH runtime gates disable peer HTTP.
+- Remote update and install paths now use stricter SSH host-key handling and safer staged payload installation.
+
 ## [0.3.9] - 2026-06-01
 
 ### Fixed
