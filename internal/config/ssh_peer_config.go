@@ -1170,6 +1170,11 @@ func validateSSHPeerTransitionRequest(peer map[string]json.RawMessage, req SSHPe
 			return fmt.Errorf("invalid_ssh_peer_transition_reason: %s", req.Reason)
 		}
 		return validateSSHPeerTransitionEnabledProofs(typedPeer)
+	case req.FromState == MigrationStateSSHMaterialStaged && req.ToState == MigrationStateSSHKeysReady:
+		if req.Reason != "ssh_material_verified" {
+			return fmt.Errorf("invalid_ssh_peer_transition_reason: %s", req.Reason)
+		}
+		return validateSSHPeerTransitionEnabledProofs(typedPeer)
 	case (req.FromState == MigrationStateSharedKeyWrittenUnverified || req.FromState == MigrationStateSSHKeysReady) && req.ToState == MigrationStateSSHMaterialStaged:
 		if req.Reason != "remote_shared_key_cleanup_verified" {
 			return fmt.Errorf("invalid_ssh_peer_transition_reason: %s", req.Reason)

@@ -266,7 +266,7 @@ func TestRepairListenerRejectsUnsafeConfigModeWithoutWriting(t *testing.T) {
 	}
 }
 
-func TestRepairListenerGeneratedGateFalseFailsClosedWithoutWriting(t *testing.T) {
+func TestRepairListenerDisabledGateFailsClosedWithoutWriting(t *testing.T) {
 	path := writeConfigForV2Test(t, `{
 		"shared_key": "k",
 		"listen": "0.0.0.0:9000",
@@ -278,14 +278,14 @@ func TestRepairListenerGeneratedGateFalseFailsClosedWithoutWriting(t *testing.T)
 	}
 	previous := "0.0.0.0:9000"
 
-	_, err = RepairListener(path, ListenerRepairRequest{
+	_, err = repairListenerWithGate(path, false, ListenerRepairRequest{
 		ExpectedRevisionState: RevisionStatePreV2,
 		Listen:                "127.0.0.1:9000",
 		Port:                  9000,
 		PreviousListen:        &previous,
 	})
 	if !errors.Is(err, ErrConfigV2WritesDisabled) {
-		t.Fatalf("RepairListener error = %v, want ErrConfigV2WritesDisabled", err)
+		t.Fatalf("repairListenerWithGate error = %v, want ErrConfigV2WritesDisabled", err)
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {

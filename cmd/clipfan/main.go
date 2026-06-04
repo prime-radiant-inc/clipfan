@@ -95,6 +95,18 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 				return 1
 			}
 			return 0
+		case "ssh-provision-direct":
+			if err := cli.RunSSHProvisionDirect(args[1:], stdout, stderr); err != nil {
+				fmt.Fprintln(stderr, "clipfan ssh-provision-direct:", err)
+				return 1
+			}
+			return 0
+		case "ssh-apply-direct-config":
+			if err := cli.RunSSHApplyDirectConfig(args[1:], stdout, stderr); err != nil {
+				fmt.Fprintln(stderr, "clipfan ssh-apply-direct-config:", err)
+				return 1
+			}
+			return 0
 		case "help", "-h", "--help":
 			usage(stderr)
 			return 0

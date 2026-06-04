@@ -91,9 +91,9 @@ func TestLoadCreatesDefaultConfig(t *testing.T) {
 	}
 }
 
-func TestLoadForDaemonStartCurrentPublicGatesKeepLegacyGeneratedListen(t *testing.T) {
-	if GeneratedLoopbackDefaultsEnabled() {
-		t.Fatal("current public gates unexpectedly enable loopback defaults")
+func TestLoadForDaemonStartCurrentGatesApplyLoopbackDefaultWithoutPreV2Rewrite(t *testing.T) {
+	if !GeneratedLoopbackDefaultsEnabled() {
+		t.Fatal("current generated gates unexpectedly disable loopback defaults")
 	}
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", root)
@@ -111,15 +111,15 @@ func TestLoadForDaemonStartCurrentPublicGatesKeepLegacyGeneratedListen(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Listen != ":7853" {
-		t.Fatalf("Listen = %q, want current public legacy listen", cfg.Listen)
+	if cfg.Listen != "127.0.0.1:7853" {
+		t.Fatalf("Listen = %q, want current generated loopback listen", cfg.Listen)
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(after) != string(before) {
-		t.Fatalf("current public daemon-start load rewrote config\nbefore: %s\nafter: %s", before, after)
+		t.Fatalf("pre-v2 daemon-start load rewrote config\nbefore: %s\nafter: %s", before, after)
 	}
 }
 

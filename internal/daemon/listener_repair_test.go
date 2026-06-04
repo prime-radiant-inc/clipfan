@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/prime-radiant-inc/clipfan/internal/config"
+	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
 	"github.com/prime-radiant-inc/clipfan/internal/transport"
 )
 
@@ -92,6 +93,9 @@ func TestSafeModeListenerRepairStatusRejectsUnsafeConfigMode(t *testing.T) {
 }
 
 func TestSafeModeListenerRepairPatchFailsClosedWhileGeneratedGateFalse(t *testing.T) {
+	if releaseflags.ConfigV2WriteEnabled {
+		t.Skip("requires generated ConfigV2WriteEnabled=false")
+	}
 	sharedKey := config.NewSharedKey()
 	configPath := writeListenerRepairDaemonConfig(t, `{
 		"listen": "0.0.0.0:9000",

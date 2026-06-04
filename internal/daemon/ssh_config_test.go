@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/prime-radiant-inc/clipfan/internal/config"
+	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
 	"github.com/prime-radiant-inc/clipfan/internal/transport"
 )
 
@@ -37,6 +38,9 @@ func TestSSHPeerConfigReadIsSignedAndRedacted(t *testing.T) {
 }
 
 func TestSSHPeerConfigPutFailsClosedWhenConfigV2WritesDisabled(t *testing.T) {
+	if releaseflags.ConfigV2WriteEnabled {
+		t.Skip("requires generated ConfigV2WriteEnabled=false")
+	}
 	sharedKey := config.NewSharedKey()
 	configPath := writeSSHPeerDaemonConfig(t, sharedKey)
 	before, err := os.ReadFile(configPath)
@@ -59,6 +63,9 @@ func TestSSHPeerConfigPutFailsClosedWhenConfigV2WritesDisabled(t *testing.T) {
 }
 
 func TestSSHPeerConfigProofPatchFailsClosedWhenConfigV2WritesDisabled(t *testing.T) {
+	if releaseflags.ConfigV2WriteEnabled {
+		t.Skip("requires generated ConfigV2WriteEnabled=false")
+	}
 	sharedKey := config.NewSharedKey()
 	configPath := writeSSHPeerDaemonConfig(t, sharedKey)
 	before, err := os.ReadFile(configPath)
@@ -81,6 +88,9 @@ func TestSSHPeerConfigProofPatchFailsClosedWhenConfigV2WritesDisabled(t *testing
 }
 
 func TestSSHPeerConfigTransitionFailsClosedWhenConfigV2WritesDisabled(t *testing.T) {
+	if releaseflags.ConfigV2WriteEnabled {
+		t.Skip("requires generated ConfigV2WriteEnabled=false")
+	}
 	sharedKey := config.NewSharedKey()
 	configPath := writeSSHPeerDaemonConfig(t, sharedKey)
 	before, err := os.ReadFile(configPath)
@@ -103,6 +113,9 @@ func TestSSHPeerConfigTransitionFailsClosedWhenConfigV2WritesDisabled(t *testing
 }
 
 func TestSSHPeerConfigDisableFailsClosedWhenConfigV2WritesDisabled(t *testing.T) {
+	if releaseflags.ConfigV2WriteEnabled {
+		t.Skip("requires generated ConfigV2WriteEnabled=false")
+	}
 	sharedKey := config.NewSharedKey()
 	configPath := writeSSHPeerDaemonConfig(t, sharedKey)
 	before, err := os.ReadFile(configPath)
@@ -125,6 +138,9 @@ func TestSSHPeerConfigDisableFailsClosedWhenConfigV2WritesDisabled(t *testing.T)
 }
 
 func TestSSHPeerConfigDeleteFailsClosedWhenConfigV2WritesDisabled(t *testing.T) {
+	if releaseflags.ConfigV2WriteEnabled {
+		t.Skip("requires generated ConfigV2WriteEnabled=false")
+	}
 	sharedKey := config.NewSharedKey()
 	configPath := writeSSHPeerDaemonConfig(t, sharedKey)
 	before, err := os.ReadFile(configPath)

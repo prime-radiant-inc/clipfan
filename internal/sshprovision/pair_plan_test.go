@@ -43,6 +43,7 @@ func TestDirectPairPlanOrdersFailClosedStepsBeforeConfigWrites(t *testing.T) {
 		StepWriteAcceptorPeerConfig,
 		StepPatchDirectionalProofs,
 		StepTransitionSSHMaterialStaged,
+		StepTransitionSSHKeysReady,
 	}
 	if len(plan.Steps) != len(wantSteps) {
 		t.Fatalf("steps length = %d, want %d: %#v", len(plan.Steps), len(wantSteps), plan.Steps)
@@ -77,7 +78,7 @@ func TestDirectPairPlanBuildsConfigWriteIntents(t *testing.T) {
 	if connector.TargetHostID != "linux-b" || connector.PeerID != "mac-a" {
 		t.Fatalf("connector write = %#v", connector)
 	}
-	if !connector.Enabled || !connector.Connect || connector.Accept || !connector.Persistent || connector.OnDemand {
+	if !connector.Enabled || !connector.Connect || !connector.Accept || !connector.Persistent || connector.OnDemand {
 		t.Fatalf("connector booleans = %#v", connector)
 	}
 	if connector.SSHHost != "mac-a.tailnet" || connector.SSHUser != "jesse" || connector.SSHPort != 22 {
@@ -94,11 +95,17 @@ func TestDirectPairPlanBuildsConfigWriteIntents(t *testing.T) {
 	if acceptor.TargetHostID != "mac-a" || acceptor.PeerID != "linux-b" {
 		t.Fatalf("acceptor write = %#v", acceptor)
 	}
-	if !acceptor.Enabled || acceptor.Connect || !acceptor.Accept || acceptor.Persistent || acceptor.OnDemand {
+	if !acceptor.Enabled || !acceptor.Connect || !acceptor.Accept || !acceptor.Persistent || acceptor.OnDemand {
 		t.Fatalf("acceptor booleans = %#v", acceptor)
 	}
-	if acceptor.InstallPath != "/Users/jesse/.local/bin/clipfan" || acceptor.GatewayPath != "/Users/jesse/.local/bin/clipfan" {
+	if acceptor.SSHHost != "linux-b.tailnet" || acceptor.SSHUser != "jesse" || acceptor.SSHPort != 2200 {
+		t.Fatalf("acceptor locator = %#v", acceptor)
+	}
+	if acceptor.InstallPath != "/home/jesse/.local/bin/clipfan" || acceptor.GatewayPath != "/home/jesse/.local/bin/clipfan" {
 		t.Fatalf("acceptor paths = %#v", acceptor)
+	}
+	if acceptor.TargetGatewayPath != "/Users/jesse/.local/bin/clipfan" {
+		t.Fatalf("acceptor target gateway path = %#v", acceptor)
 	}
 	if acceptor.MigrationState != "loopback_unprovisioned" {
 		t.Fatalf("acceptor MigrationState = %q", acceptor.MigrationState)

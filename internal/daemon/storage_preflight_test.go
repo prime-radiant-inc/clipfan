@@ -13,10 +13,10 @@ import (
 	"github.com/prime-radiant-inc/clipfan/internal/storagecheck"
 )
 
-func TestStoragePreflightDefaultDormantForCurrentPublicGates(t *testing.T) {
+func TestStoragePreflightDefaultRequiredForCurrentCutoverGates(t *testing.T) {
 	policy := DefaultStoragePreflightPolicy()
-	if policy.Required {
-		t.Fatal("current generated public gates should not require daemon storage preflight")
+	if !policy.Required {
+		t.Fatal("current generated cutover gates should require daemon storage preflight")
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,13 +40,15 @@ func TestDirectPairConfigApplicatorAppliesRevisionOrderedConfigMutations(t *test
 		"read:/configs/linux-b.json",
 		"read:/configs/mac-a.json",
 		"local:/configs/linux-b.json:rev=7:transport=ssh:sync=/home/jesse/.config/clipfan/ssh/sync_ed25519:known=/home/jesse/.config/clipfan/ssh/known_hosts",
-		"local:/configs/mac-a.json:rev=7:transport=ssh:sync=<nil>:known=<nil>",
-		"upsert:/configs/linux-b.json:mac-a:rev=8:enabled=true:accept=false:connect=true:persistent=true:on_demand=false:shared_key_nil=true",
-		"upsert:/configs/mac-a.json:linux-b:rev=8:enabled=true:accept=true:connect=false:persistent=false:on_demand=false:shared_key_nil=true",
-		"proof:/configs/linux-b.json:mac-a:rev=9:accept=false:connect=true:key=626e58c17d770373:verified=regular_ssh",
-		"proof:/configs/mac-a.json:linux-b:rev=9:accept=true:connect=false:key=626e58c17d770373:verified=regular_ssh",
+		"local:/configs/mac-a.json:rev=7:transport=ssh:sync=/Users/jesse/.config/clipfan/ssh/sync_ed25519:known=/Users/jesse/.config/clipfan/ssh/known_hosts",
+		"upsert:/configs/linux-b.json:mac-a:rev=8:enabled=true:accept=true:connect=true:persistent=true:on_demand=false:shared_key_nil=true",
+		"upsert:/configs/mac-a.json:linux-b:rev=8:enabled=true:accept=true:connect=true:persistent=true:on_demand=false:shared_key_nil=true",
+		"proof:/configs/linux-b.json:mac-a:rev=9:accept=true:connect=true:accept_key=mac-key-123456:connect_key=linux-key-123456:verified=regular_ssh",
+		"proof:/configs/mac-a.json:linux-b:rev=9:accept=true:connect=true:accept_key=linux-key-123456:connect_key=mac-key-123456:verified=regular_ssh",
 		"transition:/configs/linux-b.json:mac-a:rev=10:loopback_unprovisioned->ssh_material_staged:material_staged:log-1",
 		"transition:/configs/mac-a.json:linux-b:rev=10:loopback_unprovisioned->ssh_material_staged:material_staged:log-1",
+		"transition:/configs/linux-b.json:mac-a:rev=11:ssh_material_staged->ssh_keys_ready:ssh_material_verified:log-1",
+		"transition:/configs/mac-a.json:linux-b:rev=11:ssh_material_staged->ssh_keys_ready:ssh_material_verified:log-1",
 	}
 	if !reflect.DeepEqual(ops.calls, wantCalls) {
 		t.Fatalf("calls:\n got %#v\nwant %#v", ops.calls, wantCalls)
@@ -64,6 +67,30 @@ func TestDirectPairConfigApplicatorRejectsMissingConfigPath(t *testing.T) {
 	err := applicator.Apply(context.Background(), validDirectPairConfigMutation(t))
 	if !errors.Is(err, ErrDirectPairConfigPathMissing) {
 		t.Fatalf("Apply error = %v, want ErrDirectPairConfigPathMissing", err)
+	}
+	if len(ops.calls) != 0 {
+		t.Fatalf("calls = %#v, want none", ops.calls)
+	}
+}
+
+func TestDirectPairConfigApplicatorPreflightsPeerMaterialBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	ops := newFakeDirectPairConfigOps()
+	applicator := DirectPairConfigApplicator{
+		ConfigPathByHostID: map[string]string{
+			"linux-b": "/configs/linux-b.json",
+		},
+		TargetHostIDs: []string{"linux-b"},
+		Phase:         DirectPairConfigApplyStage,
+		Ops:           ops,
+	}
+	mutation := validDirectPairConfigMutation(t)
+	delete(mutation.SyncKeys, "mac-a")
+
+	err := applicator.Apply(context.Background(), mutation)
+	if err == nil || !strings.Contains(err.Error(), "missing_sync_key_material: mac-a") {
+		t.Fatalf("Apply error = %v, want missing mac-a sync key", err)
 	}
 	if len(ops.calls) != 0 {
 		t.Fatalf("calls = %#v, want none", ops.calls)
@@ -125,17 +152,18 @@ func (f *fakeDirectPairConfigOps) UpsertSSHPeer(path string, peerID string, req 
 }
 
 func (f *fakeDirectPairConfigOps) PatchSSHPeerProof(path string, peerID string, req config.SSHPeerProofPatchRequest) (config.SSHPeerConfigReadResult, error) {
-	keyID := ""
+	acceptKeyID := ""
+	connectKeyID := ""
 	verifiedBy := ""
 	if req.ConnectProof != nil {
-		keyID = req.ConnectProof.KeyID
+		connectKeyID = req.ConnectProof.KeyID
 		verifiedBy = req.ConnectProof.VerifiedBy
 	}
 	if req.AcceptProof != nil {
-		keyID = req.AcceptProof.KeyID
+		acceptKeyID = req.AcceptProof.KeyID
 		verifiedBy = req.AcceptProof.VerifiedBy
 	}
-	f.calls = append(f.calls, "proof:"+path+":"+peerID+":rev="+revString(req.ExpectedConfigRevision)+":accept="+boolString(req.AcceptProof != nil)+":connect="+boolString(req.ConnectProof != nil)+":key="+keyID+":verified="+verifiedBy)
+	f.calls = append(f.calls, "proof:"+path+":"+peerID+":rev="+revString(req.ExpectedConfigRevision)+":accept="+boolString(req.AcceptProof != nil)+":connect="+boolString(req.ConnectProof != nil)+":accept_key="+acceptKeyID+":connect_key="+connectKeyID+":verified="+verifiedBy)
 	status := f.bump(path)
 	return config.SSHPeerConfigReadResult{ConfigVersion: status.ConfigVersion, ConfigRevision: status.ConfigRevision, RevisionState: status.RevisionState}, nil
 }
@@ -172,10 +200,16 @@ func validDirectPairConfigMutation(t *testing.T) DirectPairConfigMutation {
 		t.Fatal(err)
 	}
 	return DirectPairConfigMutation{
-		Plan:                    plan,
-		Writes:                  append([]DirectPairConfigWrite(nil), plan.ConfigWrites...),
-		ConnectorSyncKey:        SyncKeyMaterial{PrivateKeyPath: "/home/jesse/.config/clipfan/ssh/sync_ed25519", PublicKey: testEd25519Key, KeyID: testEd25519KeyID},
-		ConnectorKnownHostsPath: "/home/jesse/.config/clipfan/ssh/known_hosts",
+		Plan:   plan,
+		Writes: append([]DirectPairConfigWrite(nil), plan.ConfigWrites...),
+		SyncKeys: map[string]SyncKeyMaterial{
+			"linux-b": {PrivateKeyPath: "/home/jesse/.config/clipfan/ssh/sync_ed25519", PublicKey: testEd25519Key, KeyID: "linux-key-123456"},
+			"mac-a":   {PrivateKeyPath: "/Users/jesse/.config/clipfan/ssh/sync_ed25519", PublicKey: testEd25519Key, KeyID: "mac-key-123456"},
+		},
+		KnownHostsPaths: map[string]string{
+			"linux-b": "/home/jesse/.config/clipfan/ssh/known_hosts",
+			"mac-a":   "/Users/jesse/.config/clipfan/ssh/known_hosts",
+		},
 	}
 }
 

@@ -33,8 +33,8 @@ from pathlib import Path
 
 expected = {
     "release/ssh-transport-gates.json": {
-        "PeerHTTPRuntimeDisabled": False,
-        "ConfigV2WriteEnabled": False,
+        "PeerHTTPRuntimeDisabled": True,
+        "ConfigV2WriteEnabled": True,
         "RemoteSecretWriteReleaseEnabled": False,
         "ssh_public_add_peer_success_enabled": False,
     },

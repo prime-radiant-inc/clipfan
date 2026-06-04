@@ -1038,6 +1038,13 @@ func TestTransitionSSHPeerAcceptsLegalTransitionsAndWritesAudit(t *testing.T) {
 			includeProof: true,
 		},
 		{
+			name:         "staged to ready after verified ssh material",
+			from:         MigrationStateSSHMaterialStaged,
+			to:           MigrationStateSSHKeysReady,
+			req:          validTransitionRequest(7, MigrationStateSSHMaterialStaged, MigrationStateSSHKeysReady, "ssh_material_verified"),
+			includeProof: true,
+		},
+		{
 			name:         "shared key written to staged",
 			from:         MigrationStateSharedKeyWrittenUnverified,
 			to:           MigrationStateSSHMaterialStaged,
@@ -2012,9 +2019,15 @@ func TestTransitionSSHPeerRejectsInvalidRequestsWithoutWriting(t *testing.T) {
 			code:       "ssh_peer_transition_requires_connect_material",
 		},
 		{
-			name:       "missing promotion proof",
+			name:       "missing shared-key promotion proof",
 			configBody: transitionBaseConfig(MigrationStateSharedKeyWrittenUnverified, false),
 			req:        validTransitionRequest(7, MigrationStateSharedKeyWrittenUnverified, MigrationStateSSHKeysReady, "gateway_version_verified"),
+			code:       "ssh_peer_transition_requires_current_proof",
+		},
+		{
+			name:       "missing verified-material promotion proof",
+			configBody: transitionBaseConfig(MigrationStateSSHMaterialStaged, false),
+			req:        validTransitionRequest(7, MigrationStateSSHMaterialStaged, MigrationStateSSHKeysReady, "ssh_material_verified"),
 			code:       "ssh_peer_transition_requires_current_proof",
 		},
 		{

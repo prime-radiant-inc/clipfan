@@ -31,6 +31,8 @@ type SyncKeyMaterial struct {
 type DirectPairConfigMutation struct {
 	Plan                    DirectPairPlan
 	Writes                  []DirectPairConfigWrite
+	SyncKeys                map[string]SyncKeyMaterial
+	KnownHostsPaths         map[string]string
 	ConnectorSyncKey        SyncKeyMaterial
 	ConnectorKnownHostsPath string
 }
@@ -39,7 +41,9 @@ type DirectPairProvisionResult struct {
 	Plan             DirectPairPlan
 	CompletedSteps   []DirectPairStepKind
 	ConfigWrites     []DirectPairConfigWrite
+	KnownHostPins    map[string]KnownHostPin
 	KnownHostPin     KnownHostPin
+	SyncKeys         map[string]SyncKeyMaterial
 	ConnectorSyncKey SyncKeyMaterial
 }
 
@@ -61,6 +65,10 @@ func NewDirectPairProvisioner(driver DirectPairProvisionDriver) DirectPairProvis
 	return DirectPairProvisioner{Driver: driver}
 }
 
+func NewDirectPairProvisionerWithConfigV2WriteGate(driver DirectPairProvisionDriver, gate func() bool) DirectPairProvisioner {
+	return DirectPairProvisioner{Driver: driver, configV2WriteGate: gate}
+}
+
 func (provisioner DirectPairProvisioner) Provision(ctx context.Context, input DirectPairProvisionInput) (DirectPairProvisionResult, error) {
 	if provisioner.Driver == nil {
 		return DirectPairProvisionResult{}, ErrDirectPairProvisionerNotReady
@@ -78,8 +86,10 @@ func (provisioner DirectPairProvisioner) Provision(ctx context.Context, input Di
 	}
 
 	result := DirectPairProvisionResult{
-		Plan:         plan,
-		ConfigWrites: append([]DirectPairConfigWrite(nil), plan.ConfigWrites...),
+		Plan:          plan,
+		ConfigWrites:  append([]DirectPairConfigWrite(nil), plan.ConfigWrites...),
+		KnownHostPins: map[string]KnownHostPin{},
+		SyncKeys:      map[string]SyncKeyMaterial{},
 	}
 	connector, err := directPairProvisionHostByID(normalized, plan.ConnectHostID)
 	if err != nil {
@@ -93,63 +103,89 @@ func (provisioner DirectPairProvisioner) Provision(ctx context.Context, input Di
 	if !provisioner.configV2WriteEnabled() {
 		return result, config.ErrConfigV2WritesDisabled
 	}
+	hosts := []DirectPairProvisionHost{connector, acceptor}
+	directions := []directPairProvisionDirection{
+		{source: connector, target: acceptor},
+		{source: acceptor, target: connector},
+	}
 
-	confirmedHostKeyLine, err := provisioner.Driver.ConfirmHostKey(ctx, acceptor.Host)
-	if err != nil {
-		return result, err
+	for _, direction := range directions {
+		confirmedHostKeyLine, err := provisioner.Driver.ConfirmHostKey(ctx, direction.target.Host)
+		if err != nil {
+			return result, err
+		}
+		pin, err := ParseKnownHostScanLine(direction.target.Host.SSHHost, direction.target.Host.SSHPort, confirmedHostKeyLine)
+		if err != nil {
+			return result, err
+		}
+		result.KnownHostPins[direction.target.Host.ID] = pin
+		if direction.target.Host.ID == acceptor.Host.ID {
+			result.KnownHostPin = pin
+		}
 	}
-	pin, err := ParseKnownHostScanLine(acceptor.Host.SSHHost, acceptor.Host.SSHPort, confirmedHostKeyLine)
-	if err != nil {
-		return result, err
-	}
-	result.KnownHostPin = pin
 	result.CompletedSteps = append(result.CompletedSteps, StepConfirmHostKey)
 
-	if err := provisioner.Driver.UpsertKnownHostPin(ctx, connector.Host, acceptor.Host, connector.KnownHostsPath, pin); err != nil {
-		return result, err
+	for _, direction := range directions {
+		pin := result.KnownHostPins[direction.target.Host.ID]
+		if err := provisioner.Driver.UpsertKnownHostPin(ctx, direction.source.Host, direction.target.Host, direction.source.KnownHostsPath, pin); err != nil {
+			return result, err
+		}
 	}
 	result.CompletedSteps = append(result.CompletedSteps, StepUpsertKnownHostPin)
 
-	key, err := provisioner.Driver.EnsureSyncKey(ctx, connector)
-	if err != nil {
-		return result, err
+	for _, host := range hosts {
+		key, err := provisioner.Driver.EnsureSyncKey(ctx, host)
+		if err != nil {
+			return result, err
+		}
+		if err := validateSyncKeyMaterial(key); err != nil {
+			return result, err
+		}
+		result.SyncKeys[host.Host.ID] = key
+		if host.Host.ID == connector.Host.ID {
+			result.ConnectorSyncKey = key
+		}
 	}
-	if err := validateSyncKeyMaterial(key); err != nil {
-		return result, err
-	}
-	result.ConnectorSyncKey = key
 	result.CompletedSteps = append(result.CompletedSteps, StepEnsureConnectorSyncKey)
 
-	authKey, err := NewManagedAuthorizedKey(ManagedAuthorizedKey{
-		PeerID:      connector.Host.ID,
-		KeyID:       key.KeyID,
-		GatewayPath: acceptor.Host.GatewayPath,
-		PublicKey:   key.PublicKey,
-	})
-	if err != nil {
-		return result, err
-	}
-	if err := provisioner.Driver.InstallAuthorizedKey(ctx, acceptor.Host, authKey); err != nil {
-		return result, err
+	for _, direction := range directions {
+		key := result.SyncKeys[direction.source.Host.ID]
+		authKey, err := NewManagedAuthorizedKey(ManagedAuthorizedKey{
+			PeerID:      direction.source.Host.ID,
+			KeyID:       key.KeyID,
+			GatewayPath: direction.target.Host.GatewayPath,
+			PublicKey:   key.PublicKey,
+		})
+		if err != nil {
+			return result, err
+		}
+		if err := provisioner.Driver.InstallAuthorizedKey(ctx, direction.target.Host, authKey); err != nil {
+			return result, err
+		}
 	}
 	result.CompletedSteps = append(result.CompletedSteps, StepInstallAcceptorAuthorizedKey)
 
-	probe := PinnedSSHCommand{
-		User:           acceptor.Host.SSHUser,
-		Host:           acceptor.Host.SSHHost,
-		Port:           acceptor.Host.SSHPort,
-		PrivateKeyPath: key.PrivateKeyPath,
-		KnownHostsPath: connector.KnownHostsPath,
-	}
-	if err := provisioner.Driver.RunProbe(ctx, probe, connector, connector.Host.ID, key.KeyID); err != nil {
-		return result, err
+	for _, direction := range directions {
+		key := result.SyncKeys[direction.source.Host.ID]
+		probe := PinnedSSHCommand{
+			User:           direction.target.Host.SSHUser,
+			Host:           direction.target.Host.SSHHost,
+			Port:           direction.target.Host.SSHPort,
+			PrivateKeyPath: key.PrivateKeyPath,
+			KnownHostsPath: direction.source.KnownHostsPath,
+		}
+		if err := provisioner.Driver.RunProbe(ctx, probe, direction.source, direction.source.Host.ID, key.KeyID); err != nil {
+			return result, err
+		}
 	}
 	result.CompletedSteps = append(result.CompletedSteps, StepProbeForcedCommand)
 
 	if err := provisioner.Driver.WriteConfig(ctx, DirectPairConfigMutation{
 		Plan:                    plan,
 		Writes:                  append([]DirectPairConfigWrite(nil), plan.ConfigWrites...),
-		ConnectorSyncKey:        key,
+		SyncKeys:                cloneSyncKeyMaterialMap(result.SyncKeys),
+		KnownHostsPaths:         knownHostsPathsByHost(hosts),
+		ConnectorSyncKey:        result.ConnectorSyncKey,
 		ConnectorKnownHostsPath: connector.KnownHostsPath,
 	}); err != nil {
 		return result, err
@@ -160,6 +196,11 @@ func (provisioner DirectPairProvisioner) Provision(ctx context.Context, input Di
 		}
 	}
 	return result, nil
+}
+
+type directPairProvisionDirection struct {
+	source DirectPairProvisionHost
+	target DirectPairProvisionHost
 }
 
 func normalizeDirectPairProvisionInput(input DirectPairProvisionInput) (DirectPairProvisionInput, error) {
@@ -201,6 +242,22 @@ func directPairProvisionHostByID(input DirectPairProvisionInput, hostID string) 
 	default:
 		return DirectPairProvisionHost{}, fmt.Errorf("missing provision host: %s", hostID)
 	}
+}
+
+func knownHostsPathsByHost(hosts []DirectPairProvisionHost) map[string]string {
+	out := make(map[string]string, len(hosts))
+	for _, host := range hosts {
+		out[host.Host.ID] = host.KnownHostsPath
+	}
+	return out
+}
+
+func cloneSyncKeyMaterialMap(values map[string]SyncKeyMaterial) map[string]SyncKeyMaterial {
+	out := make(map[string]SyncKeyMaterial, len(values))
+	for hostID, material := range values {
+		out[hostID] = material
+	}
+	return out
 }
 
 func validateSyncKeyMaterial(key SyncKeyMaterial) error {

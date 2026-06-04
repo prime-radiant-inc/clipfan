@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/prime-radiant-inc/clipfan/internal/config"
+	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
 	"github.com/prime-radiant-inc/clipfan/internal/transport"
 )
 
@@ -56,6 +57,9 @@ func TestPeersHandlerIncludesMaxHistory(t *testing.T) {
 }
 
 func TestSetMaxHistoryRejectsConfigV2WhenWritesDisabled(t *testing.T) {
+	if releaseflags.ConfigV2WriteEnabled {
+		t.Skip("requires generated ConfigV2WriteEnabled=false")
+	}
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", root)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -87,6 +91,9 @@ func TestSetMaxHistoryRejectsConfigV2WhenWritesDisabled(t *testing.T) {
 }
 
 func TestPostConfigRejectsConfigV2WithSignedFailureWhenWritesDisabled(t *testing.T) {
+	if releaseflags.ConfigV2WriteEnabled {
+		t.Skip("requires generated ConfigV2WriteEnabled=false")
+	}
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", root)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())

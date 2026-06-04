@@ -126,7 +126,7 @@ func TestSaveV1DoesNotWriteConfigV2Metadata(t *testing.T) {
 	}
 }
 
-func TestSaveRejectsConstructedConfigV2WhenGeneratedGateFalse(t *testing.T) {
+func TestSaveConstructedConfigV2FollowsGeneratedGate(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", root)
 	version := 2
@@ -138,15 +138,29 @@ func TestSaveRejectsConstructedConfigV2WhenGeneratedGateFalse(t *testing.T) {
 		SharedKey:      NewSharedKey(),
 		MaxHistory:     75,
 	})
-	if !errors.Is(err, ErrConfigV2WritesDisabled) {
-		t.Fatalf("Save error = %v, want ErrConfigV2WritesDisabled", err)
+	path := filepath.Join(root, "clipfan", "config.json")
+	if !releaseflags.ConfigV2WriteEnabled {
+		if !errors.Is(err, ErrConfigV2WritesDisabled) {
+			t.Fatalf("Save error = %v, want ErrConfigV2WritesDisabled", err)
+		}
+		if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("config file stat error = %v, want not exist", statErr)
+		}
+		return
 	}
-	if _, statErr := os.Stat(filepath.Join(root, "clipfan", "config.json")); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("config file stat error = %v, want not exist", statErr)
+	if err != nil {
+		t.Fatalf("Save error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"config_version": 2`)) || !bytes.Contains(data, []byte(`"config_revision": 1`)) {
+		t.Fatalf("saved config missing v2 metadata: %s", data)
 	}
 }
 
-func TestSaveRejectsConstructedConfigRevisionWithoutVersionWhenGeneratedGateFalse(t *testing.T) {
+func TestSaveConstructedConfigRevisionWithoutVersionFollowsGeneratedGate(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", root)
 	revision := uint64(1)
@@ -156,11 +170,25 @@ func TestSaveRejectsConstructedConfigRevisionWithoutVersionWhenGeneratedGateFals
 		SharedKey:      NewSharedKey(),
 		MaxHistory:     75,
 	})
-	if !errors.Is(err, ErrConfigV2WritesDisabled) {
-		t.Fatalf("Save error = %v, want ErrConfigV2WritesDisabled", err)
+	path := filepath.Join(root, "clipfan", "config.json")
+	if !releaseflags.ConfigV2WriteEnabled {
+		if !errors.Is(err, ErrConfigV2WritesDisabled) {
+			t.Fatalf("Save error = %v, want ErrConfigV2WritesDisabled", err)
+		}
+		if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("config file stat error = %v, want not exist", statErr)
+		}
+		return
 	}
-	if _, statErr := os.Stat(filepath.Join(root, "clipfan", "config.json")); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("config file stat error = %v, want not exist", statErr)
+	if err != nil {
+		t.Fatalf("Save error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"config_revision": 1`)) {
+		t.Fatalf("saved config missing revision metadata: %s", data)
 	}
 }
 
@@ -606,14 +634,14 @@ func TestUpdateConfigV2ScopedRejectsInvalidExpectations(t *testing.T) {
 	}
 }
 
-func TestUpdateConfigV2ScopedDisabledGeneratedGateFailsClosed(t *testing.T) {
+func TestUpdateConfigV2ScopedDisabledGateFailsClosed(t *testing.T) {
 	path := writeConfigForV2Test(t, `{"config_version":2,"config_revision":7,"shared_key":"k","max_history":50}`)
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = UpdateConfigV2Scoped(path, RevisionExpectation{
+	err = updateConfigV2ScopedWithGate(path, false, RevisionExpectation{
 		State:    RevisionStateVersioned,
 		Revision: uint64Ptr(7),
 	}, func(c *Config) error {

@@ -91,7 +91,19 @@ final class SSHTransportGatePolicyTests: XCTestCase {
     }
 
     func testPeerHTTPVersionProbeGateControlsDaemonClientPolicy() {
-        XCTAssertTrue(shouldProbePeerHTTPVersions(policy: .current, localVersion: "v0.3.8", sharedKeyLoaded: true))
+        XCTAssertFalse(shouldProbePeerHTTPVersions(policy: .current, localVersion: "v0.3.8", sharedKeyLoaded: true))
+        let legacyHTTPEnabled = SSHTransportGatePolicy(
+            peerHTTPRuntimeDisabled: false,
+            configV2WriteEnabled: false,
+            remoteSecretWriteReleaseEnabled: false,
+            publicAddPeerSuccessEnabled: false,
+            receivePrimitiveEnabled: true,
+            syncStreamEnabled: false,
+            persistentCurrentEnabled: true,
+            syncKeyRotationEnabled: false
+        )
+        XCTAssertTrue(shouldProbePeerHTTPVersions(policy: legacyHTTPEnabled, localVersion: "v0.3.8", sharedKeyLoaded: true))
+        XCTAssertTrue(shouldVerifyPeerHTTPVersionAfterUpdate(policy: legacyHTTPEnabled, expectedVersion: "v0.3.8"))
         let disabled = SSHTransportGatePolicy(
             peerHTTPRuntimeDisabled: true,
             configV2WriteEnabled: true,

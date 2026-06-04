@@ -20,8 +20,18 @@ type DirectPairConfigOps interface {
 	TransitionSSHPeer(path string, peerID string, req config.SSHPeerTransitionRequest) (config.SSHPeerConfigReadResult, error)
 }
 
+type DirectPairConfigApplyPhase string
+
+const (
+	DirectPairConfigApplyAll   DirectPairConfigApplyPhase = ""
+	DirectPairConfigApplyStage DirectPairConfigApplyPhase = "stage"
+	DirectPairConfigApplyReady DirectPairConfigApplyPhase = "ready"
+)
+
 type DirectPairConfigApplicator struct {
 	ConfigPathByHostID map[string]string
+	TargetHostIDs      []string
+	Phase              DirectPairConfigApplyPhase
 	Ops                DirectPairConfigOps
 	Now                func() time.Time
 	LogID              func(DirectPairConfigMutation) string
@@ -36,6 +46,10 @@ func (a DirectPairConfigApplicator) Apply(ctx context.Context, mutation DirectPa
 		return err
 	}
 	ops := a.ops()
+	phase := a.phase()
+	if err := validateDirectPairConfigMutationForApply(mutation, paths, phase); err != nil {
+		return err
+	}
 	revisions, err := a.readRevisions(paths, ops)
 	if err != nil {
 		return err
@@ -43,93 +57,148 @@ func (a DirectPairConfigApplicator) Apply(ctx context.Context, mutation DirectPa
 	timestamp := a.now().UTC().Format(time.RFC3339)
 	logID := a.logID(mutation)
 
-	for _, hostID := range sortedMapKeys(paths) {
-		if err := ctx.Err(); err != nil {
-			return err
+	if phase.appliesStage() {
+		for _, hostID := range sortedMapKeys(paths) {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			current := revisions[hostID]
+			transport := config.TransportSSH
+			req := config.SSHLocalMaterialUpdateRequest{
+				ExpectedConfigRevision: &current,
+				Transport:              &transport,
+			}
+			syncKey, err := mutationSyncKeyForHost(mutation, hostID)
+			if err != nil {
+				return err
+			}
+			knownHostsPath, err := mutationKnownHostsPathForHost(mutation, hostID)
+			if err != nil {
+				return err
+			}
+			req.SyncKey = &syncKey.PrivateKeyPath
+			req.KnownHosts = &knownHostsPath
+			status, err := ops.UpdateSSHLocalMaterial(paths[hostID], req)
+			if err != nil {
+				return err
+			}
+			if err := setRevision(revisions, hostID, status.ConfigRevision); err != nil {
+				return err
+			}
 		}
-		current := revisions[hostID]
-		transport := config.TransportSSH
-		req := config.SSHLocalMaterialUpdateRequest{
-			ExpectedConfigRevision: &current,
-			Transport:              &transport,
+
+		for _, write := range mutation.Writes {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if !shouldApplyConfigWrite(paths, write.TargetHostID) {
+				continue
+			}
+			current := revisions[write.TargetHostID]
+			result, err := ops.UpsertSSHPeer(paths[write.TargetHostID], write.PeerID, config.SSHPeerUpsertRequest{
+				ExpectedConfigRevision: &current,
+				Peer:                   sshPeerUpsertFields(write),
+			})
+			if err != nil {
+				return err
+			}
+			if err := setRevision(revisions, write.TargetHostID, result.ConfigRevision); err != nil {
+				return err
+			}
 		}
-		if hostID == mutation.Plan.ConnectHostID {
-			req.SyncKey = &mutation.ConnectorSyncKey.PrivateKeyPath
-			req.KnownHosts = &mutation.ConnectorKnownHostsPath
+
+		for _, write := range mutation.Writes {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if !shouldApplyConfigWrite(paths, write.TargetHostID) {
+				continue
+			}
+			current := revisions[write.TargetHostID]
+			acceptKey, err := mutationSyncKeyForHost(mutation, write.PeerID)
+			if err != nil {
+				return err
+			}
+			connectKey, err := mutationSyncKeyForHost(mutation, write.TargetHostID)
+			if err != nil {
+				return err
+			}
+			result, err := ops.PatchSSHPeerProof(paths[write.TargetHostID], write.PeerID, config.SSHPeerProofPatchRequest{
+				ExpectedConfigRevision: &current,
+				AcceptProof:            acceptProofPatch(write, acceptKey, timestamp),
+				ConnectProof:           connectProofPatch(write, connectKey, timestamp),
+			})
+			if err != nil {
+				return err
+			}
+			if err := setRevision(revisions, write.TargetHostID, result.ConfigRevision); err != nil {
+				return err
+			}
 		}
-		status, err := ops.UpdateSSHLocalMaterial(paths[hostID], req)
-		if err != nil {
-			return err
-		}
-		if err := setRevision(revisions, hostID, status.ConfigRevision); err != nil {
-			return err
+
+		for _, write := range mutation.Writes {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if !shouldApplyConfigWrite(paths, write.TargetHostID) {
+				continue
+			}
+			current := revisions[write.TargetHostID]
+			result, err := ops.TransitionSSHPeer(paths[write.TargetHostID], write.PeerID, config.SSHPeerTransitionRequest{
+				ExpectedConfigRevision: &current,
+				FromState:              config.MigrationStateLoopbackUnprovisioned,
+				ToState:                config.MigrationStateSSHMaterialStaged,
+				Reason:                 "material_staged",
+				LogID:                  logID,
+			})
+			if err != nil {
+				return err
+			}
+			if err := setRevision(revisions, write.TargetHostID, result.ConfigRevision); err != nil {
+				return err
+			}
 		}
 	}
 
-	for _, write := range mutation.Writes {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		current := revisions[write.TargetHostID]
-		result, err := ops.UpsertSSHPeer(paths[write.TargetHostID], write.PeerID, config.SSHPeerUpsertRequest{
-			ExpectedConfigRevision: &current,
-			Peer:                   sshPeerUpsertFields(write),
-		})
-		if err != nil {
-			return err
-		}
-		if err := setRevision(revisions, write.TargetHostID, result.ConfigRevision); err != nil {
-			return err
-		}
-	}
-
-	for _, write := range mutation.Writes {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		current := revisions[write.TargetHostID]
-		result, err := ops.PatchSSHPeerProof(paths[write.TargetHostID], write.PeerID, config.SSHPeerProofPatchRequest{
-			ExpectedConfigRevision: &current,
-			AcceptProof:            acceptProofPatch(write, mutation.ConnectorSyncKey, timestamp),
-			ConnectProof:           connectProofPatch(write, mutation.ConnectorSyncKey, timestamp),
-		})
-		if err != nil {
-			return err
-		}
-		if err := setRevision(revisions, write.TargetHostID, result.ConfigRevision); err != nil {
-			return err
-		}
-	}
-
-	for _, write := range mutation.Writes {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		current := revisions[write.TargetHostID]
-		result, err := ops.TransitionSSHPeer(paths[write.TargetHostID], write.PeerID, config.SSHPeerTransitionRequest{
-			ExpectedConfigRevision: &current,
-			FromState:              config.MigrationStateLoopbackUnprovisioned,
-			ToState:                config.MigrationStateSSHMaterialStaged,
-			Reason:                 "material_staged",
-			LogID:                  logID,
-		})
-		if err != nil {
-			return err
-		}
-		if err := setRevision(revisions, write.TargetHostID, result.ConfigRevision); err != nil {
-			return err
+	if phase.appliesReady() {
+		for _, write := range mutation.Writes {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if !shouldApplyConfigWrite(paths, write.TargetHostID) {
+				continue
+			}
+			current := revisions[write.TargetHostID]
+			result, err := ops.TransitionSSHPeer(paths[write.TargetHostID], write.PeerID, config.SSHPeerTransitionRequest{
+				ExpectedConfigRevision: &current,
+				FromState:              config.MigrationStateSSHMaterialStaged,
+				ToState:                config.MigrationStateSSHKeysReady,
+				Reason:                 "ssh_material_verified",
+				LogID:                  logID,
+			})
+			if err != nil {
+				return err
+			}
+			if err := setRevision(revisions, write.TargetHostID, result.ConfigRevision); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
 func (a DirectPairConfigApplicator) configPaths(mutation DirectPairConfigMutation) (map[string]string, error) {
-	hostIDs := map[string]struct{}{
-		mutation.Plan.ConnectHostID: {},
-		mutation.Plan.AcceptHostID:  {},
-	}
-	for _, write := range mutation.Writes {
-		hostIDs[write.TargetHostID] = struct{}{}
+	hostIDs := map[string]struct{}{}
+	if len(a.TargetHostIDs) > 0 {
+		for _, hostID := range a.TargetHostIDs {
+			hostIDs[hostID] = struct{}{}
+		}
+	} else {
+		hostIDs[mutation.Plan.ConnectHostID] = struct{}{}
+		hostIDs[mutation.Plan.AcceptHostID] = struct{}{}
+		for _, write := range mutation.Writes {
+			hostIDs[write.TargetHostID] = struct{}{}
+		}
 	}
 	out := make(map[string]string, len(hostIDs))
 	for hostID := range hostIDs {
@@ -140,6 +209,37 @@ func (a DirectPairConfigApplicator) configPaths(mutation DirectPairConfigMutatio
 		out[hostID] = path
 	}
 	return out, nil
+}
+
+func shouldApplyConfigWrite(paths map[string]string, hostID string) bool {
+	_, ok := paths[hostID]
+	return ok
+}
+
+func validateDirectPairConfigMutationForApply(mutation DirectPairConfigMutation, paths map[string]string, phase DirectPairConfigApplyPhase) error {
+	if !phase.appliesStage() {
+		return nil
+	}
+	for hostID := range paths {
+		if _, err := mutationSyncKeyForHost(mutation, hostID); err != nil {
+			return err
+		}
+		if _, err := mutationKnownHostsPathForHost(mutation, hostID); err != nil {
+			return err
+		}
+	}
+	for _, write := range mutation.Writes {
+		if !shouldApplyConfigWrite(paths, write.TargetHostID) {
+			continue
+		}
+		if _, err := mutationSyncKeyForHost(mutation, write.TargetHostID); err != nil {
+			return err
+		}
+		if _, err := mutationSyncKeyForHost(mutation, write.PeerID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a DirectPairConfigApplicator) readRevisions(paths map[string]string, ops DirectPairConfigOps) (map[string]uint64, error) {
@@ -176,6 +276,23 @@ func (a DirectPairConfigApplicator) logID(mutation DirectPairConfigMutation) str
 		return a.LogID(mutation)
 	}
 	return fmt.Sprintf("ssh-provision-%d", a.now().UTC().UnixNano())
+}
+
+func (a DirectPairConfigApplicator) phase() DirectPairConfigApplyPhase {
+	switch a.Phase {
+	case DirectPairConfigApplyStage, DirectPairConfigApplyReady:
+		return a.Phase
+	default:
+		return DirectPairConfigApplyAll
+	}
+}
+
+func (p DirectPairConfigApplyPhase) appliesStage() bool {
+	return p == DirectPairConfigApplyAll || p == DirectPairConfigApplyStage
+}
+
+func (p DirectPairConfigApplyPhase) appliesReady() bool {
+	return p == DirectPairConfigApplyAll || p == DirectPairConfigApplyReady
 }
 
 type defaultDirectPairConfigOps struct{}
@@ -225,9 +342,13 @@ func acceptProofPatch(write DirectPairConfigWrite, key SyncKeyMaterial, verified
 	if !write.Accept {
 		return nil
 	}
+	gatewayPath := write.TargetGatewayPath
+	if gatewayPath == "" {
+		gatewayPath = write.GatewayPath
+	}
 	return &config.SSHPeerDirectionalProofPatch{
 		KeyID:       key.KeyID,
-		GatewayPath: write.GatewayPath,
+		GatewayPath: gatewayPath,
 		VerifiedAt:  verifiedAt,
 		VerifiedBy:  config.ProofVerifiedByRegularSSH,
 	}
@@ -243,6 +364,26 @@ func connectProofPatch(write DirectPairConfigWrite, key SyncKeyMaterial, verifie
 		VerifiedAt:  verifiedAt,
 		VerifiedBy:  config.ProofVerifiedByRegularSSH,
 	}
+}
+
+func mutationSyncKeyForHost(mutation DirectPairConfigMutation, hostID string) (SyncKeyMaterial, error) {
+	if material, ok := mutation.SyncKeys[hostID]; ok {
+		return material, nil
+	}
+	if hostID == mutation.Plan.ConnectHostID && mutation.ConnectorSyncKey.PrivateKeyPath != "" {
+		return mutation.ConnectorSyncKey, nil
+	}
+	return SyncKeyMaterial{}, fmt.Errorf("missing_sync_key_material: %s", hostID)
+}
+
+func mutationKnownHostsPathForHost(mutation DirectPairConfigMutation, hostID string) (string, error) {
+	if path := mutation.KnownHostsPaths[hostID]; path != "" {
+		return path, nil
+	}
+	if hostID == mutation.Plan.ConnectHostID && mutation.ConnectorKnownHostsPath != "" {
+		return mutation.ConnectorKnownHostsPath, nil
+	}
+	return "", fmt.Errorf("missing_known_hosts_path: %s", hostID)
 }
 
 func setRevision(revisions map[string]uint64, hostID string, revision *uint64) error {

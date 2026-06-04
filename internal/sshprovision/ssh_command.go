@@ -78,6 +78,15 @@ type RegularSSHRunProbeSpec struct {
 	ExpectKeyID    string
 }
 
+type RegularSSHApplyDirectConfigSpec struct {
+	User           string
+	Host           string
+	Port           int
+	KnownHostsPath string
+	InstallPath    string
+	PayloadBase64  string
+}
+
 func PinnedSSHProbeCommand(spec PinnedSSHCommand) (SSHCommand, error) {
 	return pinnedSSHGatewayCommand(spec, SSHGatewayProbeCommand)
 }
@@ -218,6 +227,24 @@ func RegularSSHRunProbeCommand(spec RegularSSHRunProbeSpec) (SSHCommand, error) 
 			"--known-hosts", normalized.Probe.KnownHostsPath,
 			"--expect-peer", normalized.ExpectPeerID,
 			"--expect-key-id", normalized.ExpectKeyID,
+		},
+	}), nil
+}
+
+func RegularSSHApplyDirectConfigCommand(spec RegularSSHApplyDirectConfigSpec) (SSHCommand, error) {
+	normalized, err := normalizeRegularSSHApplyDirectConfigSpec(spec)
+	if err != nil {
+		return SSHCommand{}, err
+	}
+	return regularSSHRemoteCommand(regularSSHRemoteSpec{
+		User:           normalized.User,
+		Host:           normalized.Host,
+		Port:           normalized.Port,
+		KnownHostsPath: normalized.KnownHostsPath,
+		RemoteArgs: []string{
+			normalized.InstallPath,
+			"ssh-apply-direct-config",
+			"--payload-base64", normalized.PayloadBase64,
 		},
 	}), nil
 }
@@ -396,6 +423,39 @@ func normalizeRegularSSHRunProbeSpec(spec RegularSSHRunProbeSpec) (RegularSSHRun
 	spec.Host = host
 	spec.Probe = probe
 	return spec, nil
+}
+
+func normalizeRegularSSHApplyDirectConfigSpec(spec RegularSSHApplyDirectConfigSpec) (RegularSSHApplyDirectConfigSpec, error) {
+	user, host, err := normalizeRegularSSHTarget(spec.User, spec.Host, spec.Port, spec.KnownHostsPath)
+	if err != nil {
+		return RegularSSHApplyDirectConfigSpec{}, err
+	}
+	if err := config.ValidateSSHExecutablePath(spec.InstallPath); err != nil {
+		return RegularSSHApplyDirectConfigSpec{}, fmt.Errorf("%w: invalid install path: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	if !validProvisionPayloadBase64(spec.PayloadBase64) {
+		return RegularSSHApplyDirectConfigSpec{}, fmt.Errorf("%w: invalid payload", ErrInvalidRegularSSHCommand)
+	}
+	spec.User = user
+	spec.Host = host
+	return spec, nil
+}
+
+func validProvisionPayloadBase64(value string) bool {
+	if value == "" || len(value) > 128*1024 {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '+' || r == '/' || r == '=':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeRegularSSHTarget(user string, host string, port int, knownHostsPath string) (string, string, error) {

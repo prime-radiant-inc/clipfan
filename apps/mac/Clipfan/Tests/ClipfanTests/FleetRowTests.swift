@@ -130,7 +130,8 @@ extension FleetRowTests {
         let rows = fleetRows(origin: "me",
                              connected: true,
                              peers: [stalePush],
-                             peerVersions: ["flower-garden": .current("v0.3.5")])
+                             peerVersions: ["flower-garden": .current("v0.3.5")],
+                             policy: legacyPeerHTTPProbePolicy())
 
         XCTAssertEqual(rows[1].health, .healthy)
         XCTAssertEqual(rows[1].subtitle, "port 7853 · current")
@@ -142,9 +143,23 @@ extension FleetRowTests {
         let rows = fleetRows(origin: "me",
                              connected: true,
                              peers: [pushedOK],
-                             peerVersions: ["old-box": .needsUpdate("v0.3.4")])
+                             peerVersions: ["old-box": .needsUpdate("v0.3.4")],
+                             policy: legacyPeerHTTPProbePolicy())
 
         XCTAssertEqual(rows[1].health, .attention)
         XCTAssertEqual(rows[1].subtitle, "port 7853 · update available")
+    }
+
+    private func legacyPeerHTTPProbePolicy() -> SSHTransportGatePolicy {
+        SSHTransportGatePolicy(
+            peerHTTPRuntimeDisabled: false,
+            configV2WriteEnabled: false,
+            remoteSecretWriteReleaseEnabled: false,
+            publicAddPeerSuccessEnabled: false,
+            receivePrimitiveEnabled: true,
+            syncStreamEnabled: false,
+            persistentCurrentEnabled: true,
+            syncKeyRotationEnabled: false
+        )
     }
 }

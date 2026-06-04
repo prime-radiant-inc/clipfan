@@ -45,6 +45,7 @@ const (
 	StepWriteAcceptorPeerConfig      DirectPairStepKind = "write_acceptor_peer_config"
 	StepPatchDirectionalProofs       DirectPairStepKind = "patch_directional_proofs"
 	StepTransitionSSHMaterialStaged  DirectPairStepKind = "transition_ssh_material_staged"
+	StepTransitionSSHKeysReady       DirectPairStepKind = "transition_ssh_keys_ready"
 )
 
 type DirectPairStep struct {
@@ -53,19 +54,20 @@ type DirectPairStep struct {
 }
 
 type DirectPairConfigWrite struct {
-	TargetHostID   string
-	PeerID         string
-	SSHHost        string
-	SSHUser        string
-	SSHPort        int
-	InstallPath    string
-	GatewayPath    string
-	Enabled        bool
-	Accept         bool
-	Connect        bool
-	Persistent     bool
-	OnDemand       bool
-	MigrationState string
+	TargetHostID      string
+	PeerID            string
+	SSHHost           string
+	SSHUser           string
+	SSHPort           int
+	InstallPath       string
+	GatewayPath       string
+	TargetGatewayPath string
+	Enabled           bool
+	Accept            bool
+	Connect           bool
+	Persistent        bool
+	OnDemand          bool
+	MigrationState    string
 }
 
 func BuildDirectPairPlan(input DirectPairPlanInput) (DirectPairPlan, error) {
@@ -100,10 +102,11 @@ func BuildDirectPairPlan(input DirectPairPlanInput) (DirectPairPlan, error) {
 			{Kind: StepWriteAcceptorPeerConfig, ConfigWrite: true},
 			{Kind: StepPatchDirectionalProofs, ConfigWrite: true},
 			{Kind: StepTransitionSSHMaterialStaged, ConfigWrite: true},
+			{Kind: StepTransitionSSHKeysReady, ConfigWrite: true},
 		},
 		ConfigWrites: []DirectPairConfigWrite{
-			connectorPeerConfigWrite(connector, acceptor),
-			acceptorPeerConfigWrite(acceptor, connector),
+			reciprocalPeerConfigWrite(connector, acceptor),
+			reciprocalPeerConfigWrite(acceptor, connector),
 		},
 	}, nil
 }
@@ -163,30 +166,20 @@ func normalizeDirectPairHost(host DirectPairHost) (DirectPairHost, error) {
 	return host, nil
 }
 
-func connectorPeerConfigWrite(connector DirectPairHost, acceptor DirectPairHost) DirectPairConfigWrite {
+func reciprocalPeerConfigWrite(target DirectPairHost, peer DirectPairHost) DirectPairConfigWrite {
 	return DirectPairConfigWrite{
-		TargetHostID:   connector.ID,
-		PeerID:         acceptor.ID,
-		SSHHost:        acceptor.SSHHost,
-		SSHUser:        acceptor.SSHUser,
-		SSHPort:        acceptor.SSHPort,
-		InstallPath:    acceptor.InstallPath,
-		GatewayPath:    acceptor.GatewayPath,
-		Enabled:        true,
-		Connect:        true,
-		Persistent:     true,
-		MigrationState: string(config.MigrationStateLoopbackUnprovisioned),
-	}
-}
-
-func acceptorPeerConfigWrite(acceptor DirectPairHost, connector DirectPairHost) DirectPairConfigWrite {
-	return DirectPairConfigWrite{
-		TargetHostID:   acceptor.ID,
-		PeerID:         connector.ID,
-		InstallPath:    acceptor.InstallPath,
-		GatewayPath:    acceptor.GatewayPath,
-		Enabled:        true,
-		Accept:         true,
-		MigrationState: string(config.MigrationStateLoopbackUnprovisioned),
+		TargetHostID:      target.ID,
+		PeerID:            peer.ID,
+		SSHHost:           peer.SSHHost,
+		SSHUser:           peer.SSHUser,
+		SSHPort:           peer.SSHPort,
+		InstallPath:       peer.InstallPath,
+		GatewayPath:       peer.GatewayPath,
+		TargetGatewayPath: target.GatewayPath,
+		Enabled:           true,
+		Accept:            true,
+		Connect:           true,
+		Persistent:        true,
+		MigrationState:    string(config.MigrationStateLoopbackUnprovisioned),
 	}
 }

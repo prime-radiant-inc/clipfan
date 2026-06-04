@@ -34,13 +34,15 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertTrue(command.contains("cd \"$stage\" && bash install.sh --no-tmux"))
     }
 
-    func testRemoteInstallConfigUsesLegacyPublicListenDefault() {
-        XCTAssertFalse(GeneratedSSHTransportGates.peerHTTPRuntimeDisabled)
-        XCTAssertFalse(GeneratedSSHTransportGates.configV2WriteEnabled)
+    func testRemoteInstallConfigUsesCurrentGeneratedLoopbackDefault() {
+        XCTAssertTrue(GeneratedSSHTransportGates.peerHTTPRuntimeDisabled)
+        XCTAssertTrue(GeneratedSSHTransportGates.configV2WriteEnabled)
+        XCTAssertFalse(GeneratedSSHTransportGates.remoteSecretWriteReleaseEnabled)
+        XCTAssertFalse(GeneratedSSHTransportGates.publicAddPeerSuccessEnabled)
 
         let body = Installer.remoteInstallConfigJSON(sharedKey: "secret", selfShort: "m4")
 
-        XCTAssertTrue(body.contains(#""listen": ":7853""#))
+        XCTAssertTrue(body.contains(#""listen": "127.0.0.1:7853""#))
         XCTAssertTrue(body.contains(#""shared_key": "secret""#))
         XCTAssertTrue(body.contains(#""static_peers": ["m4"]"#))
         XCTAssertFalse(body.contains("config_version"))
@@ -58,7 +60,10 @@ final class InstallerFlagTests: XCTestCase {
     }
 
     func testRemoteUpdateCommandPreservesConfigAndSkipsTmux() {
-        let command = Installer.remoteUpdateCommand(stage: "/tmp/clipfan-install.ABC123")
+        let command = Installer.remoteUpdateCommand(stage: "/tmp/clipfan-install.ABC123",
+                                                    payloadBinaryName: nil,
+                                                    enforceStorageAbort: false,
+                                                    enforceDowngradeBlock: false)
 
         XCTAssertTrue(command.contains("stage='/tmp/clipfan-install.ABC123'"))
         XCTAssertTrue(command.contains("trap 'rm -rf \"$stage\"' EXIT"))
@@ -74,7 +79,8 @@ final class InstallerFlagTests: XCTestCase {
     func testRemoteUpdateCommandStorageAbortPreflightsBeforeInstall() {
         let command = Installer.remoteUpdateCommand(stage: "/tmp/clipfan-install.ABC123",
                                                     payloadBinaryName: "clipfan-linux-arm64",
-                                                    enforceStorageAbort: true)
+                                                    enforceStorageAbort: true,
+                                                    enforceDowngradeBlock: false)
 
         let preflight = try! XCTUnwrap(command.range(of: "\"$preflight_bin\" storage-preflight"))
         let install = try! XCTUnwrap(command.range(of: "cd \"$stage\" && bash install.sh --no-tmux >&2"))
@@ -339,6 +345,13 @@ final class InstallerFlagTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: stage) }
 
         var commands: [(String, [String])] = []
+        let expectedUpdateCommand = Installer.remoteUpdateCommand(
+            stage: "/tmp/clipfan-install.ABC123",
+            payloadBinaryName: "clipfan-linux-arm64",
+            enforceStorageAbort: GeneratedSSHTransportGates.peerHTTPRuntimeDisabled ||
+                GeneratedSSHTransportGates.configV2WriteEnabled,
+            enforceDowngradeBlock: GeneratedSSHTransportGates.configV2WriteEnabled
+        )
         let version = try await Installer.uploadAndUpdateRemoteStage(
             target: "remote.example",
             sshArgs: ["-o", "ConnectTimeout=5"],
@@ -350,7 +363,7 @@ final class InstallerFlagTests: XCTestCase {
                 if exe == "/usr/bin/ssh", args.last == Installer.remoteStageCommand() {
                     return "/tmp/clipfan-install.ABC123\n"
                 }
-                if exe == "/usr/bin/ssh", args.last == Installer.remoteUpdateCommand(stage: "/tmp/clipfan-install.ABC123") {
+                if exe == "/usr/bin/ssh", args.last == expectedUpdateCommand {
                     return "v0.3.2\n"
                 }
                 return ""
@@ -362,7 +375,7 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertEqual(commands[1].0, "/usr/bin/scp")
         XCTAssertEqual(commands[1].1.last, "remote.example:/tmp/clipfan-install.ABC123/")
         XCTAssertEqual(commands[2].0, "/usr/bin/ssh")
-        XCTAssertEqual(commands[2].1.last, Installer.remoteUpdateCommand(stage: "/tmp/clipfan-install.ABC123"))
+        XCTAssertEqual(commands[2].1.last, expectedUpdateCommand)
     }
 
     func testUploadAndUpdateRemoteStagePropagatesStorageAbortAndCleansUp() async throws {
@@ -458,8 +471,6 @@ final class InstallerFlagTests: XCTestCase {
     }
 
     func testAddPeerToLocalConfigRejectsConfigV2WhenGateDisabled() async throws {
-        XCTAssertFalse(GeneratedSSHTransportGates.configV2WriteEnabled)
-
         let bodies = [
             #"{"config_version":2,"config_revision":1,"shared_key":"secret","static_peers":["existing"],"future":{"keep":true}}"#,
             #"{"config_version":3,"shared_key":"secret","static_peers":["existing"]}"#,
@@ -482,7 +493,9 @@ final class InstallerFlagTests: XCTestCase {
                                                   ofItemAtPath: configURL.path)
 
             do {
-                try await Installer.addPeerToLocalConfig("new-peer", configURL: configURL)
+                try await Installer.addPeerToLocalConfig("new-peer",
+                                                         configURL: configURL,
+                                                         configV2WriteEnabled: false)
                 XCTFail("expected config_v2_writes_disabled for \(body)")
             } catch {
                 XCTAssertTrue(String(describing: error).contains("config_v2_writes_disabled"),

@@ -414,6 +414,42 @@ func TestRegularSSHRunProbeCommand(t *testing.T) {
 	assertRegularSSHCommandSafety(t, cmd.Args)
 }
 
+func TestRegularSSHApplyDirectConfigCommand(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := RegularSSHApplyDirectConfigCommand(RegularSSHApplyDirectConfigSpec{
+		User:           "jesse",
+		Host:           "Connector.EXAMPLE.",
+		Port:           22,
+		KnownHostsPath: "/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		InstallPath:    "/home/jesse/.local/bin/clipfan",
+		PayloadBase64:  "eyJzdGF0dXMiOiJvayJ9",
+	})
+	if err != nil {
+		t.Fatalf("RegularSSHApplyDirectConfigCommand() error = %v", err)
+	}
+
+	want := []string{
+		"ssh",
+		"-F", "/dev/null",
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UserKnownHostsFile=/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		"-o", "GlobalKnownHostsFile=/dev/null",
+		"-o", "ProxyCommand=none",
+		"-o", "ProxyJump=none",
+		"-o", "PermitLocalCommand=no",
+		"-o", "RequestTTY=no",
+		"-o", "ClearAllForwardings=yes",
+		"-o", "LogLevel=ERROR",
+		"-p", "22",
+		"jesse@connector.example",
+		"'/home/jesse/.local/bin/clipfan' 'ssh-apply-direct-config' '--payload-base64' 'eyJzdGF0dXMiOiJvayJ9'",
+	}
+	assertSSHCommandArgs(t, cmd.Args, want)
+	assertRegularSSHCommandSafety(t, cmd.Args)
+}
+
 func TestRegularSSHMaterialCommandsRejectInvalidInput(t *testing.T) {
 	t.Parallel()
 
@@ -464,6 +500,18 @@ func TestRegularSSHMaterialCommandsRejectInvalidInput(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidRegularSSHCommand) {
 		t.Fatalf("RegularSSHRunProbeCommand() error = %v, want ErrInvalidRegularSSHCommand", err)
+	}
+
+	_, err = RegularSSHApplyDirectConfigCommand(RegularSSHApplyDirectConfigSpec{
+		User:           "jesse",
+		Host:           "example.com",
+		Port:           22,
+		KnownHostsPath: "/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		InstallPath:    "/home/jesse/.local/bin/clipfan",
+		PayloadBase64:  "not base64!",
+	})
+	if !errors.Is(err, ErrInvalidRegularSSHCommand) {
+		t.Fatalf("RegularSSHApplyDirectConfigCommand() error = %v, want ErrInvalidRegularSSHCommand", err)
 	}
 }
 
