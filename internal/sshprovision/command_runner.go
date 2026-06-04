@@ -13,8 +13,10 @@ import (
 var ErrSSHCommandFailed = errors.New("ssh_command_failed")
 
 type CommandOutput struct {
-	Stdout []byte
-	Stderr []byte
+	Stdout          []byte
+	Stderr          []byte
+	StdoutTruncated bool
+	StderrTruncated bool
 }
 
 type CommandRunner interface {
@@ -26,30 +28,38 @@ type ExecCommandRunner struct {
 }
 
 type SSHCommandError struct {
-	Err    error
-	Args   []string
-	Stderr string
+	cause           error
+	redactedCommand string
+	redactedStderr  string
 }
 
 func (e SSHCommandError) Error() string {
 	message := ErrSSHCommandFailed.Error()
-	if len(e.Args) > 0 {
-		message += ": " + redactSSHCommandArgs(e.Args)
+	if e.redactedCommand != "" {
+		message += ": " + e.redactedCommand
 	}
-	if e.Err != nil {
-		message += ": " + e.Err.Error()
+	if e.cause != nil {
+		message += ": " + e.cause.Error()
 	}
-	if strings.TrimSpace(e.Stderr) != "" {
-		message += ": " + e.Stderr
+	if strings.TrimSpace(e.redactedStderr) != "" {
+		message += ": " + e.redactedStderr
 	}
 	return message
 }
 
 func (e SSHCommandError) Unwrap() error {
-	if e.Err == nil {
+	if e.cause == nil {
 		return ErrSSHCommandFailed
 	}
-	return errors.Join(ErrSSHCommandFailed, e.Err)
+	return errors.Join(ErrSSHCommandFailed, e.cause)
+}
+
+func (e SSHCommandError) RedactedCommand() string {
+	return e.redactedCommand
+}
+
+func (e SSHCommandError) RedactedStderr() string {
+	return e.redactedStderr
 }
 
 func (r ExecCommandRunner) Run(ctx context.Context, command SSHCommand) (CommandOutput, error) {
@@ -68,31 +78,38 @@ func (r ExecCommandRunner) Run(ctx context.Context, command SSHCommand) (Command
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	output := CommandOutput{
-		Stdout: stdout.Bytes(),
-		Stderr: stderr.Bytes(),
+		Stdout:          stdout.Bytes(),
+		Stderr:          stderr.Bytes(),
+		StdoutTruncated: stdout.Truncated(),
+		StderrTruncated: stderr.Truncated(),
 	}
 	if err != nil {
 		return output, SSHCommandError{
-			Err:    err,
-			Args:   command.Args,
-			Stderr: redactSSHDiagnostic(string(output.Stderr), command.Args),
+			cause:           err,
+			redactedCommand: redactSSHCommandArgs(command.Args),
+			redactedStderr:  redactSSHDiagnostic(string(output.Stderr), command.Args),
 		}
 	}
 	return output, nil
 }
 
 type limitedBuffer struct {
-	limit int
-	buf   bytes.Buffer
+	limit     int
+	truncated bool
+	buf       bytes.Buffer
 }
 
 func (w *limitedBuffer) Write(p []byte) (int, error) {
+	written := 0
 	if w.limit > 0 && w.buf.Len() < w.limit {
 		remaining := w.limit - w.buf.Len()
 		if len(p) < remaining {
 			remaining = len(p)
 		}
-		_, _ = w.buf.Write(p[:remaining])
+		written, _ = w.buf.Write(p[:remaining])
+	}
+	if w.limit > 0 && written < len(p) {
+		w.truncated = true
 	}
 	return len(p), nil
 }
@@ -101,11 +118,17 @@ func (w *limitedBuffer) Bytes() []byte {
 	return append([]byte(nil), w.buf.Bytes()...)
 }
 
+func (w *limitedBuffer) Truncated() bool {
+	return w.truncated
+}
+
 var (
 	absolutePathPattern       = regexp.MustCompile(`/[A-Za-z0-9._/@+-]+`)
 	publicKeyBlobPattern      = regexp.MustCompile(`[A-Za-z0-9+/]{40,}={0,2}`)
 	quotedPublicKeyPattern    = regexp.MustCompile(`'--public-key' '[^']*'`)
 	quotedSensitiveArgPattern = regexp.MustCompile(`'--(key-path|known-hosts|gateway-path)' '[^']*'`)
+	jsonSecretLikePattern     = regexp.MustCompile(`(?i)"(shared_key|private_key|sync_key_path|token|hmac|nonce|password|credential|secret)"\s*:\s*"(?:\\.|[^"\\])*"`)
+	secretLikePattern         = regexp.MustCompile(`(?i)\b(shared_key|private_key|sync_key_path|token|hmac|nonce|password|credential|secret)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^,\s}]+)`)
 )
 
 func redactSSHCommandArgs(args []string) string {
@@ -135,7 +158,13 @@ func redactSSHDiagnostic(value string, args []string) string {
 	}
 	out = quotedPublicKeyPattern.ReplaceAllString(out, "'--public-key' '<public_key>'")
 	out = quotedSensitiveArgPattern.ReplaceAllString(out, "'--$1' '<path>'")
+	out = redactSecretLikeFields(out)
 	out = publicKeyBlobPattern.ReplaceAllString(out, "<public_key>")
 	out = absolutePathPattern.ReplaceAllString(out, "<path>")
 	return out
+}
+
+func redactSecretLikeFields(value string) string {
+	out := jsonSecretLikePattern.ReplaceAllString(value, `"$1":"<redacted>"`)
+	return secretLikePattern.ReplaceAllString(out, "$1=<redacted>")
 }

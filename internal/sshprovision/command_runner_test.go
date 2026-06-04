@@ -3,6 +3,7 @@ package sshprovision
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,9 @@ func TestExecCommandRunnerRunsArgvAndBoundsOutput(t *testing.T) {
 	}
 	if string(output.Stderr) != "ghij" {
 		t.Fatalf("Stderr = %q, want ghij", string(output.Stderr))
+	}
+	if !output.StdoutTruncated || !output.StderrTruncated {
+		t.Fatalf("truncated flags = %v/%v, want true/true", output.StdoutTruncated, output.StderrTruncated)
 	}
 }
 
@@ -59,10 +63,33 @@ func TestExecCommandRunnerRedactsFailureDiagnostics(t *testing.T) {
 		if strings.Contains(message, leaked) {
 			t.Fatalf("error leaked %q: %s", leaked, message)
 		}
+		if strings.Contains(fmt.Sprintf("%#v", commandErr), leaked) {
+			t.Fatalf("formatted SSHCommandError leaked %q: %#v", leaked, commandErr)
+		}
 	}
 	for _, want := range []string{"<private_key>", "UserKnownHostsFile=<known_hosts>", "'--public-key' '<public_key>'"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("error = %q, want marker %q", message, want)
+		}
+	}
+	if commandErr.RedactedCommand() == "" || commandErr.RedactedStderr() == "" {
+		t.Fatalf("redacted accessors returned empty command/stderr: %#v", commandErr)
+	}
+}
+
+func TestRedactSSHDiagnosticRedactsSecretLikeFields(t *testing.T) {
+	t.Parallel()
+
+	value := `{"shared_key":"fleet-secret","token":"token-value","nonce":"nonce-value","password":"password-value-with-escaped-quote-\"-suffix","credential":"credential-value","private_key":"private-key-value"} hmac=hmac-value sync_key_path=/home/jesse/.config/clipfan/ssh/sync_ed25519`
+	redacted := redactSSHDiagnostic(value, nil)
+	for _, leaked := range []string{"fleet-secret", "token-value", "nonce-value", "password-value-with-escaped-quote", "suffix", "credential-value", "private-key-value", "hmac-value", "/home/jesse/.config/clipfan/ssh/sync_ed25519"} {
+		if strings.Contains(redacted, leaked) {
+			t.Fatalf("redacted diagnostic leaked %q: %s", leaked, redacted)
+		}
+	}
+	for _, want := range []string{`"shared_key":"<redacted>"`, `"token":"<redacted>"`, "hmac=<redacted>", "sync_key_path=<redacted>"} {
+		if !strings.Contains(redacted, want) {
+			t.Fatalf("redacted = %q, want %q", redacted, want)
 		}
 	}
 }
