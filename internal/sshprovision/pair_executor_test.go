@@ -3,6 +3,7 @@ package sshprovision
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -25,9 +26,9 @@ func TestDirectPairProvisionerRunsMaterialAndProbeBeforeConfigWrites(t *testing.
 	wantOps := []string{
 		"confirm:mac-a",
 		"pin:linux-b:mac-a:mac-a.tailnet ssh-ed25519 " + testEd25519Key,
-		"key:linux-b",
+		"key:linux-b:/home/jesse/.config/clipfan/ssh/sync_ed25519",
 		"auth:mac-a:linux-b:key-123456",
-		"probe-from:linux-b:jesse@mac-a.tailnet:22:/home/jesse/.config/clipfan/ssh/sync_ed25519:/home/jesse/.config/clipfan/ssh/known_hosts",
+		"probe-from:linux-b:linux-b:key-123456:jesse@mac-a.tailnet:22:/home/jesse/.config/clipfan/ssh/sync_ed25519:/home/jesse/.config/clipfan/ssh/known_hosts",
 		"config:linux-b->mac-a:enabled=true,connect=true,accept=false",
 		"config:mac-a->linux-b:enabled=true,connect=false,accept=true",
 	}
@@ -110,6 +111,23 @@ func TestDirectPairProvisionerStopsBeforeMutationOnHostKeyMismatch(t *testing.T)
 	}
 }
 
+func TestDirectPairProvisionerRejectsSyncKeyPathWithSpacesBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeDirectPairDriver()
+	input := validDirectPairProvisionInput()
+	input.Remote.SyncKeyPath = "/home/jesse/.config/clipfan/ssh/sync key"
+	provisioner := DirectPairProvisioner{Driver: fake, configV2WriteGate: func() bool { return true }}
+
+	_, err := provisioner.Provision(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "invalid sync key ssh path") {
+		t.Fatalf("Provision() error = %v, want invalid sync key ssh path", err)
+	}
+	if len(fake.ops) != 0 {
+		t.Fatalf("ops = %#v, want none", fake.ops)
+	}
+}
+
 func TestDirectPairProvisionerRejectsMissingDriver(t *testing.T) {
 	t.Parallel()
 
@@ -125,10 +143,12 @@ func validDirectPairProvisionInput() DirectPairProvisionInput {
 		Local: DirectPairProvisionHost{
 			Host:           planHost("mac-a", "mac-a.tailnet", "jesse", 22),
 			KnownHostsPath: "/Users/jesse/.config/clipfan/ssh/known_hosts",
+			SyncKeyPath:    "/Users/jesse/.config/clipfan/ssh/sync_ed25519",
 		},
 		Remote: DirectPairProvisionHost{
 			Host:           planHost("linux-b", "linux-b.tailnet", "jesse", 22),
 			KnownHostsPath: "/home/jesse/.config/clipfan/ssh/known_hosts",
+			SyncKeyPath:    "/home/jesse/.config/clipfan/ssh/sync_ed25519",
 		},
 	}
 }
@@ -162,8 +182,8 @@ func (f *fakeDirectPairDriver) UpsertKnownHostPin(_ context.Context, host Direct
 	return nil
 }
 
-func (f *fakeDirectPairDriver) EnsureSyncKey(_ context.Context, host DirectPairHost) (SyncKeyMaterial, error) {
-	f.ops = append(f.ops, "key:"+host.ID)
+func (f *fakeDirectPairDriver) EnsureSyncKey(_ context.Context, host DirectPairProvisionHost) (SyncKeyMaterial, error) {
+	f.ops = append(f.ops, "key:"+host.Host.ID+":"+host.SyncKeyPath)
 	return f.key, nil
 }
 
@@ -172,8 +192,8 @@ func (f *fakeDirectPairDriver) InstallAuthorizedKey(_ context.Context, host Dire
 	return nil
 }
 
-func (f *fakeDirectPairDriver) RunProbe(_ context.Context, cmd SSHCommand, host DirectPairHost) error {
-	f.ops = append(f.ops, "probe-from:"+host.ID+":"+cmd.Args[len(cmd.Args)-2]+":"+probeArgValue(cmd.Args, "-p")+":"+probeArgValue(cmd.Args, "-i")+":"+probeOptionValue(cmd.Args, "UserKnownHostsFile="))
+func (f *fakeDirectPairDriver) RunProbe(_ context.Context, probe PinnedSSHCommand, host DirectPairProvisionHost, expectPeerID string, expectKeyID string) error {
+	f.ops = append(f.ops, "probe-from:"+host.Host.ID+":"+expectPeerID+":"+expectKeyID+":"+probe.User+"@"+probe.Host+":"+fmt.Sprintf("%d", probe.Port)+":"+probe.PrivateKeyPath+":"+probe.KnownHostsPath)
 	return nil
 }
 
@@ -186,24 +206,6 @@ func (f *fakeDirectPairDriver) WriteConfig(_ context.Context, mutation DirectPai
 		f.ops = append(f.ops, "config:"+write.TargetHostID+"->"+write.PeerID+":enabled="+boolString(write.Enabled)+",connect="+boolString(write.Connect)+",accept="+boolString(write.Accept))
 	}
 	return nil
-}
-
-func probeArgValue(args []string, flag string) string {
-	for i := 0; i < len(args)-1; i++ {
-		if args[i] == flag {
-			return args[i+1]
-		}
-	}
-	return ""
-}
-
-func probeOptionValue(args []string, prefix string) string {
-	for _, arg := range args {
-		if strings.HasPrefix(arg, prefix) {
-			return strings.TrimPrefix(arg, prefix)
-		}
-	}
-	return ""
 }
 
 func boolString(value bool) string {

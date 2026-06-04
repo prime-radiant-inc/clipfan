@@ -67,6 +67,17 @@ type RegularSSHInstallKnownHostSpec struct {
 	PublicKey            string
 }
 
+type RegularSSHRunProbeSpec struct {
+	User           string
+	Host           string
+	Port           int
+	KnownHostsPath string
+	InstallPath    string
+	Probe          PinnedSSHCommand
+	ExpectPeerID   string
+	ExpectKeyID    string
+}
+
 func PinnedSSHProbeCommand(spec PinnedSSHCommand) (SSHCommand, error) {
 	normalized, err := normalizePinnedSSHCommand(spec)
 	if err != nil {
@@ -175,6 +186,30 @@ func RegularSSHInstallKnownHostCommand(spec RegularSSHInstallKnownHostSpec) (SSH
 			"--port", strconv.Itoa(normalized.TargetPort),
 			"--key-type", pin.KeyType,
 			"--public-key", pin.PublicKey,
+		},
+	}), nil
+}
+
+func RegularSSHRunProbeCommand(spec RegularSSHRunProbeSpec) (SSHCommand, error) {
+	normalized, err := normalizeRegularSSHRunProbeSpec(spec)
+	if err != nil {
+		return SSHCommand{}, err
+	}
+	return regularSSHRemoteCommand(regularSSHRemoteSpec{
+		User:           normalized.User,
+		Host:           normalized.Host,
+		Port:           normalized.Port,
+		KnownHostsPath: normalized.KnownHostsPath,
+		RemoteArgs: []string{
+			normalized.InstallPath,
+			"ssh-run-probe",
+			"--user", normalized.Probe.User,
+			"--host", normalized.Probe.Host,
+			"--port", strconv.Itoa(normalized.Probe.Port),
+			"--private-key", normalized.Probe.PrivateKeyPath,
+			"--known-hosts", normalized.Probe.KnownHostsPath,
+			"--expect-peer", normalized.ExpectPeerID,
+			"--expect-key-id", normalized.ExpectKeyID,
 		},
 	}), nil
 }
@@ -329,6 +364,30 @@ func normalizeRegularSSHInstallKnownHostSpec(spec RegularSSHInstallKnownHostSpec
 	spec.Host = host
 	spec.TargetHost = strings.TrimPrefix(strings.TrimSuffix(pin.Pattern, "]:"+strconv.Itoa(spec.TargetPort)), "[")
 	return spec, pin, nil
+}
+
+func normalizeRegularSSHRunProbeSpec(spec RegularSSHRunProbeSpec) (RegularSSHRunProbeSpec, error) {
+	user, host, err := normalizeRegularSSHTarget(spec.User, spec.Host, spec.Port, spec.KnownHostsPath)
+	if err != nil {
+		return RegularSSHRunProbeSpec{}, err
+	}
+	if err := config.ValidateSSHExecutablePath(spec.InstallPath); err != nil {
+		return RegularSSHRunProbeSpec{}, fmt.Errorf("%w: invalid install path: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	probe, err := normalizePinnedSSHCommand(spec.Probe)
+	if err != nil {
+		return RegularSSHRunProbeSpec{}, fmt.Errorf("%w: invalid probe: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	if err := config.ValidateHostID(spec.ExpectPeerID); err != nil {
+		return RegularSSHRunProbeSpec{}, fmt.Errorf("%w: invalid expected peer: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	if err := ValidateManagedAuthorizedKeyID(spec.ExpectKeyID); err != nil {
+		return RegularSSHRunProbeSpec{}, fmt.Errorf("%w: invalid expected key id: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	spec.User = user
+	spec.Host = host
+	spec.Probe = probe
+	return spec, nil
 }
 
 func normalizeRegularSSHTarget(user string, host string, port int, knownHostsPath string) (string, string, error) {

@@ -331,6 +331,50 @@ func TestRegularSSHInstallKnownHostCommand(t *testing.T) {
 	assertRegularSSHCommandSafety(t, cmd.Args)
 }
 
+func TestRegularSSHRunProbeCommand(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := RegularSSHRunProbeCommand(RegularSSHRunProbeSpec{
+		User:           "jesse",
+		Host:           "Connector.EXAMPLE.",
+		Port:           22,
+		KnownHostsPath: "/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		InstallPath:    "/home/jesse/.local/bin/clipfan",
+		Probe: PinnedSSHCommand{
+			User:           "jesse",
+			Host:           "Acceptor.EXAMPLE.",
+			Port:           2200,
+			PrivateKeyPath: "/home/jesse/.config/clipfan/ssh/sync_ed25519",
+			KnownHostsPath: "/home/jesse/.config/clipfan/ssh/known_hosts",
+		},
+		ExpectPeerID: "linux-b",
+		ExpectKeyID:  "key-123456",
+	})
+	if err != nil {
+		t.Fatalf("RegularSSHRunProbeCommand() error = %v", err)
+	}
+
+	want := []string{
+		"ssh",
+		"-F", "/dev/null",
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UserKnownHostsFile=/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		"-o", "GlobalKnownHostsFile=/dev/null",
+		"-o", "ProxyCommand=none",
+		"-o", "ProxyJump=none",
+		"-o", "PermitLocalCommand=no",
+		"-o", "RequestTTY=no",
+		"-o", "ClearAllForwardings=yes",
+		"-o", "LogLevel=ERROR",
+		"-p", "22",
+		"jesse@connector.example",
+		"'/home/jesse/.local/bin/clipfan' 'ssh-run-probe' '--user' 'jesse' '--host' 'acceptor.example' '--port' '2200' '--private-key' '/home/jesse/.config/clipfan/ssh/sync_ed25519' '--known-hosts' '/home/jesse/.config/clipfan/ssh/known_hosts' '--expect-peer' 'linux-b' '--expect-key-id' 'key-123456'",
+	}
+	assertSSHCommandArgs(t, cmd.Args, want)
+	assertRegularSSHCommandSafety(t, cmd.Args)
+}
+
 func TestRegularSSHMaterialCommandsRejectInvalidInput(t *testing.T) {
 	t.Parallel()
 
@@ -361,6 +405,26 @@ func TestRegularSSHMaterialCommandsRejectInvalidInput(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidRegularSSHCommand) {
 		t.Fatalf("RegularSSHInstallKnownHostCommand() error = %v, want ErrInvalidRegularSSHCommand", err)
+	}
+
+	_, err = RegularSSHRunProbeCommand(RegularSSHRunProbeSpec{
+		User:           "jesse",
+		Host:           "example.com",
+		Port:           22,
+		KnownHostsPath: "/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		InstallPath:    "/home/jesse/.local/bin/clipfan",
+		Probe: PinnedSSHCommand{
+			User:           "jesse",
+			Host:           "acceptor.example",
+			Port:           22,
+			PrivateKeyPath: "sync_ed25519",
+			KnownHostsPath: "/home/jesse/.config/clipfan/ssh/known_hosts",
+		},
+		ExpectPeerID: "linux-b",
+		ExpectKeyID:  "key-123456",
+	})
+	if !errors.Is(err, ErrInvalidRegularSSHCommand) {
+		t.Fatalf("RegularSSHRunProbeCommand() error = %v, want ErrInvalidRegularSSHCommand", err)
 	}
 }
 

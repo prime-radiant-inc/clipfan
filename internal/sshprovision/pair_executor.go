@@ -14,6 +14,7 @@ var ErrDirectPairProvisionerNotReady = errors.New("direct_pair_provisioner_not_r
 type DirectPairProvisionHost struct {
 	Host           DirectPairHost
 	KnownHostsPath string
+	SyncKeyPath    string
 }
 
 type DirectPairProvisionInput struct {
@@ -45,9 +46,9 @@ type DirectPairProvisionResult struct {
 type DirectPairProvisionDriver interface {
 	ConfirmHostKey(context.Context, DirectPairHost) (string, error)
 	UpsertKnownHostPin(context.Context, DirectPairHost, DirectPairHost, string, KnownHostPin) error
-	EnsureSyncKey(context.Context, DirectPairHost) (SyncKeyMaterial, error)
+	EnsureSyncKey(context.Context, DirectPairProvisionHost) (SyncKeyMaterial, error)
 	InstallAuthorizedKey(context.Context, DirectPairHost, ManagedAuthorizedKey) error
-	RunProbe(context.Context, SSHCommand, DirectPairHost) error
+	RunProbe(context.Context, PinnedSSHCommand, DirectPairProvisionHost, string, string) error
 	WriteConfig(context.Context, DirectPairConfigMutation) error
 }
 
@@ -109,7 +110,7 @@ func (provisioner DirectPairProvisioner) Provision(ctx context.Context, input Di
 	}
 	result.CompletedSteps = append(result.CompletedSteps, StepUpsertKnownHostPin)
 
-	key, err := provisioner.Driver.EnsureSyncKey(ctx, connector.Host)
+	key, err := provisioner.Driver.EnsureSyncKey(ctx, connector)
 	if err != nil {
 		return result, err
 	}
@@ -133,17 +134,14 @@ func (provisioner DirectPairProvisioner) Provision(ctx context.Context, input Di
 	}
 	result.CompletedSteps = append(result.CompletedSteps, StepInstallAcceptorAuthorizedKey)
 
-	probe, err := PinnedSSHProbeCommand(PinnedSSHCommand{
+	probe := PinnedSSHCommand{
 		User:           acceptor.Host.SSHUser,
 		Host:           acceptor.Host.SSHHost,
 		Port:           acceptor.Host.SSHPort,
 		PrivateKeyPath: key.PrivateKeyPath,
 		KnownHostsPath: connector.KnownHostsPath,
-	})
-	if err != nil {
-		return result, err
 	}
-	if err := provisioner.Driver.RunProbe(ctx, probe, connector.Host); err != nil {
+	if err := provisioner.Driver.RunProbe(ctx, probe, connector, connector.Host.ID, key.KeyID); err != nil {
 		return result, err
 	}
 	result.CompletedSteps = append(result.CompletedSteps, StepProbeForcedCommand)
@@ -183,6 +181,12 @@ func normalizeDirectPairProvisionHost(host DirectPairProvisionHost) (DirectPairP
 	}
 	if err := config.ValidateSSHExecutablePath(host.KnownHostsPath); err != nil {
 		return DirectPairProvisionHost{}, fmt.Errorf("invalid known_hosts path: %w", err)
+	}
+	if err := config.ValidateSyncKeyPath(host.SyncKeyPath); err != nil {
+		return DirectPairProvisionHost{}, fmt.Errorf("invalid sync key path: %w", err)
+	}
+	if err := config.ValidateSSHExecutablePath(host.SyncKeyPath); err != nil {
+		return DirectPairProvisionHost{}, fmt.Errorf("invalid sync key ssh path: %w", err)
 	}
 	host.Host = normalizedHost
 	return host, nil
