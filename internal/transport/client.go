@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -86,6 +87,67 @@ func (c *Client) PushAsToRecipient(ctx context.Context, host string, port int, r
 		return fmt.Errorf("push to %s: status %d", host, resp.StatusCode)
 	}
 	return nil
+}
+
+func (c *Client) Current(ctx context.Context, host string, port int) (CurrentPayload, error) {
+	if !isLoopbackHost(host) {
+		return CurrentPayload{}, fmt.Errorf("%w: %s", ErrPeerHTTPRuntimeDisabled, net.JoinHostPort(host, strconv.Itoa(port)))
+	}
+	target := "/v1/current"
+	url := fmt.Sprintf("http://%s%s", net.JoinHostPort(host, strconv.Itoa(port)), target)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return CurrentPayload{}, err
+	}
+	headers, err := c.auth.SignedRequestHeaders(req.Method, req.URL.RequestURI(), nil, SignedRequestOptions{
+		AuthVersion: AuthVersionRequestHMAC,
+	})
+	if err != nil {
+		return CurrentPayload{}, err
+	}
+	for header, value := range headers {
+		req.Header.Set(header, value)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return CurrentPayload{}, err
+	}
+	defer resp.Body.Close()
+	body, err := readLimitedCurrentBody(resp.Body)
+	if err != nil {
+		return CurrentPayload{}, err
+	}
+	if resp.StatusCode/100 != 2 {
+		return CurrentPayload{}, fmt.Errorf("current from %s: status %d", host, resp.StatusCode)
+	}
+	authVersion := resp.Header.Get(HeaderAuthVersion)
+	if authVersion == "" {
+		authVersion = headers[HeaderAuthVersion]
+	}
+	if err := c.auth.VerifyResponseWithAuthVersion(headers[HeaderNonce], body, resp.Header.Get("X-Clipfan-Response-Sig"), authVersion); err != nil {
+		return CurrentPayload{}, err
+	}
+	var payload CurrentPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return CurrentPayload{}, err
+	}
+	return payload, nil
+}
+
+func readLimitedCurrentBody(reader io.Reader) ([]byte, error) {
+	return readLimitedBody(reader, MaxSSHStreamFrameBytes, ErrSSHStreamFrameTooLarge)
+}
+
+func readLimitedBody(reader io.Reader, maxBytes int64, tooLarge error) ([]byte, error) {
+	limited := io.LimitReader(reader, maxBytes+1)
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, tooLarge
+	}
+	return body, nil
 }
 
 func isLoopbackHost(host string) bool {

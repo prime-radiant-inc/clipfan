@@ -34,6 +34,31 @@ func TestSSHTransportPollOncePublishesToSSHRuntimeNotHTTP(t *testing.T) {
 	if calls[0].origin != "self" || calls[0].skipOrigin != "" || calls[0].content.ID == "" || string(calls[0].content.Bytes) != "local-copy" {
 		t.Fatalf("ssh publish = %#v", calls[0])
 	}
+	current := d.currentHandler()
+	got, ok, err := current.Content()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || current.Origin != "self" || got.ID != calls[0].content.ID || string(got.Bytes) != "local-copy" {
+		t.Fatalf("current = %#v content=%#v ok=%v", current, got, ok)
+	}
+}
+
+func TestSSHTransportConcealedLocalClipIsNotExposedAsCurrent(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	d := newSSHTransportDaemonForTest(t)
+	d.origin = "self"
+	secret := clipboard.New(clipboard.KindText, []byte("secret"), fixedTime)
+	secret.Concealed = true
+	d.cb = &fakeBackend{current: secret}
+
+	d.pollOnce(context.Background())
+
+	current := d.currentHandler()
+	if current.HasCurrent || current.NullReason != "no_visible_current" {
+		t.Fatalf("current = %#v, want no visible current", current)
+	}
 }
 
 func TestSSHTransportOnReceiveRelaysToSSHRuntimeNotHTTP(t *testing.T) {

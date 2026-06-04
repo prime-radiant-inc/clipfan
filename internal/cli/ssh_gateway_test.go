@@ -198,6 +198,109 @@ func TestRunSSHGatewayDefaultSyncStreamBridgesStateToLocalDaemon(t *testing.T) {
 	}
 }
 
+func TestRunSSHGatewayDefaultSyncStreamPublishesLocalCurrentToInitiator(t *testing.T) {
+	configRoot := t.TempDir()
+	stateRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	t.Setenv("XDG_STATE_HOME", stateRoot)
+	sharedKey := config.NewSharedKey()
+	auth, err := transport.NewAuth(sharedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := clipboard.New(clipboard.KindText, []byte("from accepted side"), time.Now().UTC())
+	content.ID = "clip-accepted-side"
+	srv := transport.NewServer("127.0.0.1:0", auth, nil, nil)
+	srv.SetCurrentFunc(func() transport.CurrentPayload {
+		return transport.CurrentPayloadFromContent(content, "linux-b")
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.ServeListener(ctx, ln) }()
+	t.Cleanup(func() {
+		cancel()
+		<-serveErr
+	})
+	listenPort := ln.Addr().(*net.TCPAddr).Port
+	writeGatewayConfig(t, sharedKey, listenPort)
+	oldPoll := sshGatewayCurrentPollInterval
+	sshGatewayCurrentPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { sshGatewayCurrentPollInterval = oldPoll })
+
+	gatewayInR, gatewayInW := io.Pipe()
+	gatewayOutR, gatewayOutW := io.Pipe()
+	errCh := make(chan error, 1)
+	go func() {
+		err := runSSHGateway(
+			[]string{"--authorized-peer", "m4", "--authorized-key-id", "key-123456"},
+			gatewayInR,
+			gatewayOutW,
+			io.Discard,
+			func(key string) string {
+				if key == "SSH_ORIGINAL_COMMAND" {
+					return sshprovision.SSHGatewaySyncStreamCommand
+				}
+				return ""
+			},
+		)
+		_ = gatewayOutW.Close()
+		errCh <- err
+	}()
+	t.Cleanup(func() {
+		_ = gatewayInW.Close()
+		_ = gatewayOutR.Close()
+	})
+
+	initiator := transport.NewSSHSyncStream(auth, "m4", "linux-b", gatewayOutR, gatewayInW)
+	hello, err := transport.NewSSHStreamHello(auth, transport.SSHStreamPurposeSyncStream, "m4", "linux-b", time.Now(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := initiator.WriteHello(context.Background(), hello); err != nil {
+		t.Fatalf("initiator WriteHello error = %v", err)
+	}
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelRead()
+	if _, err := initiator.ReadHello(readCtx, time.Now()); err != nil {
+		t.Fatalf("initiator ReadHello error = %v", err)
+	}
+	event, err := initiator.ReadNext(readCtx, time.Now())
+	if err != nil {
+		t.Fatalf("initiator ReadNext error = %v", err)
+	}
+	if event.Type != transport.SSHStreamFrameState || event.State.Content.ID != "clip-accepted-side" || event.State.Origin != "linux-b" || string(event.State.Content.Bytes) != "from accepted side" {
+		t.Fatalf("event = %#v", event)
+	}
+	if err := initiator.WriteAck(context.Background(), event.State.Seq, event.State.Content.ID, "applied", ""); err != nil {
+		t.Fatalf("initiator WriteAck error = %v", err)
+	}
+	_ = gatewayInW.Close()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("runSSHGateway() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for gateway exit")
+	}
+}
+
+func TestSSHGatewayHostMatchUsesTransportRules(t *testing.T) {
+	t.Parallel()
+
+	if sshGatewayHostsMatch("linux-b", "b") {
+		t.Fatal("linux-b matched short peer id b")
+	}
+	if !sshGatewayHostsMatch("jesse-paradise-park", "paradise-park") {
+		t.Fatal("tailnet-prefixed host did not match short peer id")
+	}
+}
+
 func TestRunSSHGatewayDefaultSyncStreamRejectsAcceptOnlyPeer(t *testing.T) {
 	configRoot := t.TempDir()
 	stateRoot := t.TempDir()

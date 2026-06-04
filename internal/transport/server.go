@@ -28,6 +28,10 @@ type PeersFunc func() any
 // VersionFunc returns a JSON-encodable version snapshot for signed peer probes.
 type VersionFunc func() any
 
+// CurrentFunc returns the daemon-owned latest visible current state for local
+// SSH gateway publishing.
+type CurrentFunc func() CurrentPayload
+
 // HistoryFunc returns a JSON-encodable snapshot of the clipboard history.
 type HistoryFunc func(limit int) (any, error)
 
@@ -74,6 +78,7 @@ type Server struct {
 	onRecv                ReceiveFunc
 	peersFn               PeersFunc
 	versionFn             VersionFunc
+	currentFn             CurrentFunc
 	historyFn             HistoryFunc
 	restoreFn             RestoreFunc
 	pinFn                 PinFunc
@@ -143,6 +148,9 @@ func (s *Server) SetConfigFunc(fn func(maxHistory int) error) { s.configFn = fn 
 // SetVersionFunc wires the signed network version endpoint. Called by the daemon.
 func (s *Server) SetVersionFunc(fn VersionFunc) { s.versionFn = fn }
 
+// SetCurrentFunc wires the signed local current endpoint. Called by the daemon.
+func (s *Server) SetCurrentFunc(fn CurrentFunc) { s.currentFn = fn }
+
 func (s *Server) SetListenerRepair(readFn ListenerRepairReadFunc, patchFn ListenerRepairPatchFunc) {
 	s.listenerRepairReadFn = readFn
 	s.listenerRepairPatchFn = patchFn
@@ -190,6 +198,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/clip", s.postClip)
 	mux.HandleFunc("GET /v1/peers", s.getPeers)
 	mux.HandleFunc("GET /v1/version", s.getVersion)
+	mux.HandleFunc("GET /v1/current", s.getCurrent)
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
@@ -562,6 +571,18 @@ func (s *Server) getVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeSignedJSON(w, signed, s.versionFn())
+}
+
+func (s *Server) getCurrent(w http.ResponseWriter, r *http.Request) {
+	signed := s.readSignedLocal(w, r)
+	if signed == nil {
+		return
+	}
+	if s.currentFn == nil {
+		http.Error(w, "current endpoint not wired", http.StatusServiceUnavailable)
+		return
+	}
+	s.writeSignedJSON(w, signed, s.currentFn())
 }
 
 func (s *Server) getHistory(w http.ResponseWriter, r *http.Request) {

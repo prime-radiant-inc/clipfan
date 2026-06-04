@@ -80,6 +80,9 @@ type currentClip struct {
 	kind      clipboard.Kind
 	hash      [32]byte // canonical bytes hash (text bytes, or image bytes)
 	imagePath string   // set for image clips
+	content   clipboard.Content
+	origin    string
+	visible   bool
 }
 
 func New(cfg *config.Config) (*Daemon, error) {
@@ -177,6 +180,7 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 	})
 	d.sv.SetRecipientIdentity(origin)
 	d.sv.SetVersionFunc(d.versionHandler)
+	d.sv.SetCurrentFunc(d.currentHandler)
 	d.sv.SetHistory(
 		func(limit int) (any, error) { return store.LoadHistory(limit) },
 		d.Restore,
@@ -288,6 +292,16 @@ func (d *Daemon) peersHandler() any {
 
 func (d *Daemon) versionHandler() any {
 	return map[string]string{"version": version.Version}
+}
+
+func (d *Daemon) currentHandler() transport.CurrentPayload {
+	d.mu.Lock()
+	current := d.current
+	d.mu.Unlock()
+	if !current.visible || current.content.ID == "" {
+		return transport.NoCurrentPayload("no_visible_current")
+	}
+	return transport.CurrentPayloadFromContent(current.content, current.origin)
 }
 
 // setMaxHistory persists a new history cap. Values are clamped to [50, 5000];
@@ -443,7 +457,7 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 	// Adopt the processed local clip so the next poll of the unchanged
 	// clipboard is recognised as an echo, not processed again.
 	d.mu.Lock()
-	d.current = currentClip{id: c.ID, kind: c.Kind, hash: c.Hash, imagePath: imagePath}
+	d.current = currentClip{id: c.ID, kind: c.Kind, hash: c.Hash, imagePath: imagePath, content: c, origin: d.origin, visible: !c.Concealed}
 	d.mu.Unlock()
 	if c.Concealed {
 		slog.Debug("concealed local clip skipped", "id", c.ID, "kind", c.Kind)
@@ -571,9 +585,9 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 	if wrote {
 		d.mu.Lock()
 		if c.Kind == clipboard.KindImage {
-			d.current = currentClip{id: c.ID, kind: clipboard.KindImage, hash: c.Hash, imagePath: imagePath}
+			d.current = currentClip{id: c.ID, kind: clipboard.KindImage, hash: c.Hash, imagePath: imagePath, content: c, origin: origin, visible: true}
 		} else {
-			d.current = currentClip{id: c.ID, kind: clipboard.KindText, hash: c.Hash}
+			d.current = currentClip{id: c.ID, kind: clipboard.KindText, hash: c.Hash, content: c, origin: origin, visible: true}
 		}
 		d.mu.Unlock()
 	}
@@ -698,9 +712,9 @@ func (d *Daemon) Restore(id string) error {
 	d.lastTS = c.TS
 	if wrote {
 		if e.Kind == "image" {
-			d.current = currentClip{id: c.ID, kind: clipboard.KindImage, hash: c.Hash, imagePath: e.ImagePath}
+			d.current = currentClip{id: c.ID, kind: clipboard.KindImage, hash: c.Hash, imagePath: e.ImagePath, content: c, origin: d.origin, visible: true}
 		} else {
-			d.current = currentClip{id: c.ID, kind: clipboard.KindText, hash: c.Hash}
+			d.current = currentClip{id: c.ID, kind: clipboard.KindText, hash: c.Hash, content: c, origin: d.origin, visible: true}
 		}
 	}
 	d.mu.Unlock()

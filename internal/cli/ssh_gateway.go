@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
@@ -22,6 +23,8 @@ import (
 )
 
 var ErrSSHGatewayCommandRejected = errors.New("ssh_gateway_command_rejected")
+
+var sshGatewayCurrentPollInterval = 250 * time.Millisecond
 
 type SSHGatewayIdentity struct {
 	PeerID string
@@ -134,30 +137,75 @@ func runDefaultSSHGatewaySyncStream(identity SSHGatewayIdentity, stdin io.Reader
 		return err
 	}
 	client := transport.NewClientWithPeerHTTPRuntimeDisabled(auth, localID, true)
+	var writeMu sync.Mutex
+	writeFrame := func(fn func(context.Context) error) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return writeSSHGatewayFrame(ctx, fn)
+	}
+	events := make(chan sshGatewayStreamReadEvent, 8)
+	go readSSHGatewayStreamEvents(ctx, stream, events)
+	ticker := time.NewTicker(sshGatewayCurrentPollInterval)
+	defer ticker.Stop()
+	var seq uint64
+	sentCurrent := map[string]struct{}{}
 	for {
-		event, err := stream.ReadNextNow(ctx)
-		if errors.Is(err, transport.ErrSSHStreamUnexpectedEOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		switch event.Type {
-		case transport.SSHStreamFrameState:
-			if err := handleSSHGatewayState(ctx, stream, client, localHost, localPort, localID, event.State); err != nil {
+		select {
+		case event := <-events:
+			if event.err != nil {
+				return event.err
+			}
+			if event.done {
+				return nil
+			}
+			switch event.frame.Type {
+			case transport.SSHStreamFrameState:
+				if err := handleSSHGatewayState(ctx, writeFrame, stream, client, localHost, localPort, localID, event.frame.State); err != nil {
+					return err
+				}
+			case transport.SSHStreamFrameAck:
+			case transport.SSHStreamFrameError:
+				return fmt.Errorf("ssh stream error frame: %s", event.frame.ErrorCode)
+			default:
+				return fmt.Errorf("%w: %s", transport.ErrSSHStreamUnexpectedFrame, event.frame.Type)
+			}
+		case <-ticker.C:
+			if err := publishSSHGatewayCurrent(ctx, writeFrame, stream, client, localHost, localPort, identity.PeerID, &seq, sentCurrent); err != nil {
 				return err
 			}
-		case transport.SSHStreamFrameError:
-			return fmt.Errorf("ssh stream error frame: %s", event.ErrorCode)
-		default:
-			return fmt.Errorf("%w: %s", transport.ErrSSHStreamUnexpectedFrame, event.Type)
 		}
 	}
 }
 
-func handleSSHGatewayState(ctx context.Context, stream *transport.SSHSyncStream, client *transport.Client, localHost string, localPort int, localID string, state transport.SSHStreamStateResult) error {
+type sshGatewayStreamReadEvent struct {
+	frame transport.SSHStreamEvent
+	err   error
+	done  bool
+}
+
+func readSSHGatewayStreamEvents(ctx context.Context, stream *transport.SSHSyncStream, events chan<- sshGatewayStreamReadEvent) {
+	for {
+		event, err := stream.ReadNextNow(ctx)
+		if errors.Is(err, transport.ErrSSHStreamUnexpectedEOF) {
+			events <- sshGatewayStreamReadEvent{done: true}
+			return
+		}
+		if err != nil {
+			events <- sshGatewayStreamReadEvent{err: err}
+			return
+		}
+		select {
+		case events <- sshGatewayStreamReadEvent{frame: event}:
+		case <-ctx.Done():
+			events <- sshGatewayStreamReadEvent{err: ctx.Err()}
+			return
+		}
+	}
+}
+
+func handleSSHGatewayState(ctx context.Context, writeFrame func(func(context.Context) error) error, stream *transport.SSHSyncStream, client *transport.Client, localHost string, localPort int, localID string, state transport.SSHStreamStateResult) error {
 	if state.NullReason != "" {
-		return writeSSHGatewayFrame(ctx, func(ctx context.Context) error {
+		return writeFrame(func(ctx context.Context) error {
 			return stream.WriteAck(ctx, state.Seq, "", "no_state", "")
 		})
 	}
@@ -166,16 +214,54 @@ func handleSSHGatewayState(ctx context.Context, stream *transport.SSHSyncStream,
 	if err := pushSSHGatewayStateToLocalDaemon(ctx, client, localHost, localPort, localID, state.Content, state.Origin); err != nil {
 		status = "rejected"
 		reason = "local_apply_failed"
-		if writeErr := writeSSHGatewayFrame(ctx, func(ctx context.Context) error {
+		if writeErr := writeFrame(func(ctx context.Context) error {
 			return stream.WriteAck(ctx, state.Seq, state.Content.ID, status, reason)
 		}); writeErr != nil {
 			return writeErr
 		}
 		return err
 	}
-	return writeSSHGatewayFrame(ctx, func(ctx context.Context) error {
+	return writeFrame(func(ctx context.Context) error {
 		return stream.WriteAck(ctx, state.Seq, state.Content.ID, status, reason)
 	})
+}
+
+func publishSSHGatewayCurrent(ctx context.Context, writeFrame func(func(context.Context) error) error, stream *transport.SSHSyncStream, client *transport.Client, localHost string, localPort int, peerID string, seq *uint64, sent map[string]struct{}) error {
+	currentCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	payload, err := client.Current(currentCtx, localHost, localPort)
+	if err != nil {
+		if errors.Is(err, transport.ErrSSHStreamFrameTooLarge) {
+			return nil
+		}
+		return err
+	}
+	content, ok, err := payload.Content()
+	if err != nil {
+		return err
+	}
+	if !ok || content.ID == "" || sshGatewayHostsMatch(payload.Origin, peerID) {
+		return nil
+	}
+	if len(content.Bytes) > transport.MaxSSHStreamPayloadBytes {
+		return nil
+	}
+	if _, ok := sent[content.ID]; ok {
+		return nil
+	}
+	(*seq)++
+	currentSeq := *seq
+	if err := writeFrame(func(ctx context.Context) error {
+		return stream.WriteState(ctx, currentSeq, content, payload.Origin)
+	}); err != nil {
+		return err
+	}
+	sent[content.ID] = struct{}{}
+	return nil
+}
+
+func sshGatewayHostsMatch(a string, b string) bool {
+	return transport.HostsMatch(a, b)
 }
 
 func pushSSHGatewayStateToLocalDaemon(ctx context.Context, client *transport.Client, localHost string, localPort int, localID string, content clipboard.Content, origin string) error {
