@@ -208,11 +208,7 @@ func TestRegularSSHInstallAuthorizedKeyCommand(t *testing.T) {
 		"'/home/jesse/.local/bin/clipfan' 'ssh-install-authorized-key' '--peer' 'linux-b' '--key-id' 'key-123456' '--gateway-path' '/home/jesse/.local/bin/clipfan' '--public-key' '" + testEd25519Key + "'",
 	}
 	assertSSHCommandArgs(t, cmd.Args, want)
-	for _, arg := range cmd.Args {
-		if arg == "-i" || arg == "IdentitiesOnly=yes" || arg == "-c" || arg == "sh" {
-			t.Fatalf("regular SSH install command should not force sync identity or shell locally: %#v", cmd.Args)
-		}
-	}
+	assertRegularSSHCommandSafety(t, cmd.Args)
 }
 
 func TestRegularSSHInstallAuthorizedKeyCommandRejectsInvalidInput(t *testing.T) {
@@ -255,6 +251,116 @@ func TestRegularSSHInstallAuthorizedKeyCommandRejectsInvalidInput(t *testing.T) 
 				t.Fatalf("RegularSSHInstallAuthorizedKeyCommand() error = %v, want ErrInvalidRegularSSHCommand", err)
 			}
 		})
+	}
+}
+
+func TestRegularSSHEnsureSyncKeyCommand(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := RegularSSHEnsureSyncKeyCommand(RegularSSHEnsureSyncKeySpec{
+		User:           "jesse",
+		Host:           "Example.COM.",
+		Port:           2200,
+		KnownHostsPath: "/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		InstallPath:    "/home/jesse/.local/bin/clipfan",
+		HostID:         "linux-b",
+		KeyPath:        "/home/jesse/.config/clipfan/ssh/sync_ed25519",
+	})
+	if err != nil {
+		t.Fatalf("RegularSSHEnsureSyncKeyCommand() error = %v", err)
+	}
+
+	want := []string{
+		"ssh",
+		"-F", "/dev/null",
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UserKnownHostsFile=/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		"-o", "GlobalKnownHostsFile=/dev/null",
+		"-o", "ProxyCommand=none",
+		"-o", "ProxyJump=none",
+		"-o", "PermitLocalCommand=no",
+		"-o", "RequestTTY=no",
+		"-o", "ClearAllForwardings=yes",
+		"-o", "LogLevel=ERROR",
+		"-p", "2200",
+		"jesse@example.com",
+		"'/home/jesse/.local/bin/clipfan' 'ssh-ensure-sync-key' '--host-id' 'linux-b' '--key-path' '/home/jesse/.config/clipfan/ssh/sync_ed25519'",
+	}
+	assertSSHCommandArgs(t, cmd.Args, want)
+	assertRegularSSHCommandSafety(t, cmd.Args)
+}
+
+func TestRegularSSHInstallKnownHostCommand(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := RegularSSHInstallKnownHostCommand(RegularSSHInstallKnownHostSpec{
+		User:                 "jesse",
+		Host:                 "connector.example",
+		Port:                 22,
+		KnownHostsPath:       "/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		InstallPath:          "/home/jesse/.local/bin/clipfan",
+		TargetKnownHostsPath: "/home/jesse/.config/clipfan/ssh/known_hosts",
+		TargetHost:           "Acceptor.EXAMPLE.",
+		TargetPort:           2200,
+		KeyType:              "ssh-ed25519",
+		PublicKey:            testEd25519Key,
+	})
+	if err != nil {
+		t.Fatalf("RegularSSHInstallKnownHostCommand() error = %v", err)
+	}
+
+	want := []string{
+		"ssh",
+		"-F", "/dev/null",
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UserKnownHostsFile=/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		"-o", "GlobalKnownHostsFile=/dev/null",
+		"-o", "ProxyCommand=none",
+		"-o", "ProxyJump=none",
+		"-o", "PermitLocalCommand=no",
+		"-o", "RequestTTY=no",
+		"-o", "ClearAllForwardings=yes",
+		"-o", "LogLevel=ERROR",
+		"-p", "22",
+		"jesse@connector.example",
+		"'/home/jesse/.local/bin/clipfan' 'ssh-install-known-host' '--known-hosts' '/home/jesse/.config/clipfan/ssh/known_hosts' '--host' 'acceptor.example' '--port' '2200' '--key-type' 'ssh-ed25519' '--public-key' '" + testEd25519Key + "'",
+	}
+	assertSSHCommandArgs(t, cmd.Args, want)
+	assertRegularSSHCommandSafety(t, cmd.Args)
+}
+
+func TestRegularSSHMaterialCommandsRejectInvalidInput(t *testing.T) {
+	t.Parallel()
+
+	_, err := RegularSSHEnsureSyncKeyCommand(RegularSSHEnsureSyncKeySpec{
+		User:           "jesse",
+		Host:           "example.com",
+		Port:           22,
+		KnownHostsPath: "/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		InstallPath:    "/home/jesse/.local/bin/clipfan",
+		HostID:         "bad host",
+		KeyPath:        "/home/jesse/.config/clipfan/ssh/sync_ed25519",
+	})
+	if !errors.Is(err, ErrInvalidRegularSSHCommand) {
+		t.Fatalf("RegularSSHEnsureSyncKeyCommand() error = %v, want ErrInvalidRegularSSHCommand", err)
+	}
+
+	_, err = RegularSSHInstallKnownHostCommand(RegularSSHInstallKnownHostSpec{
+		User:                 "jesse",
+		Host:                 "example.com",
+		Port:                 22,
+		KnownHostsPath:       "/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		InstallPath:          "/home/jesse/.local/bin/clipfan",
+		TargetKnownHostsPath: "/home/jesse/.config/clipfan/ssh/../known_hosts",
+		TargetHost:           "acceptor.example",
+		TargetPort:           22,
+		KeyType:              "ssh-ed25519",
+		PublicKey:            testEd25519Key,
+	})
+	if !errors.Is(err, ErrInvalidRegularSSHCommand) {
+		t.Fatalf("RegularSSHInstallKnownHostCommand() error = %v, want ErrInvalidRegularSSHCommand", err)
 	}
 }
 
@@ -330,5 +436,33 @@ func assertSSHCommandArgs(t *testing.T, got []string, want []string) {
 		if got[i] != want[i] {
 			t.Fatalf("arg[%d] = %q, want %q; args=%#v", i, got[i], want[i], got)
 		}
+	}
+}
+
+func assertRegularSSHCommandSafety(t *testing.T, args []string) {
+	t.Helper()
+	hasStrictHostKeyChecking := false
+	hasBatchMode := false
+	hasKnownHosts := false
+	hasProxyCommandNone := false
+	hasProxyJumpNone := false
+	for _, arg := range args {
+		switch {
+		case arg == "-i" || arg == "IdentitiesOnly=yes" || arg == "-c" || arg == "sh":
+			t.Fatalf("regular SSH helper command should not force sync identity or local shell: %#v", args)
+		case arg == "StrictHostKeyChecking=yes":
+			hasStrictHostKeyChecking = true
+		case arg == "BatchMode=yes":
+			hasBatchMode = true
+		case strings.HasPrefix(arg, "UserKnownHostsFile="):
+			hasKnownHosts = true
+		case arg == "ProxyCommand=none":
+			hasProxyCommandNone = true
+		case arg == "ProxyJump=none":
+			hasProxyJumpNone = true
+		}
+	}
+	if !hasStrictHostKeyChecking || !hasBatchMode || !hasKnownHosts || !hasProxyCommandNone || !hasProxyJumpNone {
+		t.Fatalf("regular SSH helper command missing safety options: %#v", args)
 	}
 }

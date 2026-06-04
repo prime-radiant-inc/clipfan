@@ -44,6 +44,29 @@ type RegularSSHInstallAuthorizedKeySpec struct {
 	PublicKey      string
 }
 
+type RegularSSHEnsureSyncKeySpec struct {
+	User           string
+	Host           string
+	Port           int
+	KnownHostsPath string
+	InstallPath    string
+	HostID         string
+	KeyPath        string
+}
+
+type RegularSSHInstallKnownHostSpec struct {
+	User                 string
+	Host                 string
+	Port                 int
+	KnownHostsPath       string
+	InstallPath          string
+	TargetKnownHostsPath string
+	TargetHost           string
+	TargetPort           int
+	KeyType              string
+	PublicKey            string
+}
+
 func PinnedSSHProbeCommand(spec PinnedSSHCommand) (SSHCommand, error) {
 	normalized, err := normalizePinnedSSHCommand(spec)
 	if err != nil {
@@ -115,6 +138,47 @@ func RegularSSHInstallAuthorizedKeyCommand(spec RegularSSHInstallAuthorizedKeySp
 	}}, nil
 }
 
+func RegularSSHEnsureSyncKeyCommand(spec RegularSSHEnsureSyncKeySpec) (SSHCommand, error) {
+	normalized, err := normalizeRegularSSHEnsureSyncKeySpec(spec)
+	if err != nil {
+		return SSHCommand{}, err
+	}
+	return regularSSHRemoteCommand(regularSSHRemoteSpec{
+		User:           normalized.User,
+		Host:           normalized.Host,
+		Port:           normalized.Port,
+		KnownHostsPath: normalized.KnownHostsPath,
+		RemoteArgs: []string{
+			normalized.InstallPath,
+			"ssh-ensure-sync-key",
+			"--host-id", normalized.HostID,
+			"--key-path", normalized.KeyPath,
+		},
+	}), nil
+}
+
+func RegularSSHInstallKnownHostCommand(spec RegularSSHInstallKnownHostSpec) (SSHCommand, error) {
+	normalized, pin, err := normalizeRegularSSHInstallKnownHostSpec(spec)
+	if err != nil {
+		return SSHCommand{}, err
+	}
+	return regularSSHRemoteCommand(regularSSHRemoteSpec{
+		User:           normalized.User,
+		Host:           normalized.Host,
+		Port:           normalized.Port,
+		KnownHostsPath: normalized.KnownHostsPath,
+		RemoteArgs: []string{
+			normalized.InstallPath,
+			"ssh-install-known-host",
+			"--known-hosts", normalized.TargetKnownHostsPath,
+			"--host", normalized.TargetHost,
+			"--port", strconv.Itoa(normalized.TargetPort),
+			"--key-type", pin.KeyType,
+			"--public-key", pin.PublicKey,
+		},
+	}), nil
+}
+
 func SyncKeyMaterialFromConfig(result config.SyncKeyCreateResult) (SyncKeyMaterial, error) {
 	fields := strings.Fields(result.PublicKey)
 	if len(fields) < 2 || fields[0] != managedKeyType {
@@ -137,6 +201,34 @@ func SyncKeyMaterialFromConfig(result config.SyncKeyCreateResult) (SyncKeyMateri
 		return SyncKeyMaterial{}, err
 	}
 	return material, nil
+}
+
+type regularSSHRemoteSpec struct {
+	User           string
+	Host           string
+	Port           int
+	KnownHostsPath string
+	RemoteArgs     []string
+}
+
+func regularSSHRemoteCommand(spec regularSSHRemoteSpec) SSHCommand {
+	return SSHCommand{Args: []string{
+		"ssh",
+		"-F", "/dev/null",
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UserKnownHostsFile=" + spec.KnownHostsPath,
+		"-o", "GlobalKnownHostsFile=/dev/null",
+		"-o", "ProxyCommand=none",
+		"-o", "ProxyJump=none",
+		"-o", "PermitLocalCommand=no",
+		"-o", "RequestTTY=no",
+		"-o", "ClearAllForwardings=yes",
+		"-o", "LogLevel=ERROR",
+		"-p", strconv.Itoa(spec.Port),
+		spec.User + "@" + spec.Host,
+		shellQuoteCommand(spec.RemoteArgs),
+	}}
 }
 
 func normalizePinnedSSHCommand(spec PinnedSSHCommand) (PinnedSSHCommand, error) {
@@ -179,18 +271,9 @@ func normalizeSSHKeyscanSpec(spec SSHKeyscanSpec) (SSHKeyscanSpec, error) {
 }
 
 func normalizeRegularSSHInstallAuthorizedKeySpec(spec RegularSSHInstallAuthorizedKeySpec) (RegularSSHInstallAuthorizedKeySpec, error) {
-	if err := config.ValidateSSHUser(spec.User); err != nil {
-		return RegularSSHInstallAuthorizedKeySpec{}, fmt.Errorf("%w: invalid user: %v", ErrInvalidRegularSSHCommand, err)
-	}
-	host, err := config.CanonicalSSHHost(spec.Host)
+	user, host, err := normalizeRegularSSHTarget(spec.User, spec.Host, spec.Port, spec.KnownHostsPath)
 	if err != nil {
-		return RegularSSHInstallAuthorizedKeySpec{}, fmt.Errorf("%w: invalid host: %v", ErrInvalidRegularSSHCommand, err)
-	}
-	if spec.Port < 1 || spec.Port > 65535 {
-		return RegularSSHInstallAuthorizedKeySpec{}, fmt.Errorf("%w: invalid port %d", ErrInvalidRegularSSHCommand, spec.Port)
-	}
-	if err := config.ValidateSSHExecutablePath(spec.KnownHostsPath); err != nil {
-		return RegularSSHInstallAuthorizedKeySpec{}, fmt.Errorf("%w: invalid known hosts path: %v", ErrInvalidRegularSSHCommand, err)
+		return RegularSSHInstallAuthorizedKeySpec{}, err
 	}
 	if err := config.ValidateSSHExecutablePath(spec.InstallPath); err != nil {
 		return RegularSSHInstallAuthorizedKeySpec{}, fmt.Errorf("%w: invalid install path: %v", ErrInvalidRegularSSHCommand, err)
@@ -203,8 +286,66 @@ func normalizeRegularSSHInstallAuthorizedKeySpec(spec RegularSSHInstallAuthorize
 	}); err != nil {
 		return RegularSSHInstallAuthorizedKeySpec{}, fmt.Errorf("%w: invalid managed key: %v", ErrInvalidRegularSSHCommand, err)
 	}
+	spec.User = user
 	spec.Host = host
 	return spec, nil
+}
+
+func normalizeRegularSSHEnsureSyncKeySpec(spec RegularSSHEnsureSyncKeySpec) (RegularSSHEnsureSyncKeySpec, error) {
+	user, host, err := normalizeRegularSSHTarget(spec.User, spec.Host, spec.Port, spec.KnownHostsPath)
+	if err != nil {
+		return RegularSSHEnsureSyncKeySpec{}, err
+	}
+	if err := config.ValidateSSHExecutablePath(spec.InstallPath); err != nil {
+		return RegularSSHEnsureSyncKeySpec{}, fmt.Errorf("%w: invalid install path: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	if err := config.ValidateHostID(spec.HostID); err != nil {
+		return RegularSSHEnsureSyncKeySpec{}, fmt.Errorf("%w: invalid host id: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	if err := config.ValidateSyncKeyPath(spec.KeyPath); err != nil {
+		return RegularSSHEnsureSyncKeySpec{}, fmt.Errorf("%w: invalid key path: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	spec.User = user
+	spec.Host = host
+	return spec, nil
+}
+
+func normalizeRegularSSHInstallKnownHostSpec(spec RegularSSHInstallKnownHostSpec) (RegularSSHInstallKnownHostSpec, KnownHostPin, error) {
+	user, host, err := normalizeRegularSSHTarget(spec.User, spec.Host, spec.Port, spec.KnownHostsPath)
+	if err != nil {
+		return RegularSSHInstallKnownHostSpec{}, KnownHostPin{}, err
+	}
+	if err := config.ValidateSSHExecutablePath(spec.InstallPath); err != nil {
+		return RegularSSHInstallKnownHostSpec{}, KnownHostPin{}, fmt.Errorf("%w: invalid install path: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	if err := config.ValidateSSHExecutablePath(spec.TargetKnownHostsPath); err != nil {
+		return RegularSSHInstallKnownHostSpec{}, KnownHostPin{}, fmt.Errorf("%w: invalid target known hosts path: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	pin, err := NewKnownHostPin(spec.TargetHost, spec.TargetPort, spec.KeyType, spec.PublicKey)
+	if err != nil {
+		return RegularSSHInstallKnownHostSpec{}, KnownHostPin{}, fmt.Errorf("%w: invalid known host pin: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	spec.User = user
+	spec.Host = host
+	spec.TargetHost = strings.TrimPrefix(strings.TrimSuffix(pin.Pattern, "]:"+strconv.Itoa(spec.TargetPort)), "[")
+	return spec, pin, nil
+}
+
+func normalizeRegularSSHTarget(user string, host string, port int, knownHostsPath string) (string, string, error) {
+	if err := config.ValidateSSHUser(user); err != nil {
+		return "", "", fmt.Errorf("%w: invalid user: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	canonicalHost, err := config.CanonicalSSHHost(host)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: invalid host: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	if port < 1 || port > 65535 {
+		return "", "", fmt.Errorf("%w: invalid port %d", ErrInvalidRegularSSHCommand, port)
+	}
+	if err := config.ValidateSSHExecutablePath(knownHostsPath); err != nil {
+		return "", "", fmt.Errorf("%w: invalid known hosts path: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	return user, canonicalHost, nil
 }
 
 func shellQuoteCommand(args []string) string {
