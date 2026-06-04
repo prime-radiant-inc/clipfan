@@ -152,6 +152,12 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 		seen:             newSeenSet(),
 	}
 	d.cl = transport.NewClientWithPeerHTTPRuntimeDisabled(auth, origin, peerHTTPDisabled)
+	if d.sshSync == nil && runtimeCfg.Transport == config.TransportSSH && releaseflags.SSHPersistentCurrentEnabled {
+		manager := newSSHSyncManager(&runtimeCfg, auth, origin, d.onReceive, nil)
+		if len(manager.peers) > 0 {
+			d.sshSync = manager
+		}
+	}
 	d.sv = transport.NewServer(listenerPlan.BindListen, auth, d.onReceive, d.peersHandler)
 	if runtimeCfg.ConfigVersion != nil && *runtimeCfg.ConfigVersion >= 2 {
 		d.sv.SetRequiredLocalAuthVersion(transport.AuthVersionRequestHMAC)

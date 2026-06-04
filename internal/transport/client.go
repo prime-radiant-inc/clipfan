@@ -49,7 +49,14 @@ func (c *Client) PushAs(ctx context.Context, host string, port int, content clip
 	if c.peerHTTPRuntimeDisabled && !isLoopbackHost(host) {
 		return fmt.Errorf("%w: %s", ErrPeerHTTPRuntimeDisabled, net.JoinHostPort(host, strconv.Itoa(port)))
 	}
-	env, err := BuildEnvelope(c.auth, content, origin, host)
+	return c.PushAsToRecipient(ctx, host, port, host, content, origin)
+}
+
+func (c *Client) PushAsToRecipient(ctx context.Context, host string, port int, recipient string, content clipboard.Content, origin string) error {
+	if c.peerHTTPRuntimeDisabled && !isLoopbackHost(host) {
+		return fmt.Errorf("%w: %s", ErrPeerHTTPRuntimeDisabled, net.JoinHostPort(host, strconv.Itoa(port)))
+	}
+	env, err := BuildEnvelope(c.auth, content, origin, recipient)
 	if err != nil {
 		return err
 	}

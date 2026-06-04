@@ -45,7 +45,7 @@ func TestSSHSyncPeersFromConfigHonorsMaxSessions(t *testing.T) {
 	}
 }
 
-func TestSSHTransportDoesNotAutostartSyncManagerBeforeGatewayHandler(t *testing.T) {
+func TestSSHTransportAutostartsSyncManagerForReadySSHConfig(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	cfg := sshSyncManagerTestConfig()
@@ -59,8 +59,12 @@ func TestSSHTransportDoesNotAutostartSyncManagerBeforeGatewayHandler(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.sshSync != nil {
-		t.Fatalf("sshSync auto-wired before gateway handler: %#v", d.sshSync)
+	manager, ok := d.sshSync.(*sshSyncManager)
+	if !ok {
+		t.Fatalf("sshSync = %#v, want *sshSyncManager", d.sshSync)
+	}
+	if len(manager.peers) != 1 || manager.peers[0].id != "linux-b" {
+		t.Fatalf("manager peers = %#v, want linux-b", manager.peers)
 	}
 }
 

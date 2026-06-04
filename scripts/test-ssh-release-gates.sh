@@ -39,9 +39,9 @@ expected = {
         "ssh_public_add_peer_success_enabled": False,
     },
     "release/ssh-runtime-gates.json": {
-        "ssh_receive_primitive_enabled": False,
-        "ssh_sync_stream_enabled": False,
-        "ssh_persistent_current_enabled": False,
+        "ssh_receive_primitive_enabled": True,
+        "ssh_sync_stream_enabled": True,
+        "ssh_persistent_current_enabled": True,
         "ssh_sync_key_rotation_enabled": False,
     },
 }

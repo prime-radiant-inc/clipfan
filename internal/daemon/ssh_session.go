@@ -421,7 +421,7 @@ func (m *sshSyncManager) writeSSHFrame(ctx context.Context, cancelAttempt contex
 
 func (m *sshSyncManager) readPeerEvents(ctx context.Context, stream *transport.SSHSyncStream, write func(context.Context, func(context.Context) error) error, events chan<- sshPeerReadEvent) error {
 	for {
-		event, err := stream.ReadNext(ctx, time.Now())
+		event, err := stream.ReadNextNow(ctx)
 		if err != nil {
 			return err
 		}

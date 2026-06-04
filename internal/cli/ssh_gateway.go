@@ -1,15 +1,23 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 
+	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
 	"github.com/prime-radiant-inc/clipfan/internal/config"
+	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
 	"github.com/prime-radiant-inc/clipfan/internal/sshprovision"
+	"github.com/prime-radiant-inc/clipfan/internal/transport"
 	"github.com/prime-radiant-inc/clipfan/internal/version"
 )
 
@@ -22,18 +30,18 @@ type SSHGatewayIdentity struct {
 
 type SSHGatewayHandlers struct {
 	Probe      func(SSHGatewayIdentity, io.Writer) error
-	SyncStream func(SSHGatewayIdentity, io.Writer) error
+	SyncStream func(SSHGatewayIdentity, io.Reader, io.Writer) error
 }
 
 func RunSSHGateway(args []string, stdout io.Writer, stderr io.Writer) error {
-	return runSSHGateway(args, stdout, stderr, os.Getenv)
+	return runSSHGateway(args, os.Stdin, stdout, stderr, os.Getenv)
 }
 
-func runSSHGateway(args []string, stdout io.Writer, stderr io.Writer, getenv func(string) string) error {
-	return runSSHGatewayWithHandlers(args, stdout, stderr, getenv, defaultSSHGatewayHandlers())
+func runSSHGateway(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, getenv func(string) string) error {
+	return runSSHGatewayWithHandlers(args, stdin, stdout, stderr, getenv, defaultSSHGatewayHandlers())
 }
 
-func runSSHGatewayWithHandlers(args []string, stdout io.Writer, stderr io.Writer, getenv func(string) string, handlers SSHGatewayHandlers) error {
+func runSSHGatewayWithHandlers(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, getenv func(string) string, handlers SSHGatewayHandlers) error {
 	fs := flag.NewFlagSet("ssh-gateway", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	peerID := fs.String("authorized-peer", "", "authorized peer id")
@@ -62,14 +70,14 @@ func runSSHGatewayWithHandlers(args []string, stdout io.Writer, stderr io.Writer
 		if handlers.SyncStream == nil {
 			return ErrSSHGatewayCommandRejected
 		}
-		return handlers.SyncStream(identity, stdout)
+		return handlers.SyncStream(identity, stdin, stdout)
 	default:
 		return ErrSSHGatewayCommandRejected
 	}
 }
 
 func defaultSSHGatewayHandlers() SSHGatewayHandlers {
-	return SSHGatewayHandlers{
+	handlers := SSHGatewayHandlers{
 		Probe: func(identity SSHGatewayIdentity, stdout io.Writer) error {
 			return json.NewEncoder(stdout).Encode(map[string]string{
 				"status":  "ok",
@@ -79,4 +87,169 @@ func defaultSSHGatewayHandlers() SSHGatewayHandlers {
 			})
 		},
 	}
+	if releaseflags.SSHSyncStreamEnabled {
+		handlers.SyncStream = runDefaultSSHGatewaySyncStream
+	}
+	return handlers
+}
+
+func runDefaultSSHGatewaySyncStream(identity SSHGatewayIdentity, stdin io.Reader, stdout io.Writer) error {
+	if _, err := os.Stat(config.Path()); err != nil {
+		return fmt.Errorf("ssh gateway config unavailable: %w", err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	localID := cfg.Hostname
+	if localID == "" {
+		if host, err := os.Hostname(); err == nil {
+			localID = strings.TrimSuffix(strings.SplitN(host, ".", 2)[0], ".local")
+		}
+	}
+	if err := config.ValidateHostID(localID); err != nil {
+		return fmt.Errorf("invalid local host id: %w", err)
+	}
+	if err := validateSSHGatewaySyncPeer(cfg, identity); err != nil {
+		return err
+	}
+	auth, err := transport.NewAuth(cfg.SharedKey)
+	if err != nil {
+		return err
+	}
+	stream := transport.NewSSHSyncStream(auth, localID, identity.PeerID, stdin, stdout)
+	ctx := context.Background()
+	if _, err := stream.ReadHello(ctx, time.Now()); err != nil {
+		return err
+	}
+	hello, err := transport.NewSSHStreamHello(auth, transport.SSHStreamPurposeSyncStream, localID, identity.PeerID, time.Now(), "")
+	if err != nil {
+		return err
+	}
+	if err := writeSSHGatewayFrame(ctx, func(ctx context.Context) error { return stream.WriteHello(ctx, hello) }); err != nil {
+		return err
+	}
+	localHost, localPort, err := sshGatewayLocalDaemonTarget(cfg)
+	if err != nil {
+		return err
+	}
+	client := transport.NewClientWithPeerHTTPRuntimeDisabled(auth, localID, true)
+	for {
+		event, err := stream.ReadNextNow(ctx)
+		if errors.Is(err, transport.ErrSSHStreamUnexpectedEOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		switch event.Type {
+		case transport.SSHStreamFrameState:
+			if err := handleSSHGatewayState(ctx, stream, client, localHost, localPort, localID, event.State); err != nil {
+				return err
+			}
+		case transport.SSHStreamFrameError:
+			return fmt.Errorf("ssh stream error frame: %s", event.ErrorCode)
+		default:
+			return fmt.Errorf("%w: %s", transport.ErrSSHStreamUnexpectedFrame, event.Type)
+		}
+	}
+}
+
+func handleSSHGatewayState(ctx context.Context, stream *transport.SSHSyncStream, client *transport.Client, localHost string, localPort int, localID string, state transport.SSHStreamStateResult) error {
+	if state.NullReason != "" {
+		return writeSSHGatewayFrame(ctx, func(ctx context.Context) error {
+			return stream.WriteAck(ctx, state.Seq, "", "no_state", "")
+		})
+	}
+	status := "applied"
+	reason := ""
+	if err := pushSSHGatewayStateToLocalDaemon(ctx, client, localHost, localPort, localID, state.Content, state.Origin); err != nil {
+		status = "rejected"
+		reason = "local_apply_failed"
+		if writeErr := writeSSHGatewayFrame(ctx, func(ctx context.Context) error {
+			return stream.WriteAck(ctx, state.Seq, state.Content.ID, status, reason)
+		}); writeErr != nil {
+			return writeErr
+		}
+		return err
+	}
+	return writeSSHGatewayFrame(ctx, func(ctx context.Context) error {
+		return stream.WriteAck(ctx, state.Seq, state.Content.ID, status, reason)
+	})
+}
+
+func pushSSHGatewayStateToLocalDaemon(ctx context.Context, client *transport.Client, localHost string, localPort int, localID string, content clipboard.Content, origin string) error {
+	pushCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return client.PushAsToRecipient(pushCtx, localHost, localPort, localID, content, origin)
+}
+
+func sshGatewayLocalDaemonTarget(cfg *config.Config) (string, int, error) {
+	if cfg == nil {
+		return "", 0, ErrSSHGatewayCommandRejected
+	}
+	plan := config.PlanListener(*cfg, config.GeneratedLoopbackDefaultsEnabled())
+	if plan.SafeMode {
+		return "", 0, fmt.Errorf("ssh gateway listener safe mode: %s", plan.ParseError)
+	}
+	host, portText, err := net.SplitHostPort(plan.BindListen)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid planned listen: %w", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port <= 0 || port > 65535 {
+		return "", 0, fmt.Errorf("invalid planned listen port")
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host = "127.0.0.1"
+	}
+	if !isSSHGatewayLoopbackHost(host) {
+		return "", 0, fmt.Errorf("planned listen is not loopback: %s", host)
+	}
+	return host, port, nil
+}
+
+func isSSHGatewayLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func writeSSHGatewayFrame(ctx context.Context, fn func(context.Context) error) error {
+	writeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- fn(writeCtx)
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-writeCtx.Done():
+		return writeCtx.Err()
+	}
+}
+
+func validateSSHGatewaySyncPeer(cfg *config.Config, identity SSHGatewayIdentity) error {
+	if cfg == nil || cfg.Transport != config.TransportSSH || cfg.SSH == nil {
+		return ErrSSHGatewayCommandRejected
+	}
+	for _, peer := range cfg.SSH.Peers {
+		if peer.ID != identity.PeerID {
+			continue
+		}
+		if !peer.Enabled || !peer.Accept || !peer.Connect || !peer.Persistent || peer.MigrationState != config.MigrationStateSSHKeysReady {
+			return ErrSSHGatewayCommandRejected
+		}
+		if cfg.SSH.SyncKey == "" || cfg.SSH.KnownHosts == "" {
+			return ErrSSHGatewayCommandRejected
+		}
+		if peer.Proof.AcceptKeyID != identity.KeyID {
+			return ErrSSHGatewayCommandRejected
+		}
+		return nil
+	}
+	return ErrSSHGatewayCommandRejected
 }

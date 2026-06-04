@@ -128,6 +128,32 @@ func TestSSHStreamReadNextAcceptsAckFrame(t *testing.T) {
 	}
 }
 
+func TestSSHStreamReadNextNowValidatesAtFrameReadTime(t *testing.T) {
+	auth := testAuth(t)
+	now := time.Now().UTC()
+	content := clipboard.New(clipboard.KindText, []byte("fresh after idle"), now)
+	content.ID = "clip-fresh-after-idle"
+	var buf bytes.Buffer
+	writer := NewSSHSyncStream(auth, "m4", "linux-b", bytes.NewReader(nil), &buf)
+	if err := writer.WriteState(context.Background(), 1, content, "m4"); err != nil {
+		t.Fatalf("WriteState error = %v", err)
+	}
+	staleReceivedAt := now.Add(-signatureSkew - time.Second)
+	staleReader := NewSSHSyncStream(auth, "linux-b", "m4", bytes.NewReader(buf.Bytes()), io.Discard)
+	if _, err := staleReader.ReadNext(context.Background(), staleReceivedAt); !errors.Is(err, ErrFutureEnvelopeTimestamp) {
+		t.Fatalf("ReadNext with stale receivedAt error = %v, want ErrFutureEnvelopeTimestamp", err)
+	}
+
+	freshReader := NewSSHSyncStream(auth, "linux-b", "m4", bytes.NewReader(buf.Bytes()), io.Discard)
+	event, err := freshReader.ReadNextNow(context.Background())
+	if err != nil {
+		t.Fatalf("ReadNextNow error = %v", err)
+	}
+	if event.Type != SSHStreamFrameState || event.State.Content.ID != "clip-fresh-after-idle" {
+		t.Fatalf("event = %#v, want fresh state", event)
+	}
+}
+
 func TestSSHStreamAckRejectsInvalidCorrelation(t *testing.T) {
 	auth := testAuth(t)
 	for _, tc := range []struct {

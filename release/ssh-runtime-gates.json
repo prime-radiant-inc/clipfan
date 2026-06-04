@@ -1,6 +1,6 @@
 {
-  "ssh_receive_primitive_enabled": false,
-  "ssh_sync_stream_enabled": false,
-  "ssh_persistent_current_enabled": false,
+  "ssh_receive_primitive_enabled": true,
+  "ssh_sync_stream_enabled": true,
+  "ssh_persistent_current_enabled": true,
   "ssh_sync_key_rotation_enabled": false
 }

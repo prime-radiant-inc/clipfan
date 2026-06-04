@@ -349,6 +349,18 @@ func (s *SSHSyncStream) ReadNext(ctx context.Context, receivedAt time.Time) (SSH
 	if err != nil {
 		return SSHStreamEvent{}, err
 	}
+	return s.eventFromFrame(frame, receivedAt)
+}
+
+func (s *SSHSyncStream) ReadNextNow(ctx context.Context) (SSHStreamEvent, error) {
+	frame, receivedAt, err := s.readFrameAt(ctx)
+	if err != nil {
+		return SSHStreamEvent{}, err
+	}
+	return s.eventFromFrame(frame, receivedAt)
+}
+
+func (s *SSHSyncStream) eventFromFrame(frame SSHStreamFrame, receivedAt time.Time) (SSHStreamEvent, error) {
 	switch frame.Type {
 	case SSHStreamFrameState:
 		state, err := s.stateResultFromFrame(frame, receivedAt)
@@ -431,19 +443,25 @@ func (s *SSHSyncStream) writeFrame(ctx context.Context, frame SSHStreamFrame) er
 }
 
 func (s *SSHSyncStream) readFrame(ctx context.Context) (SSHStreamFrame, error) {
+	frame, _, err := s.readFrameAt(ctx)
+	return frame, err
+}
+
+func (s *SSHSyncStream) readFrameAt(ctx context.Context) (SSHStreamFrame, time.Time, error) {
 	line, err := s.readFrameLine(ctx, MaxSSHStreamFrameBytes)
 	if err != nil {
-		return SSHStreamFrame{}, err
+		return SSHStreamFrame{}, time.Time{}, err
 	}
+	receivedAt := time.Now()
 	frame, err := decodeSSHStreamFrame(line)
 	if err != nil {
-		return SSHStreamFrame{}, err
+		return SSHStreamFrame{}, time.Time{}, err
 	}
 	switch frame.Type {
 	case SSHStreamFrameHello, SSHStreamFrameState, SSHStreamFrameAck, SSHStreamFrameError:
-		return frame, nil
+		return frame, receivedAt, nil
 	default:
-		return SSHStreamFrame{}, fmt.Errorf("%w: %s", ErrSSHStreamUnexpectedFrame, frame.Type)
+		return SSHStreamFrame{}, time.Time{}, fmt.Errorf("%w: %s", ErrSSHStreamUnexpectedFrame, frame.Type)
 	}
 }
 
