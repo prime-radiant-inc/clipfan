@@ -69,13 +69,11 @@ struct AddPeerSheet: View {
                 privateDirectMeshSection
             }
 
-            if directMeshHostSpecLines.isEmpty {
-                Toggle(isOn: $withTmux) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Set up tmux copy integration")
-                        Text("Edits ~/.tmux.conf so copies inside tmux (incl. Claude Code) sync to the fleet.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+            Toggle(isOn: $withTmux) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Set up tmux copy integration")
+                    Text("Edits ~/.tmux.conf so copies inside tmux (incl. Claude Code) sync to the fleet.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
 
@@ -232,6 +230,7 @@ struct AddPeerSheet: View {
                         hostSpecs: directSpecs,
                         regularKnownHosts: directMeshRegularKnownHosts,
                         trustKeyscan: trustDirectMeshKeyscan,
+                        withTmux: withTmux,
                         onProgress: { @MainActor p in
                             let s = friendly(p, host: "private-ssh-mesh")
                             progress = s

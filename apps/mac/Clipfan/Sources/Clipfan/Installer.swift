@@ -133,6 +133,31 @@ actor Installer {
         """
     }
 
+    static func privateDirectMeshInstallCommand(stage: String,
+                                                configPath: String,
+                                                installPath: String,
+                                                withTmux: Bool) -> String {
+        let quotedStage = shellSingleQuote(stage)
+        let quotedConfigPath = shellSingleQuote(configPath)
+        let quotedInstallPath = shellSingleQuote(installPath)
+        return """
+        set -e
+        stage=\(quotedStage)
+        config_path=\(quotedConfigPath)
+        install_path=\(quotedInstallPath)
+        trap 'rm -rf "$stage"' EXIT
+        config_dir="$(dirname "$config_path")"
+        install_dir="$(dirname "$install_path")"
+        mkdir -p "$config_dir"
+        if [ ! -f "$config_path" ]; then
+            install -m 0600 "$stage/config.json" "$config_path"
+        else
+            printf '%s\\n' "Keeping existing config: $config_path" >&2
+        fi
+        cd "$stage" && DEST="$install_dir" bash install.sh \(tmuxFlag(withTmux)) --no-restart >&2
+        """
+    }
+
     static func generatedListenDefault(loopbackDefault: Bool = GeneratedSSHTransportGates.peerHTTPRuntimeDisabled &&
                                        GeneratedSSHTransportGates.configV2WriteEnabled) -> String {
         loopbackDefault ? "127.0.0.1:7853" : ":7853"
@@ -149,6 +174,23 @@ actor Installer {
           "discovery": "static",
           "static_peers": [\(jsonString(selfShort))],
           "port": 7853
+        }
+        """
+    }
+
+    static func privateDirectMeshInstallConfigJSON(hostID: String,
+                                                   loopbackDefault: Bool = GeneratedSSHTransportGates.peerHTTPRuntimeDisabled &&
+                                                       GeneratedSSHTransportGates.configV2WriteEnabled) -> String {
+        """
+        {
+          "config_version": 2,
+          "config_revision": 1,
+          "listen": \(jsonString(generatedListenDefault(loopbackDefault: loopbackDefault))),
+          "shared_key": "",
+          "discovery": "static",
+          "static_peers": [],
+          "hostname": \(jsonString(hostID)),
+          "max_history": 200
         }
         """
     }
@@ -448,7 +490,10 @@ actor Installer {
     static func provisionPrivateDirectMesh(hostSpecs: [String],
                                            regularKnownHosts: String,
                                            trustKeyscan: Bool,
+                                           withTmux: Bool = false,
                                            clipfanBinary: String = localClipfanBinaryPath(),
+                                           bootstrapInstall: Bool = true,
+                                           bootstrapRemoteHost: ((String, Bool) async throws -> Void)? = nil,
                                            runCommand: CommandRunner = run,
                                            readLocalHostID: @escaping LocalHostIDReader = {
                                                let config = try? await readLocalConfig()
@@ -471,11 +516,30 @@ actor Installer {
         guard trustKeyscan else {
             throw InstallError.configIO("trust_keyscan_required")
         }
+        guard GeneratedSSHTransportGates.configV2WriteEnabled else {
+            throw InstallError.configIO("config_v2_writes_disabled")
+        }
         let knownHosts = expandHome(regularKnownHosts.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !knownHosts.isEmpty else {
             throw InstallError.configIO("regular_known_hosts_required")
         }
+        try validatePrivateDirectMeshExecutablePath(knownHosts, code: "invalid_regular_known_hosts_path")
         let hosts = try specs.map { try privateDirectMeshHost(from: $0) }
+        let localHostID = await readLocalHostID() ?? ""
+
+        if bootstrapInstall {
+            for host in hosts where host.id != localHostID {
+                if let bootstrapRemoteHost {
+                    try await bootstrapRemoteHost(host.id, withTmux)
+                } else {
+                    try await installPrivateDirectMeshHost(host,
+                                                           regularKnownHosts: knownHosts,
+                                                           withTmux: withTmux,
+                                                           runCommand: runCommand,
+                                                           onProgress: onProgress)
+                }
+            }
+        }
 
         await MainActor.run { onProgress(.init(step: "Provision", detail: "running ssh-provision-direct")) }
         var args = ["ssh-provision-direct", "--trust-keyscan", "--regular-known-hosts", knownHosts]
@@ -485,7 +549,6 @@ actor Installer {
         _ = try await runCommand(clipfanBinary, args)
 
         await MainActor.run { onProgress(.init(step: "Restart", detail: "restarting affected daemons")) }
-        let localHostID = await readLocalHostID() ?? ""
         var firstRestartError: Error?
         for host in hosts {
             if !localHostID.isEmpty && host.id == localHostID {
@@ -508,6 +571,47 @@ actor Installer {
         if let firstRestartError {
             throw firstRestartError
         }
+    }
+
+    private static func installPrivateDirectMeshHost(_ host: PrivateDirectMeshHost,
+                                                     regularKnownHosts: String,
+                                                     withTmux: Bool,
+                                                     runCommand: CommandRunner,
+                                                     onProgress: @MainActor @escaping (InstallProgress) -> Void) async throws {
+        let target = "\(host.user)@\(host.sshHost)"
+        let invocation = regularSSHConnectionArgs(port: host.port, knownHosts: regularKnownHosts)
+
+        await MainActor.run { onProgress(.init(step: "Probe", detail: "running uname on \(target)")) }
+        let probe = try await runCommand("/usr/bin/ssh", invocation.sshArgs + [target, "uname -s; uname -m"])
+        let platform = try remotePlatform(from: probe)
+
+        let stage = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-private-direct-\(host.id)-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: stage) }
+
+        var stagedFiles = try stageInstallPayload(goos: platform.goos, goarch: platform.goarch, in: stage)
+        try privateDirectMeshInstallConfigJSON(hostID: host.id)
+            .write(to: stage.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                              ofItemAtPath: stage.appendingPathComponent("config.json").path)
+        stagedFiles.append("config.json")
+        let stagedFileCount = stagedFiles.count
+
+        await MainActor.run { onProgress(.init(step: "Upload", detail: "scp \(stagedFileCount) files to \(target)")) }
+        try await uploadAndInstallPrivateDirectMeshHost(target: target,
+                                                        sshArgs: invocation.sshArgs,
+                                                        scpArgs: invocation.scpArgs,
+                                                        stage: stage,
+                                                        stagedFiles: stagedFiles,
+                                                        configPath: host.configPath,
+                                                        installPath: host.installPath,
+                                                        withTmux: withTmux,
+                                                        runCommand: runCommand,
+                                                        onInstall: {
+                                                            onProgress(.init(step: "Install",
+                                                                             detail: "installing clipfan on \(target)"))
+                                                        })
     }
 
     private static func sshInvocation(user: String, host: String, port: Int, sshKey: String)
@@ -543,6 +647,7 @@ actor Installer {
         let user: String
         let port: Int
         let installPath: String
+        let configPath: String
     }
 
     private static func privateDirectMeshHost(from spec: String) throws -> PrivateDirectMeshHost {
@@ -572,10 +677,82 @@ actor Installer {
         guard let id = fields["id"], !id.isEmpty,
               let sshHost = fields["ssh"] ?? fields["host"], !sshHost.isEmpty,
               let user = fields["user"], !user.isEmpty,
-              let installPath = fields["install"], !installPath.isEmpty else {
+              let installPath = fields["install"], !installPath.isEmpty,
+              let configPath = fields["config"], !configPath.isEmpty else {
             throw InstallError.configIO("missing_private_direct_mesh_host_field")
         }
-        return PrivateDirectMeshHost(id: id, sshHost: sshHost, user: user, port: port, installPath: installPath)
+        try validatePrivateDirectMeshHostID(id)
+        try validatePrivateDirectMeshUser(user)
+        try validatePrivateDirectMeshSSHHost(sshHost)
+        try validatePrivateDirectMeshExecutablePath(installPath, code: "invalid_private_direct_mesh_install_path")
+        guard URL(fileURLWithPath: installPath).lastPathComponent == "clipfan" else {
+            throw InstallError.configIO("unsupported_private_direct_mesh_install_basename")
+        }
+        if let gatewayPath = fields["gateway"], gatewayPath != installPath {
+            throw InstallError.configIO("unsupported_private_direct_mesh_gateway_path")
+        }
+        try validatePrivateDirectMeshSafeAbsolutePath(configPath, code: "invalid_private_direct_mesh_config_path")
+        return PrivateDirectMeshHost(id: id,
+                                     sshHost: sshHost,
+                                     user: user,
+                                     port: port,
+                                     installPath: installPath,
+                                     configPath: configPath)
+    }
+
+    private static func validatePrivateDirectMeshHostID(_ value: String) throws {
+        guard value.count >= 1, value.count <= 63, value.first != "-" else {
+            throw InstallError.configIO("invalid_private_direct_mesh_host_id")
+        }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+        guard value.rangeOfCharacter(from: allowed.inverted) == nil else {
+            throw InstallError.configIO("invalid_private_direct_mesh_host_id")
+        }
+    }
+
+    private static func validatePrivateDirectMeshUser(_ value: String) throws {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+        guard !value.isEmpty,
+              value.first != "-",
+              value.rangeOfCharacter(from: allowed.inverted) == nil else {
+            throw InstallError.configIO("invalid_private_direct_mesh_user")
+        }
+    }
+
+    private static func validatePrivateDirectMeshSSHHost(_ value: String) throws {
+        let invalid = CharacterSet.whitespacesAndNewlines
+            .union(CharacterSet(charactersIn: "@/\\\"'`$;&|<>(){}[]*?!:"))
+        guard !value.isEmpty,
+              value.first != "-",
+              value.rangeOfCharacter(from: invalid) == nil else {
+            throw InstallError.configIO("invalid_private_direct_mesh_ssh_host")
+        }
+    }
+
+    private static func validatePrivateDirectMeshExecutablePath(_ value: String, code: String) throws {
+        try validatePrivateDirectMeshSafeAbsolutePath(value, code: code)
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/@+-")
+        guard value.rangeOfCharacter(from: allowed.inverted) == nil else {
+            throw InstallError.configIO(code)
+        }
+    }
+
+    private static func validatePrivateDirectMeshSafeAbsolutePath(_ value: String, code: String) throws {
+        guard !value.isEmpty,
+              value.hasPrefix("/"),
+              value.rangeOfCharacter(from: CharacterSet(charactersIn: "\0\n\r\t")) == nil else {
+            throw InstallError.configIO(code)
+        }
+        let components = value.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count > 1 else {
+            throw InstallError.configIO(code)
+        }
+        for (index, component) in components.enumerated() {
+            if index == 0 { continue }
+            guard !component.isEmpty, component != ".", component != ".." else {
+                throw InstallError.configIO(code)
+            }
+        }
     }
 
     private static func regularSSHRemoteCommandArgs(user: String,
@@ -583,7 +760,14 @@ actor Installer {
                                                     port: Int,
                                                     knownHosts: String,
                                                     remoteCommand: String) -> [String] {
-        [
+        regularSSHConnectionArgs(port: port, knownHosts: knownHosts).sshArgs + [
+            "\(user)@\(host)",
+            remoteCommand
+        ]
+    }
+
+    static func regularSSHConnectionArgs(port: Int, knownHosts: String) -> (sshArgs: [String], scpArgs: [String]) {
+        let common = [
             "-F", "/dev/null",
             "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=yes",
@@ -594,21 +778,25 @@ actor Installer {
             "-o", "PermitLocalCommand=no",
             "-o", "RequestTTY=no",
             "-o", "ClearAllForwardings=yes",
-            "-o", "LogLevel=ERROR",
-            "-p", "\(port)",
-            "\(user)@\(host)",
-            remoteCommand
+            "-o", "LogLevel=ERROR"
         ]
+        return (common + ["-p", "\(port)"], ["-q"] + common + ["-P", "\(port)"])
     }
 
     static func remoteRestartDaemonCommand(installPath: String) -> String {
         let quotedInstallPath = shellSingleQuote(installPath)
         return """
         if command -v systemctl >/dev/null 2>&1; then
+            systemctl --user daemon-reload >/dev/null 2>&1 || true
+            systemctl --user enable clipfan.service >/dev/null 2>&1 || true
             systemctl --user restart clipfan.service >/dev/null 2>&1 && exit 0
         fi
         if command -v launchctl >/dev/null 2>&1; then
             user_uid="$(id -u 2>/dev/null || printf '%s' "${UID:-}")"
+            plist="$HOME/Library/LaunchAgents/com.primeradiant.clipfan.plist"
+            launchctl enable "gui/$user_uid/com.primeradiant.clipfan" >/dev/null 2>&1 || true
+            launchctl bootstrap "gui/$user_uid" "$plist" >/dev/null 2>&1 || \
+                launchctl load "$plist" >/dev/null 2>&1 || true
             launchctl kickstart -k "gui/$user_uid/com.primeradiant.clipfan" >/dev/null 2>&1 && exit 0
         fi
         nohup \(quotedInstallPath) daemon >/tmp/clipfan-daemon.log 2>&1 &
@@ -689,6 +877,36 @@ actor Installer {
 
             await onInstall()
             let cmd = remoteInstallCommand(stage: remoteStage, withTmux: withTmux)
+            _ = try await runCommand("/usr/bin/ssh", sshArgs + [target, cmd])
+        } catch {
+            _ = try? await runCommand("/usr/bin/ssh", sshArgs + [target, remoteCleanupCommand(stage: remoteStage)])
+            throw error
+        }
+    }
+
+    static func uploadAndInstallPrivateDirectMeshHost(target: String,
+                                                      sshArgs: [String],
+                                                      scpArgs: [String],
+                                                      stage: URL,
+                                                      stagedFiles: [String],
+                                                      configPath: String,
+                                                      installPath: String,
+                                                      withTmux: Bool,
+                                                      runCommand: CommandRunner,
+                                                      onInstall: @MainActor @escaping () -> Void = {}) async throws {
+        let remoteStageOutput = try await runCommand("/usr/bin/ssh", sshArgs + [target, remoteStageCommand()])
+        let remoteStage = try validatedRemoteStagePath(remoteStageOutput)
+        let scpFull: [String] = scpArgs +
+            stagedFiles.map { stage.appendingPathComponent($0).path } +
+            ["\(target):\(remoteStage)/"]
+        do {
+            _ = try await runCommand("/usr/bin/scp", scpFull)
+
+            await onInstall()
+            let cmd = privateDirectMeshInstallCommand(stage: remoteStage,
+                                                      configPath: configPath,
+                                                      installPath: installPath,
+                                                      withTmux: withTmux)
             _ = try await runCommand("/usr/bin/ssh", sshArgs + [target, cmd])
         } catch {
             _ = try? await runCommand("/usr/bin/ssh", sshArgs + [target, remoteCleanupCommand(stage: remoteStage)])
