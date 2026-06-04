@@ -338,6 +338,225 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertEqual(commands[2].1.last, Installer.remoteCleanupCommand(stage: "/tmp/clipfan-install.ABC123"))
     }
 
+    func testProvisionPrivateDirectMeshBuildsHiddenCLIArgv() async throws {
+        var commands: [(String, [String])] = []
+        var localRestarts = 0
+        let regularKnownHosts = "/Users/jesse/.config/clipfan/ssh/regular_known_hosts"
+
+        try await Installer.provisionPrivateDirectMesh(
+            hostSpecs: [
+                " id=mac-a,ssh=mac-a.tailnet,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519 ",
+                "id=linux-b,ssh=linux-b.tailnet,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/.config/clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519"
+            ],
+            regularKnownHosts: regularKnownHosts,
+            trustKeyscan: true,
+            clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+            runCommand: { exe, args in
+                commands.append((exe, args))
+                return #"{"status":"ok"}"#
+            },
+            readLocalHostID: { nil },
+            restartLocalDaemon: {
+                localRestarts += 1
+            },
+            onProgress: { _ in }
+        )
+
+        XCTAssertEqual(commands.count, 3)
+        let command = commands[0]
+        XCTAssertEqual(command.0, "/Users/jesse/.local/bin/clipfan")
+        XCTAssertEqual(Array(command.1[0...3]), ["ssh-provision-direct", "--trust-keyscan", "--regular-known-hosts", regularKnownHosts])
+        XCTAssertEqual(command.1.filter { $0 == "--host" }.count, 2)
+        XCTAssertTrue(command.1.contains("id=mac-a,ssh=mac-a.tailnet,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519"))
+
+        XCTAssertEqual(commands[1].0, "/usr/bin/ssh")
+        XCTAssertEqual(commands[1].1, [
+            "-F", "/dev/null",
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "UserKnownHostsFile=\(regularKnownHosts)",
+            "-o", "GlobalKnownHostsFile=/dev/null",
+            "-o", "ProxyCommand=none",
+            "-o", "ProxyJump=none",
+            "-o", "PermitLocalCommand=no",
+            "-o", "RequestTTY=no",
+            "-o", "ClearAllForwardings=yes",
+            "-o", "LogLevel=ERROR",
+            "-p", "22",
+            "jesse@mac-a.tailnet",
+            Installer.remoteRestartDaemonCommand(installPath: "/Users/jesse/.local/bin/clipfan")
+        ])
+        XCTAssertEqual(commands[2].0, "/usr/bin/ssh")
+        XCTAssertEqual(commands[2].1, [
+            "-F", "/dev/null",
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "UserKnownHostsFile=\(regularKnownHosts)",
+            "-o", "GlobalKnownHostsFile=/dev/null",
+            "-o", "ProxyCommand=none",
+            "-o", "ProxyJump=none",
+            "-o", "PermitLocalCommand=no",
+            "-o", "RequestTTY=no",
+            "-o", "ClearAllForwardings=yes",
+            "-o", "LogLevel=ERROR",
+            "-p", "22",
+            "jesse@linux-b.tailnet",
+            Installer.remoteRestartDaemonCommand(installPath: "/home/jesse/.local/bin/clipfan")
+        ])
+        XCTAssertEqual(localRestarts, 1)
+    }
+
+    func testProvisionPrivateDirectMeshSkipsRemoteRestartForLocalHostID() async throws {
+        var commands: [(String, [String])] = []
+        var localRestarts = 0
+
+        try await Installer.provisionPrivateDirectMesh(
+            hostSpecs: [
+                "id=mac-a,ssh=mac-a.tailnet,user=jesse,port=2222,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+                "id=linux-b,ssh=linux-b.tailnet,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/.config/clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519"
+            ],
+            regularKnownHosts: "/Users/jesse/.ssh/known_hosts",
+            trustKeyscan: true,
+            clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+            runCommand: { exe, args in
+                commands.append((exe, args))
+                return ""
+            },
+            readLocalHostID: { "mac-a" },
+            restartLocalDaemon: {
+                localRestarts += 1
+            },
+            onProgress: { _ in }
+        )
+
+        XCTAssertEqual(commands.count, 2)
+        XCTAssertEqual(commands[0].0, "/Users/jesse/.local/bin/clipfan")
+        XCTAssertEqual(commands[1].0, "/usr/bin/ssh")
+        XCTAssertEqual(commands[1].1, [
+            "-F", "/dev/null",
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "UserKnownHostsFile=/Users/jesse/.ssh/known_hosts",
+            "-o", "GlobalKnownHostsFile=/dev/null",
+            "-o", "ProxyCommand=none",
+            "-o", "ProxyJump=none",
+            "-o", "PermitLocalCommand=no",
+            "-o", "RequestTTY=no",
+            "-o", "ClearAllForwardings=yes",
+            "-o", "LogLevel=ERROR",
+            "-p", "22",
+            "jesse@linux-b.tailnet",
+            Installer.remoteRestartDaemonCommand(installPath: "/home/jesse/.local/bin/clipfan")
+        ])
+        XCTAssertFalse(commands.contains { _, args in args.contains("jesse@mac-a.tailnet") })
+        XCTAssertEqual(localRestarts, 1)
+    }
+
+    func testProvisionPrivateDirectMeshRestartsLocalDaemonBeforePropagatingRemoteRestartFailure() async throws {
+        enum RestartError: Error {
+            case failed
+        }
+        var commands: [(String, [String])] = []
+        var localRestarts = 0
+
+        do {
+            try await Installer.provisionPrivateDirectMesh(
+                hostSpecs: [
+                    "id=mac-a,ssh=mac-a.tailnet,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+                    "id=linux-b,ssh=linux-b.tailnet,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/.config/clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519"
+                ],
+                regularKnownHosts: "/Users/jesse/.ssh/known_hosts",
+                trustKeyscan: true,
+                clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+                runCommand: { exe, args in
+                    commands.append((exe, args))
+                    if exe == "/usr/bin/ssh" {
+                        throw RestartError.failed
+                    }
+                    return ""
+                },
+                readLocalHostID: { nil },
+                restartLocalDaemon: {
+                    localRestarts += 1
+                },
+                onProgress: { _ in }
+            )
+            XCTFail("expected remote restart failure")
+        } catch RestartError.failed {
+        }
+
+        XCTAssertEqual(commands.count, 3)
+        XCTAssertEqual(commands.filter { $0.0 == "/usr/bin/ssh" }.count, 2)
+        XCTAssertEqual(localRestarts, 1)
+    }
+
+    func testProvisionPrivateDirectMeshPropagatesLocalRestartFailureAfterRemoteRestarts() async throws {
+        enum RestartError: Error {
+            case localFailed
+        }
+        var commands: [(String, [String])] = []
+        var localRestarts = 0
+
+        do {
+            try await Installer.provisionPrivateDirectMesh(
+                hostSpecs: [
+                    "id=mac-a,ssh=mac-a.tailnet,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+                    "id=linux-b,ssh=linux-b.tailnet,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/.config/clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519"
+                ],
+                regularKnownHosts: "/Users/jesse/.ssh/known_hosts",
+                trustKeyscan: true,
+                clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+                runCommand: { exe, args in
+                    commands.append((exe, args))
+                    return ""
+                },
+                readLocalHostID: { nil },
+                restartLocalDaemon: {
+                    localRestarts += 1
+                    throw RestartError.localFailed
+                },
+                onProgress: { _ in }
+            )
+            XCTFail("expected local restart failure")
+        } catch RestartError.localFailed {
+        }
+
+        XCTAssertEqual(commands.count, 3)
+        XCTAssertEqual(commands.filter { $0.0 == "/usr/bin/ssh" }.count, 2)
+        XCTAssertEqual(localRestarts, 1)
+    }
+
+    func testRemoteRestartDaemonCommandUsesServiceManagersThenInstallPathFallback() {
+        let command = Installer.remoteRestartDaemonCommand(installPath: "/Users/jesse/App's/bin/clipfan")
+
+        XCTAssertTrue(command.contains("systemctl --user restart clipfan.service"))
+        XCTAssertTrue(command.contains("launchctl kickstart -k"))
+        XCTAssertTrue(command.contains("nohup '/Users/jesse/App'\"'\"'s/bin/clipfan' daemon"))
+    }
+
+    func testProvisionPrivateDirectMeshFailsClosedBeforeCommandWithoutTrustKeyscan() async throws {
+        var called = false
+
+        do {
+            try await Installer.provisionPrivateDirectMesh(
+                hostSpecs: ["id=a", "id=b"],
+                regularKnownHosts: "/Users/jesse/.ssh/known_hosts",
+                trustKeyscan: false,
+                clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+                runCommand: { _, _ in
+                    called = true
+                    return ""
+                },
+                onProgress: { _ in }
+            )
+            XCTFail("expected trust_keyscan_required")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("trust_keyscan_required"))
+        }
+
+        XCTAssertFalse(called)
+    }
+
     func testUploadAndUpdateRemoteStageRunsUpdateCommandAndReturnsVersion() async throws {
         let stage = FileManager.default.temporaryDirectory
             .appendingPathComponent("clipfan-update-test-\(UUID().uuidString)")

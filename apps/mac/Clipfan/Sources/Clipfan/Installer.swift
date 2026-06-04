@@ -88,6 +88,8 @@ struct ScopedSSHPeerConfigWriter {
 /// (staged by `dist/install.sh` on the host running the menubar app).
 actor Installer {
     typealias CommandRunner = (String, [String]) async throws -> String
+    typealias LocalHostIDReader = () async -> String?
+    typealias LocalDaemonRestarter = () async throws -> Void
 
     static let shareDir: URL = {
         if let xdg = ProcessInfo.processInfo.environment["XDG_DATA_HOME"] {
@@ -103,6 +105,10 @@ actor Installer {
             return URL(fileURLWithPath: xdg).appendingPathComponent("clipfan/config.json")
         }
         return homeDirectory.appendingPathComponent(".config/clipfan/config.json")
+    }
+
+    static func localClipfanBinaryPath(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> String {
+        homeDirectory.appendingPathComponent(".local/bin/clipfan").path
     }
 
     /// tmuxFlag maps the Add-Peer tmux checkbox to the install.sh flag. The GUI
@@ -439,6 +445,71 @@ actor Installer {
         return version
     }
 
+    static func provisionPrivateDirectMesh(hostSpecs: [String],
+                                           regularKnownHosts: String,
+                                           trustKeyscan: Bool,
+                                           clipfanBinary: String = localClipfanBinaryPath(),
+                                           runCommand: CommandRunner = run,
+                                           readLocalHostID: @escaping LocalHostIDReader = {
+                                               let config = try? await readLocalConfig()
+                                               return config?["hostname"] as? String
+                                           },
+                                           restartLocalDaemon: @escaping LocalDaemonRestarter = {
+                                               try await MainActor.run {
+                                                   guard DaemonClient.shared.restartDaemon() else {
+                                                       throw InstallError.configIO("local_daemon_restart_failed")
+                                                   }
+                                               }
+                                           },
+                                           onProgress: @MainActor @escaping (InstallProgress) -> Void) async throws {
+        let specs = hostSpecs
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard specs.count >= 2 else {
+            throw InstallError.configIO("private_direct_mesh_requires_at_least_two_hosts")
+        }
+        guard trustKeyscan else {
+            throw InstallError.configIO("trust_keyscan_required")
+        }
+        let knownHosts = expandHome(regularKnownHosts.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !knownHosts.isEmpty else {
+            throw InstallError.configIO("regular_known_hosts_required")
+        }
+        let hosts = try specs.map { try privateDirectMeshHost(from: $0) }
+
+        await MainActor.run { onProgress(.init(step: "Provision", detail: "running ssh-provision-direct")) }
+        var args = ["ssh-provision-direct", "--trust-keyscan", "--regular-known-hosts", knownHosts]
+        for spec in specs {
+            args += ["--host", spec]
+        }
+        _ = try await runCommand(clipfanBinary, args)
+
+        await MainActor.run { onProgress(.init(step: "Restart", detail: "restarting affected daemons")) }
+        let localHostID = await readLocalHostID() ?? ""
+        var firstRestartError: Error?
+        for host in hosts {
+            if !localHostID.isEmpty && host.id == localHostID {
+                continue
+            }
+            let restartSSHArgs = regularSSHRemoteCommandArgs(user: host.user,
+                                                             host: host.sshHost,
+                                                             port: host.port,
+                                                             knownHosts: knownHosts,
+                                                             remoteCommand: remoteRestartDaemonCommand(installPath: host.installPath))
+            do {
+                _ = try await runCommand("/usr/bin/ssh", restartSSHArgs)
+            } catch {
+                if firstRestartError == nil {
+                    firstRestartError = error
+                }
+            }
+        }
+        try await restartLocalDaemon()
+        if let firstRestartError {
+            throw firstRestartError
+        }
+    }
+
     private static func sshInvocation(user: String, host: String, port: Int, sshKey: String)
         -> (target: String, sshArgs: [String], scpArgs: [String]) {
         let target = user.isEmpty ? host : "\(user)@\(host)"
@@ -453,6 +524,95 @@ actor Installer {
             scpArgs += ["-P", "\(port)"]
         }
         return (target, sshArgs, scpArgs)
+    }
+
+    private static func expandHome(_ path: String,
+                                   homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> String {
+        if path == "~" {
+            return homeDirectory.path
+        }
+        if path.hasPrefix("~/") {
+            return homeDirectory.appendingPathComponent(String(path.dropFirst(2))).path
+        }
+        return path
+    }
+
+    private struct PrivateDirectMeshHost {
+        let id: String
+        let sshHost: String
+        let user: String
+        let port: Int
+        let installPath: String
+    }
+
+    private static func privateDirectMeshHost(from spec: String) throws -> PrivateDirectMeshHost {
+        var fields: [String: String] = [:]
+        for item in spec.split(separator: ",") {
+            let parts = item.split(separator: "=", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else {
+                throw InstallError.configIO("invalid_private_direct_mesh_host_spec")
+            }
+            let key = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "-", with: "_")
+            let value = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty, !value.isEmpty else {
+                throw InstallError.configIO("invalid_private_direct_mesh_host_spec")
+            }
+            fields[key] = value
+        }
+        let port: Int
+        if let rawPort = fields["port"], !rawPort.isEmpty {
+            guard let parsed = Int(rawPort), parsed > 0, parsed <= 65535 else {
+                throw InstallError.configIO("invalid_private_direct_mesh_port")
+            }
+            port = parsed
+        } else {
+            port = 22
+        }
+        guard let id = fields["id"], !id.isEmpty,
+              let sshHost = fields["ssh"] ?? fields["host"], !sshHost.isEmpty,
+              let user = fields["user"], !user.isEmpty,
+              let installPath = fields["install"], !installPath.isEmpty else {
+            throw InstallError.configIO("missing_private_direct_mesh_host_field")
+        }
+        return PrivateDirectMeshHost(id: id, sshHost: sshHost, user: user, port: port, installPath: installPath)
+    }
+
+    private static func regularSSHRemoteCommandArgs(user: String,
+                                                    host: String,
+                                                    port: Int,
+                                                    knownHosts: String,
+                                                    remoteCommand: String) -> [String] {
+        [
+            "-F", "/dev/null",
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "UserKnownHostsFile=\(knownHosts)",
+            "-o", "GlobalKnownHostsFile=/dev/null",
+            "-o", "ProxyCommand=none",
+            "-o", "ProxyJump=none",
+            "-o", "PermitLocalCommand=no",
+            "-o", "RequestTTY=no",
+            "-o", "ClearAllForwardings=yes",
+            "-o", "LogLevel=ERROR",
+            "-p", "\(port)",
+            "\(user)@\(host)",
+            remoteCommand
+        ]
+    }
+
+    static func remoteRestartDaemonCommand(installPath: String) -> String {
+        let quotedInstallPath = shellSingleQuote(installPath)
+        return """
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl --user restart clipfan.service >/dev/null 2>&1 && exit 0
+        fi
+        if command -v launchctl >/dev/null 2>&1; then
+            user_uid="$(id -u 2>/dev/null || printf '%s' "${UID:-}")"
+            launchctl kickstart -k "gui/$user_uid/com.primeradiant.clipfan" >/dev/null 2>&1 && exit 0
+        fi
+        nohup \(quotedInstallPath) daemon >/tmp/clipfan-daemon.log 2>&1 &
+        """
     }
 
     private static func remotePlatform(from probe: String) throws -> (goos: String, goarch: String) {

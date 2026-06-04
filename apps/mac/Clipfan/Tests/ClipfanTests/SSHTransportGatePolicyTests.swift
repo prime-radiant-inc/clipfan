@@ -6,6 +6,11 @@ final class SSHTransportGatePolicyTests: XCTestCase {
         XCTAssertFalse(SSHTransportGatePolicy.current.addPeerProvisioningEnabled)
     }
 
+    func testCurrentPrivateDirectMeshCanBeEnabledWhilePublicAddPeerStaysDisabled() {
+        XCTAssertTrue(SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled)
+        XCTAssertFalse(SSHTransportGatePolicy.current.addPeerProvisioningEnabled)
+    }
+
     func testRegularSSHUpdateIsEnabled() {
         XCTAssertTrue(SSHTransportGatePolicy.current.regularSSHUpdateEnabled)
     }
@@ -82,6 +87,35 @@ final class SSHTransportGatePolicyTests: XCTestCase {
             syncKeyRotationEnabled: true
         )
         XCTAssertFalse(isAddPeerInstallDisabled(installCount: 1, installing: false, policy: enabled))
+    }
+
+    func testPrivateDirectMeshInstallButtonUsesPrivateGateAndTrustKeyscan() {
+        let privateEnabled = SSHTransportGatePolicy(
+            peerHTTPRuntimeDisabled: true,
+            configV2WriteEnabled: true,
+            remoteSecretWriteReleaseEnabled: false,
+            publicAddPeerSuccessEnabled: false,
+            receivePrimitiveEnabled: true,
+            syncStreamEnabled: true,
+            persistentCurrentEnabled: true,
+            syncKeyRotationEnabled: false
+        )
+
+        XCTAssertTrue(isAddPeerInstallDisabled(installCount: 2,
+                                               installing: false,
+                                               policy: privateEnabled,
+                                               privateDirectMeshRequested: true,
+                                               trustKeyscan: false))
+        XCTAssertFalse(isAddPeerInstallDisabled(installCount: 2,
+                                                installing: false,
+                                                policy: privateEnabled,
+                                                privateDirectMeshRequested: true,
+                                                trustKeyscan: true))
+        XCTAssertTrue(isAddPeerInstallDisabled(installCount: 1,
+                                               installing: false,
+                                               policy: privateEnabled,
+                                               privateDirectMeshRequested: true,
+                                               trustKeyscan: true))
     }
 
     func testRegularSSHUpdateButtonRemainsEnabledWhenPublicAddPeerIsDisabled() {

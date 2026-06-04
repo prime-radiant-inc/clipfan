@@ -83,14 +83,20 @@ final class DaemonClient: ObservableObject {
         }
     }
 
-    func restartDaemon() {
+    @discardableResult
+    func restartDaemon() -> Bool {
         // Try launchd kickstart first; fall back to shell relaunch.
         let uid = "\(getuid())"
         let kick = Process()
         kick.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         kick.arguments = ["kickstart", "-k", "gui/\(uid)/com.primeradiant.clipfan"]
-        try? kick.run()
+        do {
+            try kick.run()
+        } catch {
+            return false
+        }
         kick.waitUntilExit()
+        return kick.terminationStatus == 0
     }
 
     func moveDaemonListenerToLoopback() async {

@@ -32,6 +32,14 @@ struct SSHTransportGatePolicy {
             && syncKeyRotationEnabled
     }
 
+    var privateDirectMeshProvisioningEnabled: Bool {
+        peerHTTPRuntimeDisabled
+            && configV2WriteEnabled
+            && receivePrimitiveEnabled
+            && syncStreamEnabled
+            && persistentCurrentEnabled
+    }
+
     var regularSSHUpdateEnabled: Bool { true }
 
     var peerHTTPVersionProbeEnabled: Bool { !peerHTTPRuntimeDisabled }

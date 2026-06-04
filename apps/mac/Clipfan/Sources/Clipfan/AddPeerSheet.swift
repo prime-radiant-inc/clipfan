@@ -1,8 +1,16 @@
 import AppKit
 import SwiftUI
 
-func isAddPeerInstallDisabled(installCount: Int, installing: Bool, policy: SSHTransportGatePolicy = .current) -> Bool {
-    installCount == 0 || installing || !policy.addPeerProvisioningEnabled
+func isAddPeerInstallDisabled(installCount: Int,
+                              installing: Bool,
+                              policy: SSHTransportGatePolicy = .current,
+                              privateDirectMeshRequested: Bool = false,
+                              trustKeyscan: Bool = false) -> Bool {
+    if installing || installCount == 0 { return true }
+    if privateDirectMeshRequested {
+        return !policy.privateDirectMeshProvisioningEnabled || !trustKeyscan || installCount < 2
+    }
+    return !policy.addPeerProvisioningEnabled
 }
 
 func addPeerInstallButtonTitle(installing: Bool, installCount: Int, failure: AddPeerOperationFailure?) -> String {
@@ -19,6 +27,9 @@ struct AddPeerSheet: View {
     @State private var port: Int = 22
     @State private var sshKey: String = ""
     @State private var withTmux = false
+    @State private var directMeshHostSpecs: String = ""
+    @State private var directMeshRegularKnownHosts: String = "~/.ssh/known_hosts"
+    @State private var trustDirectMeshKeyscan = false
 
     @State private var tailnet: [TailscalePeer] = []
     @State private var tailnetSelected: Set<String> = []
@@ -30,7 +41,16 @@ struct AddPeerSheet: View {
     @State private var failure: AddPeerOperationFailure?
 
     private var installCount: Int {
-        tailnetSelected.count + (host.isEmpty ? 0 : 1)
+        let directSpecs = directMeshHostSpecLines.count
+        if directSpecs > 0 { return directSpecs }
+        return tailnetSelected.count + (host.isEmpty ? 0 : 1)
+    }
+
+    private var directMeshHostSpecLines: [String] {
+        directMeshHostSpecs
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 
     var body: some View {
@@ -45,12 +65,17 @@ struct AddPeerSheet: View {
             }
 
             manualSection
+            if SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled {
+                privateDirectMeshSection
+            }
 
-            Toggle(isOn: $withTmux) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Set up tmux copy integration")
-                    Text("Edits ~/.tmux.conf so copies inside tmux (incl. Claude Code) sync to the fleet.")
-                        .font(.caption).foregroundStyle(.secondary)
+            if directMeshHostSpecLines.isEmpty {
+                Toggle(isOn: $withTmux) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Set up tmux copy integration")
+                        Text("Edits ~/.tmux.conf so copies inside tmux (incl. Claude Code) sync to the fleet.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
 
@@ -69,7 +94,10 @@ struct AddPeerSheet: View {
                                                  installCount: installCount,
                                                  failure: failure)) { install() }
                     .keyboardShortcut(.return)
-                    .disabled(isAddPeerInstallDisabled(installCount: installCount, installing: installing))
+                    .disabled(isAddPeerInstallDisabled(installCount: installCount,
+                                                       installing: installing,
+                                                       privateDirectMeshRequested: !directMeshHostSpecLines.isEmpty,
+                                                       trustKeyscan: trustDirectMeshKeyscan))
             }
         }
         .padding(20)
@@ -122,6 +150,20 @@ struct AddPeerSheet: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var privateDirectMeshSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Private SSH mesh", systemImage: "point.3.connected.trianglepath.dotted")
+                .font(.headline)
+            TextEditor(text: $directMeshHostSpecs)
+                .font(.system(.caption, design: .monospaced))
+                .frame(minHeight: 96)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25)))
+            TextField("known_hosts", text: $directMeshRegularKnownHosts)
+                .textFieldStyle(.roundedBorder)
+            Toggle("Trust ssh-keyscan host keys", isOn: $trustDirectMeshKeyscan)
+        }
     }
 
     private func dividerLabel(_ text: String) -> some View {
@@ -179,6 +221,44 @@ struct AddPeerSheet: View {
         log = nil
         Task {
             var targets: [(user: String, host: String, port: Int, key: String)] = []
+            let directSpecs = directMeshHostSpecLines
+            if !directSpecs.isEmpty {
+                await MainActor.run {
+                    progress = "Provisioning private SSH mesh…"
+                    log = AddPeerOperationLog(host: "private-ssh-mesh")
+                }
+                do {
+                    try await Installer.provisionPrivateDirectMesh(
+                        hostSpecs: directSpecs,
+                        regularKnownHosts: directMeshRegularKnownHosts,
+                        trustKeyscan: trustDirectMeshKeyscan,
+                        onProgress: { @MainActor p in
+                            let s = friendly(p, host: "private-ssh-mesh")
+                            progress = s
+                            if var currentLog = log {
+                                currentLog.record(p)
+                                log = currentLog
+                            }
+                        }
+                    )
+                    await MainActor.run {
+                        progress = "Provisioned private SSH mesh."
+                        installing = false
+                        Task { try? await Task.sleep(nanoseconds: 1_000_000_000); dismiss() }
+                    }
+                } catch {
+                    await MainActor.run {
+                        var currentLog = log ?? AddPeerOperationLog(host: "private-ssh-mesh")
+                        currentLog.recordFailure(error)
+                        let operationFailure = AddPeerOperationFailure(host: "private-ssh-mesh", error: error, log: currentLog)
+                        log = currentLog
+                        failure = operationFailure
+                        progress = operationFailure.message
+                        installing = false
+                    }
+                }
+                return
+            }
             for peer in tailnet where tailnetSelected.contains(peer.id) {
                 targets.append((NSUserName(), peer.hostName, 22, ""))
             }
