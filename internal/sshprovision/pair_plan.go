@@ -60,6 +60,7 @@ type DirectPairConfigWrite struct {
 	SSHPort        int
 	InstallPath    string
 	GatewayPath    string
+	Enabled        bool
 	Accept         bool
 	Connect        bool
 	Persistent     bool
@@ -171,6 +172,7 @@ func connectorPeerConfigWrite(connector DirectPairHost, acceptor DirectPairHost)
 		SSHPort:        acceptor.SSHPort,
 		InstallPath:    acceptor.InstallPath,
 		GatewayPath:    acceptor.GatewayPath,
+		Enabled:        true,
 		Connect:        true,
 		Persistent:     true,
 		MigrationState: string(config.MigrationStateLoopbackUnprovisioned),
@@ -183,6 +185,7 @@ func acceptorPeerConfigWrite(acceptor DirectPairHost, connector DirectPairHost) 
 		PeerID:         connector.ID,
 		InstallPath:    acceptor.InstallPath,
 		GatewayPath:    acceptor.GatewayPath,
+		Enabled:        true,
 		Accept:         true,
 		MigrationState: string(config.MigrationStateLoopbackUnprovisioned),
 	}

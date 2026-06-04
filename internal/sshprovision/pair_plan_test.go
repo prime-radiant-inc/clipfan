@@ -77,7 +77,7 @@ func TestDirectPairPlanBuildsConfigWriteIntents(t *testing.T) {
 	if connector.TargetHostID != "linux-b" || connector.PeerID != "mac-a" {
 		t.Fatalf("connector write = %#v", connector)
 	}
-	if !connector.Connect || connector.Accept || !connector.Persistent || connector.OnDemand {
+	if !connector.Enabled || !connector.Connect || connector.Accept || !connector.Persistent || connector.OnDemand {
 		t.Fatalf("connector booleans = %#v", connector)
 	}
 	if connector.SSHHost != "mac-a.tailnet" || connector.SSHUser != "jesse" || connector.SSHPort != 22 {
@@ -94,7 +94,7 @@ func TestDirectPairPlanBuildsConfigWriteIntents(t *testing.T) {
 	if acceptor.TargetHostID != "mac-a" || acceptor.PeerID != "linux-b" {
 		t.Fatalf("acceptor write = %#v", acceptor)
 	}
-	if acceptor.Connect || !acceptor.Accept || acceptor.Persistent || acceptor.OnDemand {
+	if !acceptor.Enabled || acceptor.Connect || !acceptor.Accept || acceptor.Persistent || acceptor.OnDemand {
 		t.Fatalf("acceptor booleans = %#v", acceptor)
 	}
 	if acceptor.InstallPath != "/Users/jesse/.local/bin/clipfan" || acceptor.GatewayPath != "/Users/jesse/.local/bin/clipfan" {
