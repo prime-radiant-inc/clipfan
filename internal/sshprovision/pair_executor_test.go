@@ -83,6 +83,9 @@ func TestDirectPairProvisionerRunsMaterialAndProbeBeforeConfigWrites(t *testing.
 	if fake.configMutation.SyncKeys["mac-a"].PrivateKeyPath != "/Users/jesse/.config/clipfan/ssh/sync_ed25519" {
 		t.Fatalf("mac-a SyncKey = %#v", fake.configMutation.SyncKeys["mac-a"])
 	}
+	if fake.configMutation.SharedKey != testDirectPairSharedKey {
+		t.Fatalf("SharedKey = %q, want shared fleet key", fake.configMutation.SharedKey)
+	}
 }
 
 func TestDirectPairProvisionerFailsClosedWhenConfigV2WritesDisabled(t *testing.T) {
@@ -146,6 +149,23 @@ func TestDirectPairProvisionerRejectsSyncKeyPathWithSpacesBeforeMutation(t *test
 	}
 }
 
+func TestDirectPairProvisionerRejectsMissingSharedKeyBeforeRemoteWork(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeDirectPairDriver()
+	input := validDirectPairProvisionInput()
+	input.SharedKey = ""
+	provisioner := DirectPairProvisioner{Driver: fake, configV2WriteGate: func() bool { return true }}
+
+	_, err := provisioner.Provision(context.Background(), input)
+	if err == nil || err.Error() != "invalid_shared_key" {
+		t.Fatalf("Provision() error = %v, want invalid_shared_key", err)
+	}
+	if len(fake.ops) != 0 {
+		t.Fatalf("ops = %#v, want none", fake.ops)
+	}
+}
+
 func TestDirectPairProvisionerRejectsMissingDriver(t *testing.T) {
 	t.Parallel()
 
@@ -158,6 +178,7 @@ func TestDirectPairProvisionerRejectsMissingDriver(t *testing.T) {
 
 func validDirectPairProvisionInput() DirectPairProvisionInput {
 	return DirectPairProvisionInput{
+		SharedKey: testDirectPairSharedKey,
 		Local: DirectPairProvisionHost{
 			Host:           planHost("mac-a", "mac-a.tailnet", "jesse", 22),
 			KnownHostsPath: "/Users/jesse/.config/clipfan/ssh/known_hosts",

@@ -68,6 +68,9 @@ func (a DirectPairConfigApplicator) Apply(ctx context.Context, mutation DirectPa
 				ExpectedConfigRevision: &current,
 				Transport:              &transport,
 			}
+			if mutation.SharedKey != "" {
+				req.SharedKey = &mutation.SharedKey
+			}
 			syncKey, err := mutationSyncKeyForHost(mutation, hostID)
 			if err != nil {
 				return err
@@ -219,6 +222,9 @@ func shouldApplyConfigWrite(paths map[string]string, hostID string) bool {
 func validateDirectPairConfigMutationForApply(mutation DirectPairConfigMutation, paths map[string]string, phase DirectPairConfigApplyPhase) error {
 	if !phase.appliesStage() {
 		return nil
+	}
+	if !config.SharedKeyIsStandard32Bytes(mutation.SharedKey) {
+		return fmt.Errorf("invalid_shared_key")
 	}
 	for hostID := range paths {
 		if _, err := mutationSyncKeyForHost(mutation, hostID); err != nil {

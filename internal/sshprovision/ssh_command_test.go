@@ -444,9 +444,15 @@ func TestRegularSSHApplyDirectConfigCommand(t *testing.T) {
 		"-o", "LogLevel=ERROR",
 		"-p", "22",
 		"jesse@connector.example",
-		"'/home/jesse/.local/bin/clipfan' 'ssh-apply-direct-config' '--payload-base64' 'eyJzdGF0dXMiOiJvayJ9'",
+		"'/home/jesse/.local/bin/clipfan' 'ssh-apply-direct-config' '--payload-stdin'",
 	}
 	assertSSHCommandArgs(t, cmd.Args, want)
+	if string(cmd.Stdin) != "eyJzdGF0dXMiOiJvayJ9" {
+		t.Fatalf("Stdin = %q, want payload", string(cmd.Stdin))
+	}
+	if strings.Contains(strings.Join(cmd.Args, " "), "eyJzdGF0dXMiOiJvayJ9") {
+		t.Fatalf("payload leaked into argv: %#v", cmd.Args)
+	}
 	assertRegularSSHCommandSafety(t, cmd.Args)
 }
 

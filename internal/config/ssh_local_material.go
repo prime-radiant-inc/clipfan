@@ -15,6 +15,7 @@ type ConfigRevisionStatus struct {
 type SSHLocalMaterialUpdateRequest struct {
 	ExpectedConfigRevision *uint64
 	Transport              *string
+	SharedKey              *string
 	SyncKey                *string
 	KnownHosts             *string
 }
@@ -42,11 +43,14 @@ func updateSSHLocalMaterialWithGate(path string, gateEnabled bool, req SSHLocalM
 	if req.ExpectedConfigRevision == nil || *req.ExpectedConfigRevision == 0 {
 		return ConfigRevisionStatus{}, ErrConfigRevisionConflict
 	}
-	if req.Transport == nil && req.SyncKey == nil && req.KnownHosts == nil {
+	if req.Transport == nil && req.SharedKey == nil && req.SyncKey == nil && req.KnownHosts == nil {
 		return ConfigRevisionStatus{}, fmt.Errorf("ssh_local_material_update_empty")
 	}
 	if req.Transport != nil && *req.Transport != TransportSSH {
 		return ConfigRevisionStatus{}, fmt.Errorf("invalid_transport: %s", *req.Transport)
+	}
+	if req.SharedKey != nil && !SharedKeyIsStandard32Bytes(*req.SharedKey) {
+		return ConfigRevisionStatus{}, fmt.Errorf("invalid_shared_key")
 	}
 	if req.SyncKey != nil {
 		if err := ValidateSSHExecutablePath(*req.SyncKey); err != nil {
@@ -84,6 +88,10 @@ func updateSSHLocalMaterialWithGate(path string, gateEnabled bool, req SSHLocalM
 		if req.Transport != nil {
 			cfg.Transport = *req.Transport
 			setRaw(raw, "transport", *req.Transport)
+		}
+		if req.SharedKey != nil {
+			cfg.SharedKey = *req.SharedKey
+			setRaw(raw, "shared_key", *req.SharedKey)
 		}
 		if cfg.SSH == nil {
 			cfg.SSH = &SSHConfig{}

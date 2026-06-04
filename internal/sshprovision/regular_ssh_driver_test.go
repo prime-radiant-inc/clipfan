@@ -45,6 +45,9 @@ func TestRegularSSHProvisionDriverRunsRemoteHelperSequence(t *testing.T) {
 	if configMutation.KnownHostsPaths["mac-a"] != "/Users/jesse/.config/clipfan/ssh/known_hosts" {
 		t.Fatalf("config mutation = %#v", configMutation)
 	}
+	if configMutation.SharedKey != testDirectPairSharedKey {
+		t.Fatalf("config mutation shared key = %q, want fleet key", configMutation.SharedKey)
+	}
 
 	if len(runner.commands) != 8 {
 		t.Fatalf("runner command count = %d, want 8: %#v", len(runner.commands), runner.commands)

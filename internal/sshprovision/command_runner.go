@@ -76,6 +76,9 @@ func (r ExecCommandRunner) Run(ctx context.Context, command SSHCommand) (Command
 	stderr.limit = limit
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	if command.Stdin != nil {
+		cmd.Stdin = bytes.NewReader(command.Stdin)
+	}
 	err := cmd.Run()
 	output := CommandOutput{
 		Stdout:          stdout.Bytes(),

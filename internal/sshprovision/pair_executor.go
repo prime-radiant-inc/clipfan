@@ -18,8 +18,9 @@ type DirectPairProvisionHost struct {
 }
 
 type DirectPairProvisionInput struct {
-	Local  DirectPairProvisionHost
-	Remote DirectPairProvisionHost
+	Local     DirectPairProvisionHost
+	Remote    DirectPairProvisionHost
+	SharedKey string
 }
 
 type SyncKeyMaterial struct {
@@ -31,6 +32,7 @@ type SyncKeyMaterial struct {
 type DirectPairConfigMutation struct {
 	Plan                    DirectPairPlan
 	Writes                  []DirectPairConfigWrite
+	SharedKey               string `json:"shared_key,omitempty"`
 	SyncKeys                map[string]SyncKeyMaterial
 	KnownHostsPaths         map[string]string
 	ConnectorSyncKey        SyncKeyMaterial
@@ -98,6 +100,9 @@ func (provisioner DirectPairProvisioner) Provision(ctx context.Context, input Di
 	acceptor, err := directPairProvisionHostByID(normalized, plan.AcceptHostID)
 	if err != nil {
 		return result, err
+	}
+	if !config.SharedKeyIsStandard32Bytes(normalized.SharedKey) {
+		return result, fmt.Errorf("invalid_shared_key")
 	}
 
 	if !provisioner.configV2WriteEnabled() {
@@ -183,6 +188,7 @@ func (provisioner DirectPairProvisioner) Provision(ctx context.Context, input Di
 	if err := provisioner.Driver.WriteConfig(ctx, DirectPairConfigMutation{
 		Plan:                    plan,
 		Writes:                  append([]DirectPairConfigWrite(nil), plan.ConfigWrites...),
+		SharedKey:               normalized.SharedKey,
 		SyncKeys:                cloneSyncKeyMaterialMap(result.SyncKeys),
 		KnownHostsPaths:         knownHostsPathsByHost(hosts),
 		ConnectorSyncKey:        result.ConnectorSyncKey,
@@ -212,7 +218,7 @@ func normalizeDirectPairProvisionInput(input DirectPairProvisionInput) (DirectPa
 	if err != nil {
 		return DirectPairProvisionInput{}, fmt.Errorf("invalid remote host: %w", err)
 	}
-	return DirectPairProvisionInput{Local: local, Remote: remote}, nil
+	return DirectPairProvisionInput{Local: local, Remote: remote, SharedKey: input.SharedKey}, nil
 }
 
 func normalizeDirectPairProvisionHost(host DirectPairProvisionHost) (DirectPairProvisionHost, error) {

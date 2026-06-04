@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+const testStandardSharedKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+
 func TestReadConfigRevisionReturnsVersionedStatus(t *testing.T) {
 	t.Parallel()
 
@@ -98,6 +100,41 @@ func TestUpdateSSHLocalMaterialTransportOnlyEnablesSSHMode(t *testing.T) {
 	assertJSONValueEqual(t, map[string]any{"keep": true}, after["future_top"])
 }
 
+func TestUpdateSSHLocalMaterialSeedsSharedKeyAndPreservesUnknownFields(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfigForV2Test(t, `{
+  "config_version": 2,
+  "config_revision": 7,
+  "shared_key": "",
+  "hostname": "m4",
+  "transport": "ssh",
+  "max_history": 50,
+  "future_top": {"keep": true},
+  "ssh": {
+    "future_ssh": {"keep": true}
+  }
+}`)
+
+	status, err := updateSSHLocalMaterialWithGate(path, true, SSHLocalMaterialUpdateRequest{
+		ExpectedConfigRevision: uint64Ptr(7),
+		SharedKey:              stringPtr(testStandardSharedKey),
+	})
+	if err != nil {
+		t.Fatalf("UpdateSSHLocalMaterial error = %v", err)
+	}
+	if status.ConfigRevision == nil || *status.ConfigRevision != 8 {
+		t.Fatalf("ConfigRevision = %v, want 8", revisionString(status.ConfigRevision))
+	}
+
+	after := readJSONMap(t, path)
+	assertJSONNumber(t, after["config_revision"], 8)
+	assertJSONValueEqual(t, testStandardSharedKey, after["shared_key"])
+	assertJSONValueEqual(t, map[string]any{"keep": true}, after["future_top"])
+	ssh := after["ssh"].(map[string]any)
+	assertJSONValueEqual(t, map[string]any{"keep": true}, ssh["future_ssh"])
+}
+
 func TestUpdateSSHLocalMaterialFailsClosedWhenGateDisabled(t *testing.T) {
 	t.Parallel()
 
@@ -144,4 +181,21 @@ func TestUpdateSSHLocalMaterialRejectsInvalidPathWithoutWriting(t *testing.T) {
 	}
 	after := readJSONMap(t, path)
 	assertJSONNumber(t, after["config_revision"], 7)
+}
+
+func TestUpdateSSHLocalMaterialRejectsInvalidSharedKeyWithoutWriting(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfigForV2Test(t, `{"config_version":2,"config_revision":7,"shared_key":"k","hostname":"m4","transport":"ssh","max_history":50}`)
+
+	_, err := updateSSHLocalMaterialWithGate(path, true, SSHLocalMaterialUpdateRequest{
+		ExpectedConfigRevision: uint64Ptr(7),
+		SharedKey:              stringPtr("not-base64"),
+	})
+	if err == nil || err.Error() != "invalid_shared_key" {
+		t.Fatalf("error = %v, want invalid_shared_key", err)
+	}
+	after := readJSONMap(t, path)
+	assertJSONNumber(t, after["config_revision"], 7)
+	assertJSONValueEqual(t, "k", after["shared_key"])
 }

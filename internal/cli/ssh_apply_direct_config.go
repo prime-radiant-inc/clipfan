@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"strings"
 
 	"github.com/prime-radiant-inc/clipfan/internal/config"
 	"github.com/prime-radiant-inc/clipfan/internal/sshprovision"
@@ -20,20 +22,39 @@ type SSHApplyDirectConfigPayload struct {
 }
 
 func RunSSHApplyDirectConfig(args []string, stdout io.Writer, stderr io.Writer) error {
-	return runSSHApplyDirectConfig(args, stdout, stderr, nil)
+	return runSSHApplyDirectConfigWithStdin(args, os.Stdin, stdout, stderr, nil)
 }
 
 func runSSHApplyDirectConfig(args []string, stdout io.Writer, stderr io.Writer, ops sshprovision.DirectPairConfigOps) error {
+	return runSSHApplyDirectConfigWithStdin(args, nil, stdout, stderr, ops)
+}
+
+func runSSHApplyDirectConfigWithStdin(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, ops sshprovision.DirectPairConfigOps) error {
 	fs := flag.NewFlagSet("ssh-apply-direct-config", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	payloadBase64 := fs.String("payload-base64", "", "base64 config payload")
+	payloadStdin := fs.Bool("payload-stdin", false, "read base64 config payload from stdin")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected ssh-apply-direct-config argument")
 	}
-	payload, err := decodeSSHApplyDirectConfigPayload(*payloadBase64)
+	payloadText := *payloadBase64
+	if *payloadStdin {
+		if payloadText != "" {
+			return fmt.Errorf("payload_source_conflict")
+		}
+		if stdin == nil {
+			return fmt.Errorf("missing_payload_stdin")
+		}
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			return fmt.Errorf("read_payload_stdin: %w", err)
+		}
+		payloadText = string(data)
+	}
+	payload, err := decodeSSHApplyDirectConfigPayload(payloadText)
 	if err != nil {
 		return err
 	}
@@ -53,6 +74,7 @@ func runSSHApplyDirectConfig(args []string, stdout io.Writer, stderr io.Writer, 
 }
 
 func decodeSSHApplyDirectConfigPayload(payloadBase64 string) (SSHApplyDirectConfigPayload, error) {
+	payloadBase64 = strings.TrimSpace(payloadBase64)
 	if payloadBase64 == "" {
 		return SSHApplyDirectConfigPayload{}, fmt.Errorf("missing_payload")
 	}

@@ -34,6 +34,7 @@ func (f *sshProvisionDirectHostFlag) Set(value string) error {
 type sshProvisionDirectOptions struct {
 	Runner            sshprovision.CommandRunner
 	ConfigV2WriteGate func() bool
+	SharedKey         func() (string, error)
 }
 
 func RunSSHProvisionDirect(args []string, stdout io.Writer, stderr io.Writer) error {
@@ -70,6 +71,10 @@ func runSSHProvisionDirect(args []string, stdout io.Writer, stderr io.Writer, op
 	if !sshProvisionDirectConfigV2WritesEnabled(opts.ConfigV2WriteGate) {
 		return config.ErrConfigV2WritesDisabled
 	}
+	sharedKey, err := sshProvisionDirectSharedKey(opts.SharedKey)
+	if err != nil {
+		return err
+	}
 	runner := opts.Runner
 	if runner == nil {
 		runner = sshprovision.ExecCommandRunner{MaxOutputBytes: 64 * 1024}
@@ -92,8 +97,9 @@ func runSSHProvisionDirect(args []string, stdout io.Writer, stderr io.Writer, op
 	for i := 0; i < len(hosts); i++ {
 		for j := i + 1; j < len(hosts); j++ {
 			result, err := provisioner.Provision(ctx, sshprovision.DirectPairProvisionInput{
-				Local:  hosts[i],
-				Remote: hosts[j],
+				Local:     hosts[i],
+				Remote:    hosts[j],
+				SharedKey: sharedKey,
 			})
 			if err != nil {
 				return err
@@ -105,6 +111,27 @@ func runSSHProvisionDirect(args []string, stdout io.Writer, stderr io.Writer, op
 		"status": "ok",
 		"pairs":  pairs,
 	})
+}
+
+func sshProvisionDirectSharedKey(loader func() (string, error)) (string, error) {
+	if loader != nil {
+		key, err := loader()
+		if err != nil {
+			return "", err
+		}
+		if !config.SharedKeyIsStandard32Bytes(key) {
+			return "", fmt.Errorf("invalid_local_shared_key")
+		}
+		return key, nil
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return "", err
+	}
+	if !config.SharedKeyIsStandard32Bytes(cfg.SharedKey) {
+		return "", fmt.Errorf("invalid_local_shared_key")
+	}
+	return cfg.SharedKey, nil
 }
 
 func sshProvisionDirectConfigV2WritesEnabled(gate func() bool) bool {

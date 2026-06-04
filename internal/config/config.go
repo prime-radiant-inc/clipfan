@@ -239,3 +239,14 @@ func NewSharedKey() string {
 	}
 	return base64.StdEncoding.EncodeToString(b)
 }
+
+func SharedKeyIsStandard32Bytes(value string) bool {
+	if value == "" {
+		return false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil || len(decoded) != 32 {
+		return false
+	}
+	return base64.StdEncoding.EncodeToString(decoded) == value
+}

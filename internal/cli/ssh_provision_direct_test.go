@@ -21,6 +21,7 @@ const (
 	testDirectProvisionOtherEd25519Key = "AAAAC3NzaC1lZDI1NTE5AAAAIHP7O1LPaDr6RfFdqHtKc9m8gw98RK54GpcfwoAK2JhH"
 	testDirectProvisionThirdEd25519Key = "AAAAC3NzaC1lZDI1NTE5AAAAIHRoaXJkLXRlc3QtZWQyNTUxOS1wdWJsaWMta2V5ISEh"
 	testDirectProvisionEd25519KeyID    = "626e58c17d770373"
+	testDirectProvisionSharedKey       = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 )
 
 func TestRunSSHProvisionDirectBuildsThreeHostMesh(t *testing.T) {
@@ -38,6 +39,7 @@ func TestRunSSHProvisionDirectBuildsThreeHostMesh(t *testing.T) {
 	}, &stdout, &stderr, sshProvisionDirectOptions{
 		Runner:            runner,
 		ConfigV2WriteGate: func() bool { return true },
+		SharedKey:         func() (string, error) { return testDirectProvisionSharedKey, nil },
 	})
 	if err != nil {
 		t.Fatalf("runSSHProvisionDirect() error = %v stderr=%q", err, stderr.String())
@@ -75,6 +77,14 @@ func TestRunSSHProvisionDirectBuildsThreeHostMesh(t *testing.T) {
 	if !reflect.DeepEqual(runner.configApplies, wantApplies) {
 		t.Fatalf("config applies:\n got %#v\nwant %#v", runner.configApplies, wantApplies)
 	}
+	if len(runner.configApplySharedKeys) != len(wantApplies) {
+		t.Fatalf("shared-key payload count = %d, want %d", len(runner.configApplySharedKeys), len(wantApplies))
+	}
+	for i, got := range runner.configApplySharedKeys {
+		if got != testDirectProvisionSharedKey {
+			t.Fatalf("shared key payload %d = %q, want fleet key", i, got)
+		}
+	}
 }
 
 func TestRunSSHProvisionDirectFailsClosedWhenConfigV2WritesDisabled(t *testing.T) {
@@ -93,6 +103,32 @@ func TestRunSSHProvisionDirectFailsClosedWhenConfigV2WritesDisabled(t *testing.T
 	})
 	if !errors.Is(err, config.ErrConfigV2WritesDisabled) {
 		t.Fatalf("runSSHProvisionDirect() error = %v, want ErrConfigV2WritesDisabled", err)
+	}
+	if len(runner.keyscans) != 0 {
+		t.Fatalf("keyscans = %#v, want none", runner.keyscans)
+	}
+	if len(runner.configApplies) != 0 {
+		t.Fatalf("config applies = %#v, want none", runner.configApplies)
+	}
+}
+
+func TestRunSSHProvisionDirectRejectsInvalidLocalSharedKeyBeforeKeyscan(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDirectProvisionRunner{}
+
+	err := runSSHProvisionDirect([]string{
+		"--trust-keyscan",
+		"--regular-known-hosts", "/Users/jesse/.ssh/known_hosts",
+		"--host", "id=mac-a,ssh=mac-a.tailnet,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+		"--host", "id=linux-b,ssh=linux-b.tailnet,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/Application Support/Clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519",
+	}, &bytes.Buffer{}, &bytes.Buffer{}, sshProvisionDirectOptions{
+		Runner:            runner,
+		ConfigV2WriteGate: func() bool { return true },
+		SharedKey:         func() (string, error) { return "not-base64", nil },
+	})
+	if err == nil || err.Error() != "invalid_local_shared_key" {
+		t.Fatalf("runSSHProvisionDirect() error = %v, want invalid_local_shared_key", err)
 	}
 	if len(runner.keyscans) != 0 {
 		t.Fatalf("keyscans = %#v, want none", runner.keyscans)
@@ -152,6 +188,7 @@ func TestRunSSHApplyDirectConfigAppliesTargetHostOnly(t *testing.T) {
 				"linux-b": {PrivateKeyPath: "/home/jesse/.config/clipfan/ssh/sync_ed25519", PublicKey: testDirectProvisionEd25519Key, KeyID: testDirectProvisionEd25519KeyID},
 				"mac-a":   {PrivateKeyPath: "/Users/jesse/.config/clipfan/ssh/sync_ed25519", PublicKey: testDirectProvisionOtherEd25519Key, KeyID: "1892e27b582e5293"},
 			},
+			SharedKey: testDirectProvisionSharedKey,
 			KnownHostsPaths: map[string]string{
 				"linux-b": "/home/jesse/.config/clipfan/ssh/known_hosts",
 				"mac-a":   "/Users/jesse/.config/clipfan/ssh/known_hosts",
@@ -195,6 +232,70 @@ func TestRunSSHApplyDirectConfigAppliesTargetHostOnly(t *testing.T) {
 	}
 }
 
+func TestRunSSHApplyDirectConfigReadsPayloadFromStdin(t *testing.T) {
+	t.Parallel()
+
+	plan, err := sshprovision.BuildDirectPairPlan(sshprovision.DirectPairPlanInput{
+		Local: sshprovision.DirectPairHost{
+			ID:          "mac-a",
+			SSHHost:     "mac-a.tailnet",
+			SSHUser:     "jesse",
+			SSHPort:     22,
+			InstallPath: "/Users/jesse/.local/bin/clipfan",
+			GatewayPath: "/Users/jesse/.local/bin/clipfan",
+		},
+		Remote: sshprovision.DirectPairHost{
+			ID:          "linux-b",
+			SSHHost:     "linux-b.tailnet",
+			SSHUser:     "jesse",
+			SSHPort:     22,
+			InstallPath: "/home/jesse/.local/bin/clipfan",
+			GatewayPath: "/home/jesse/.local/bin/clipfan",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := writeDirectApplyConfigForTest(t, "linux-b")
+	payload := SSHApplyDirectConfigPayload{
+		HostID:     "linux-b",
+		ConfigPath: configPath,
+		Phase:      "stage",
+		Mutation: sshprovision.DirectPairConfigMutation{
+			Plan:      plan,
+			Writes:    append([]sshprovision.DirectPairConfigWrite(nil), plan.ConfigWrites...),
+			SharedKey: testDirectProvisionSharedKey,
+			SyncKeys: map[string]sshprovision.SyncKeyMaterial{
+				"linux-b": {PrivateKeyPath: "/home/jesse/.config/clipfan/ssh/sync_ed25519", PublicKey: testDirectProvisionEd25519Key, KeyID: testDirectProvisionEd25519KeyID},
+				"mac-a":   {PrivateKeyPath: "/Users/jesse/.config/clipfan/ssh/sync_ed25519", PublicKey: testDirectProvisionOtherEd25519Key, KeyID: "1892e27b582e5293"},
+			},
+			KnownHostsPaths: map[string]string{
+				"linux-b": "/home/jesse/.config/clipfan/ssh/known_hosts",
+				"mac-a":   "/Users/jesse/.config/clipfan/ssh/known_hosts",
+			},
+		},
+	}
+	encoded, err := encodeSSHApplyDirectConfigPayloadForTest(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := newFakeDirectProvisionConfigOps()
+	var stdout bytes.Buffer
+	if err := runSSHApplyDirectConfigWithStdin([]string{"--payload-stdin"}, strings.NewReader(encoded+"\n"), &stdout, &bytes.Buffer{}, ops); err != nil {
+		t.Fatalf("runSSHApplyDirectConfigWithStdin() error = %v", err)
+	}
+	wantCalls := []string{
+		"read:" + configPath,
+		"local:" + configPath,
+		"upsert:" + configPath + ":mac-a",
+		"proof:" + configPath + ":mac-a",
+		"transition:" + configPath + ":mac-a:loopback_unprovisioned->ssh_material_staged",
+	}
+	if !reflect.DeepEqual(ops.calls, wantCalls) {
+		t.Fatalf("calls:\n got %#v\nwant %#v", ops.calls, wantCalls)
+	}
+}
+
 func TestRunSSHApplyDirectConfigRejectsHostMismatchBeforeMutation(t *testing.T) {
 	t.Parallel()
 
@@ -230,6 +331,7 @@ func TestRunSSHApplyDirectConfigRejectsHostMismatchBeforeMutation(t *testing.T) 
 				"linux-b": {PrivateKeyPath: "/home/jesse/.config/clipfan/ssh/sync_ed25519", PublicKey: testDirectProvisionEd25519Key, KeyID: testDirectProvisionEd25519KeyID},
 				"mac-a":   {PrivateKeyPath: "/Users/jesse/.config/clipfan/ssh/sync_ed25519", PublicKey: testDirectProvisionOtherEd25519Key, KeyID: "1892e27b582e5293"},
 			},
+			SharedKey: testDirectProvisionSharedKey,
 			KnownHostsPaths: map[string]string{
 				"linux-b": "/home/jesse/.config/clipfan/ssh/known_hosts",
 				"mac-a":   "/Users/jesse/.config/clipfan/ssh/known_hosts",
@@ -251,8 +353,9 @@ func TestRunSSHApplyDirectConfigRejectsHostMismatchBeforeMutation(t *testing.T) 
 }
 
 type fakeDirectProvisionRunner struct {
-	keyscans      []string
-	configApplies []string
+	keyscans              []string
+	configApplies         []string
+	configApplySharedKeys []string
 }
 
 func (r *fakeDirectProvisionRunner) Run(_ context.Context, command sshprovision.SSHCommand) (sshprovision.CommandOutput, error) {
@@ -286,11 +389,23 @@ func (r *fakeDirectProvisionRunner) Run(_ context.Context, command sshprovision.
 		peerID, keyID := remoteQuotedArgValue(remote, "--expect-peer"), remoteQuotedArgValue(remote, "--expect-key-id")
 		return sshprovision.CommandOutput{Stdout: []byte(`{"status":"ok","peer_id":"` + peerID + `","key_id":"` + keyID + `"}`)}, nil
 	case strings.Contains(remote, "ssh-apply-direct-config"):
-		payload := remoteQuotedArgValue(remote, "--payload-base64")
+		if !strings.Contains(remote, "--payload-stdin") {
+			return sshprovision.CommandOutput{}, errors.New("direct config payload not passed over stdin")
+		}
+		if strings.Contains(remote, "--payload-base64") || strings.Contains(remote, testDirectProvisionSharedKey) {
+			return sshprovision.CommandOutput{}, errors.New("direct config secret leaked in remote argv")
+		}
+		payload := strings.TrimSpace(string(command.Stdin))
+		if payload == "" {
+			return sshprovision.CommandOutput{}, errors.New("missing direct config stdin payload")
+		}
 		var decoded struct {
 			HostID     string `json:"host_id"`
 			ConfigPath string `json:"config_path"`
 			Phase      string `json:"phase"`
+			Mutation   struct {
+				SharedKey string `json:"shared_key"`
+			} `json:"mutation"`
 		}
 		data, err := base64.StdEncoding.DecodeString(payload)
 		if err != nil {
@@ -303,6 +418,7 @@ func (r *fakeDirectProvisionRunner) Run(_ context.Context, command sshprovision.
 			return sshprovision.CommandOutput{}, errors.New("linux-b config path lost: " + decoded.ConfigPath)
 		}
 		r.configApplies = append(r.configApplies, decoded.HostID+":"+decoded.Phase)
+		r.configApplySharedKeys = append(r.configApplySharedKeys, decoded.Mutation.SharedKey)
 		return sshprovision.CommandOutput{Stdout: []byte(`{"status":"ok"}`)}, nil
 	default:
 		return sshprovision.CommandOutput{}, errors.New("unexpected command: " + strings.Join(command.Args, " "))

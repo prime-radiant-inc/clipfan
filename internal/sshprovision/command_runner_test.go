@@ -29,6 +29,22 @@ func TestExecCommandRunnerRunsArgvAndBoundsOutput(t *testing.T) {
 	}
 }
 
+func TestExecCommandRunnerWritesCommandStdin(t *testing.T) {
+	t.Parallel()
+
+	script := writeRunnerScript(t, "read line\nprintf '%s' \"$line\"\n")
+	output, err := (ExecCommandRunner{}).Run(context.Background(), SSHCommand{
+		Args:  []string{script},
+		Stdin: []byte("from-stdin\n"),
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if string(output.Stdout) != "from-stdin" {
+		t.Fatalf("Stdout = %q, want from-stdin", string(output.Stdout))
+	}
+}
+
 func TestExecCommandRunnerRejectsEmptyCommand(t *testing.T) {
 	t.Parallel()
 

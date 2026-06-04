@@ -2,7 +2,6 @@ package config
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -223,14 +222,7 @@ func localFleetResetStatusFromDocument(doc *configDocument, configDir, stateDir 
 }
 
 func sharedKeyIsStandard32Bytes(value string) bool {
-	if value == "" {
-		return false
-	}
-	decoded, err := base64.StdEncoding.DecodeString(value)
-	if err != nil || len(decoded) != 32 {
-		return false
-	}
-	return base64.StdEncoding.EncodeToString(decoded) == value
+	return SharedKeyIsStandard32Bytes(value)
 }
 
 func localFleetResetHasUnsupportedSSHMaterial(cfg Config, raw map[string]json.RawMessage, configDir, stateDir string) bool {

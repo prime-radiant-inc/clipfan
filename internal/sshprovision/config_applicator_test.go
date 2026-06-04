@@ -3,6 +3,7 @@ package sshprovision
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -16,6 +17,8 @@ import (
 	"github.com/prime-radiant-inc/clipfan/internal/config"
 	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
 )
+
+var testDirectPairSharedKey = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
 
 func TestDirectPairConfigApplicatorAppliesRevisionOrderedConfigMutations(t *testing.T) {
 	t.Parallel()
@@ -39,8 +42,8 @@ func TestDirectPairConfigApplicatorAppliesRevisionOrderedConfigMutations(t *test
 	wantCalls := []string{
 		"read:/configs/linux-b.json",
 		"read:/configs/mac-a.json",
-		"local:/configs/linux-b.json:rev=7:transport=ssh:sync=/home/jesse/.config/clipfan/ssh/sync_ed25519:known=/home/jesse/.config/clipfan/ssh/known_hosts",
-		"local:/configs/mac-a.json:rev=7:transport=ssh:sync=/Users/jesse/.config/clipfan/ssh/sync_ed25519:known=/Users/jesse/.config/clipfan/ssh/known_hosts",
+		"local:/configs/linux-b.json:rev=7:transport=ssh:shared_key_set=true:sync=/home/jesse/.config/clipfan/ssh/sync_ed25519:known=/home/jesse/.config/clipfan/ssh/known_hosts",
+		"local:/configs/mac-a.json:rev=7:transport=ssh:shared_key_set=true:sync=/Users/jesse/.config/clipfan/ssh/sync_ed25519:known=/Users/jesse/.config/clipfan/ssh/known_hosts",
 		"upsert:/configs/linux-b.json:mac-a:rev=8:enabled=true:accept=true:connect=true:persistent=true:on_demand=false:shared_key_nil=true",
 		"upsert:/configs/mac-a.json:linux-b:rev=8:enabled=true:accept=true:connect=true:persistent=true:on_demand=false:shared_key_nil=true",
 		"proof:/configs/linux-b.json:mac-a:rev=9:accept=true:connect=true:accept_key=mac-key-123456:connect_key=linux-key-123456:verified=regular_ssh",
@@ -52,6 +55,52 @@ func TestDirectPairConfigApplicatorAppliesRevisionOrderedConfigMutations(t *test
 	}
 	if !reflect.DeepEqual(ops.calls, wantCalls) {
 		t.Fatalf("calls:\n got %#v\nwant %#v", ops.calls, wantCalls)
+	}
+}
+
+func TestDirectPairConfigApplicatorRejectsInvalidSharedKeyBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	ops := newFakeDirectPairConfigOps()
+	applicator := DirectPairConfigApplicator{
+		ConfigPathByHostID: map[string]string{
+			"linux-b": "/configs/linux-b.json",
+			"mac-a":   "/configs/mac-a.json",
+		},
+		Ops: ops,
+	}
+	mutation := validDirectPairConfigMutation(t)
+	mutation.SharedKey = "not-base64"
+
+	err := applicator.Apply(context.Background(), mutation)
+	if err == nil || err.Error() != "invalid_shared_key" {
+		t.Fatalf("Apply error = %v, want invalid_shared_key", err)
+	}
+	if len(ops.calls) != 0 {
+		t.Fatalf("calls = %#v, want none", ops.calls)
+	}
+}
+
+func TestDirectPairConfigApplicatorRejectsMissingSharedKeyBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	ops := newFakeDirectPairConfigOps()
+	applicator := DirectPairConfigApplicator{
+		ConfigPathByHostID: map[string]string{
+			"linux-b": "/configs/linux-b.json",
+			"mac-a":   "/configs/mac-a.json",
+		},
+		Ops: ops,
+	}
+	mutation := validDirectPairConfigMutation(t)
+	mutation.SharedKey = ""
+
+	err := applicator.Apply(context.Background(), mutation)
+	if err == nil || err.Error() != "invalid_shared_key" {
+		t.Fatalf("Apply error = %v, want invalid_shared_key", err)
+	}
+	if len(ops.calls) != 0 {
+		t.Fatalf("calls = %#v, want none", ops.calls)
 	}
 }
 
@@ -141,7 +190,7 @@ func (f *fakeDirectPairConfigOps) ReadConfigRevision(path string) (config.Config
 }
 
 func (f *fakeDirectPairConfigOps) UpdateSSHLocalMaterial(path string, req config.SSHLocalMaterialUpdateRequest) (config.ConfigRevisionStatus, error) {
-	f.calls = append(f.calls, "local:"+path+":rev="+revString(req.ExpectedConfigRevision)+":transport="+stringValue(req.Transport)+":sync="+stringValue(req.SyncKey)+":known="+stringValue(req.KnownHosts))
+	f.calls = append(f.calls, "local:"+path+":rev="+revString(req.ExpectedConfigRevision)+":transport="+stringValue(req.Transport)+":shared_key_set="+boolString(req.SharedKey != nil)+":sync="+stringValue(req.SyncKey)+":known="+stringValue(req.KnownHosts))
 	return f.bump(path), nil
 }
 
@@ -200,8 +249,9 @@ func validDirectPairConfigMutation(t *testing.T) DirectPairConfigMutation {
 		t.Fatal(err)
 	}
 	return DirectPairConfigMutation{
-		Plan:   plan,
-		Writes: append([]DirectPairConfigWrite(nil), plan.ConfigWrites...),
+		Plan:      plan,
+		Writes:    append([]DirectPairConfigWrite(nil), plan.ConfigWrites...),
+		SharedKey: testDirectPairSharedKey,
 		SyncKeys: map[string]SyncKeyMaterial{
 			"linux-b": {PrivateKeyPath: "/home/jesse/.config/clipfan/ssh/sync_ed25519", PublicKey: testEd25519Key, KeyID: "linux-key-123456"},
 			"mac-a":   {PrivateKeyPath: "/Users/jesse/.config/clipfan/ssh/sync_ed25519", PublicKey: testEd25519Key, KeyID: "mac-key-123456"},

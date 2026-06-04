@@ -23,7 +23,8 @@ type PinnedSSHCommand struct {
 }
 
 type SSHCommand struct {
-	Args []string
+	Args  []string
+	Stdin []byte
 }
 
 type SSHKeyscanSpec struct {
@@ -236,7 +237,7 @@ func RegularSSHApplyDirectConfigCommand(spec RegularSSHApplyDirectConfigSpec) (S
 	if err != nil {
 		return SSHCommand{}, err
 	}
-	return regularSSHRemoteCommand(regularSSHRemoteSpec{
+	command := regularSSHRemoteCommand(regularSSHRemoteSpec{
 		User:           normalized.User,
 		Host:           normalized.Host,
 		Port:           normalized.Port,
@@ -244,9 +245,11 @@ func RegularSSHApplyDirectConfigCommand(spec RegularSSHApplyDirectConfigSpec) (S
 		RemoteArgs: []string{
 			normalized.InstallPath,
 			"ssh-apply-direct-config",
-			"--payload-base64", normalized.PayloadBase64,
+			"--payload-stdin",
 		},
-	}), nil
+	})
+	command.Stdin = []byte(normalized.PayloadBase64)
+	return command, nil
 }
 
 func SyncKeyMaterialFromConfig(result config.SyncKeyCreateResult) (SyncKeyMaterial, error) {
