@@ -149,6 +149,20 @@ type SSHStreamStateResult struct {
 	NullReason string
 }
 
+type SSHStreamAckResult struct {
+	Seq    uint64
+	ID     string
+	Status string
+	Reason string
+}
+
+type SSHStreamEvent struct {
+	Type      string
+	State     SSHStreamStateResult
+	Ack       SSHStreamAckResult
+	ErrorCode string
+}
+
 type SSHStreamHelloNonceCache struct {
 	mu         sync.Mutex
 	seen       map[string]sshStreamHelloNonceEntry
@@ -327,6 +341,38 @@ func (s *SSHSyncStream) ReadStateFrame(ctx context.Context, receivedAt time.Time
 	if err != nil {
 		return SSHStreamStateResult{}, err
 	}
+	return s.stateResultFromFrame(frame, receivedAt)
+}
+
+func (s *SSHSyncStream) ReadNext(ctx context.Context, receivedAt time.Time) (SSHStreamEvent, error) {
+	frame, err := s.readFrame(ctx)
+	if err != nil {
+		return SSHStreamEvent{}, err
+	}
+	switch frame.Type {
+	case SSHStreamFrameState:
+		state, err := s.stateResultFromFrame(frame, receivedAt)
+		if err != nil {
+			return SSHStreamEvent{}, err
+		}
+		return SSHStreamEvent{Type: SSHStreamFrameState, State: state}, nil
+	case SSHStreamFrameAck:
+		ack, err := ackResultFromFrame(frame)
+		if err != nil {
+			return SSHStreamEvent{}, err
+		}
+		return SSHStreamEvent{Type: SSHStreamFrameAck, Ack: ack}, nil
+	case SSHStreamFrameError:
+		if frame.Code == "" {
+			return SSHStreamEvent{}, fmt.Errorf("%w: missing error code", ErrSSHStreamUnexpectedFrame)
+		}
+		return SSHStreamEvent{Type: SSHStreamFrameError, ErrorCode: frame.Code}, nil
+	default:
+		return SSHStreamEvent{}, fmt.Errorf("%w: %s", ErrSSHStreamUnexpectedFrame, frame.Type)
+	}
+}
+
+func (s *SSHSyncStream) stateResultFromFrame(frame SSHStreamFrame, receivedAt time.Time) (SSHStreamStateResult, error) {
 	if frame.Type != SSHStreamFrameState || frame.Seq == 0 {
 		return SSHStreamStateResult{}, fmt.Errorf("%w: %s", ErrSSHStreamUnexpectedFrame, frame.Type)
 	}
@@ -358,6 +404,9 @@ func (s *SSHSyncStream) ReadStateFrame(ctx context.Context, receivedAt time.Time
 }
 
 func (s *SSHSyncStream) WriteAck(ctx context.Context, seq uint64, clipID string, status string, reason string) error {
+	if err := validateSSHStreamAck(seq, clipID, status); err != nil {
+		return err
+	}
 	return s.writeFrame(ctx, SSHStreamFrame{Type: SSHStreamFrameAck, Seq: seq, ID: clipID, Status: status, Reason: reason})
 }
 
@@ -611,6 +660,41 @@ func randomSSHStreamNonce() (string, error) {
 func validSSHStreamNullReason(reason string) bool {
 	switch reason {
 	case "no_visible_current", "concealed_clear", "user_cleared_current":
+		return true
+	default:
+		return false
+	}
+}
+
+func ackResultFromFrame(frame SSHStreamFrame) (SSHStreamAckResult, error) {
+	if frame.Type != SSHStreamFrameAck {
+		return SSHStreamAckResult{}, fmt.Errorf("%w: %s", ErrSSHStreamUnexpectedFrame, frame.Type)
+	}
+	if err := validateSSHStreamAck(frame.Seq, frame.ID, frame.Status); err != nil {
+		return SSHStreamAckResult{}, err
+	}
+	return SSHStreamAckResult{Seq: frame.Seq, ID: frame.ID, Status: frame.Status, Reason: frame.Reason}, nil
+}
+
+func validateSSHStreamAck(seq uint64, clipID string, status string) error {
+	if seq == 0 || !validSSHStreamAckStatus(status) {
+		return fmt.Errorf("%w: ack", ErrSSHStreamUnexpectedFrame)
+	}
+	if status == "no_state" {
+		if clipID != "" {
+			return fmt.Errorf("%w: no_state ack id", ErrSSHStreamUnexpectedFrame)
+		}
+		return nil
+	}
+	if clipID == "" {
+		return fmt.Errorf("%w: missing ack id", ErrSSHStreamUnexpectedFrame)
+	}
+	return nil
+}
+
+func validSSHStreamAckStatus(status string) bool {
+	switch status {
+	case "no_state", "applied", "ignored_seen", "ignored_echo", "ignored_older", "ignored_concealed", "rejected":
 		return true
 	default:
 		return false

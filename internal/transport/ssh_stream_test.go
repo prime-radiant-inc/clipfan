@@ -110,6 +110,46 @@ func TestSSHStreamOppositePeerInstancesExchangeHelloAndState(t *testing.T) {
 	}
 }
 
+func TestSSHStreamReadNextAcceptsAckFrame(t *testing.T) {
+	auth := testAuth(t)
+	var buf bytes.Buffer
+	stream := NewSSHSyncStream(auth, "m4", "linux-b", bytes.NewReader(nil), &buf)
+	if err := stream.WriteAck(context.Background(), 7, "clip-ack", "applied", ""); err != nil {
+		t.Fatalf("WriteAck error = %v", err)
+	}
+
+	reader := NewSSHSyncStream(auth, "linux-b", "m4", &buf, io.Discard)
+	event, err := reader.ReadNext(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("ReadNext error = %v", err)
+	}
+	if event.Type != SSHStreamFrameAck || event.Ack.Seq != 7 || event.Ack.ID != "clip-ack" || event.Ack.Status != "applied" {
+		t.Fatalf("event = %#v, want ack for clip-ack", event)
+	}
+}
+
+func TestSSHStreamAckRejectsInvalidCorrelation(t *testing.T) {
+	auth := testAuth(t)
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "zero seq", raw: `{"type":"ack","seq":0,"id":"clip-ack","status":"applied"}`},
+		{name: "missing non-null id", raw: `{"type":"ack","seq":1,"status":"applied"}`},
+		{name: "no_state with id", raw: `{"type":"ack","seq":1,"id":"clip-ack","status":"no_state"}`},
+		{name: "unknown status", raw: `{"type":"ack","seq":1,"id":"clip-ack","status":"ok"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream := NewSSHSyncStream(auth, "linux-b", "m4", bytes.NewReader([]byte(tc.raw+"\n")), io.Discard)
+
+			_, err := stream.ReadNext(context.Background(), time.Now())
+			if !errors.Is(err, ErrSSHStreamUnexpectedFrame) {
+				t.Fatalf("ReadNext error = %v, want ErrSSHStreamUnexpectedFrame", err)
+			}
+		})
+	}
+}
+
 func TestSSHStreamStateRejectsOutOfOrderSequence(t *testing.T) {
 	auth := testAuth(t)
 	raw := []byte(`{"type":"state","seq":2,"sender":"m4","null_reason":"no_visible_current"}`)
