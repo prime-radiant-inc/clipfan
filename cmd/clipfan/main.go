@@ -89,6 +89,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 				return 1
 			}
 			return 0
+		case "ssh-run-probe":
+			if err := cli.RunSSHRunProbe(args[1:], stdout, stderr); err != nil {
+				fmt.Fprintln(stderr, "clipfan ssh-run-probe:", err)
+				return 1
+			}
+			return 0
 		case "help", "-h", "--help":
 			usage(stderr)
 			return 0

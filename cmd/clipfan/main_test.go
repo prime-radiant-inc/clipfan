@@ -141,3 +141,35 @@ func TestRunSSHInstallAuthorizedKeyDispatchesWithoutDaemonFallback(t *testing.T)
 		t.Fatalf("authorized_keys not written: %v", err)
 	}
 }
+
+func TestRunSSHRunProbeDispatchesWithoutDaemonFallbackAndStaysHiddenFromHelp(t *testing.T) {
+	var helpOut, helpErr bytes.Buffer
+	helpExit := run([]string{"help"}, &helpOut, &helpErr)
+	if helpExit != 0 {
+		t.Fatalf("help exit = %d, want 0", helpExit)
+	}
+	if bytes.Contains(helpErr.Bytes(), []byte("ssh-run-probe")) || bytes.Contains(helpOut.Bytes(), []byte("ssh-run-probe")) {
+		t.Fatalf("ssh-run-probe appeared in help: stdout=%q stderr=%q", helpOut.String(), helpErr.String())
+	}
+
+	var stdout, stderr bytes.Buffer
+	exitCode := run([]string{
+		"ssh-run-probe",
+		"--user", "jesse",
+		"--host", "example.com",
+		"--port", "22",
+		"--private-key", "/home/jesse/.config/clipfan/ssh/sync_ed25519",
+		"--known-hosts", "/home/jesse/.config/clipfan/ssh/known_hosts",
+		"--expect-peer", "bad peer",
+		"--expect-key-id", "key-123456",
+	}, &stdout, &stderr)
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", exitCode)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if !bytes.Contains(stderr.Bytes(), []byte("clipfan ssh-run-probe:")) {
+		t.Fatalf("stderr = %q, want ssh-run-probe dispatch error", stderr.String())
+	}
+}
