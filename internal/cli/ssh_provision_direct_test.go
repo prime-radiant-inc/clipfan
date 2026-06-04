@@ -201,7 +201,7 @@ func TestRunSSHApplyDirectConfigAppliesTargetHostOnly(t *testing.T) {
 	}
 	ops := newFakeDirectProvisionConfigOps()
 	var stdout bytes.Buffer
-	if err := runSSHApplyDirectConfig([]string{"--payload-base64", encoded}, &stdout, &bytes.Buffer{}, ops); err != nil {
+	if err := runSSHApplyDirectConfigWithStdin([]string{"--payload-stdin"}, strings.NewReader(encoded), &stdout, &bytes.Buffer{}, ops); err != nil {
 		t.Fatalf("runSSHApplyDirectConfig() error = %v", err)
 	}
 	configPath := payload.ConfigPath
@@ -221,7 +221,7 @@ func TestRunSSHApplyDirectConfigAppliesTargetHostOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runSSHApplyDirectConfig([]string{"--payload-base64", encoded}, &stdout, &bytes.Buffer{}, ops); err != nil {
+	if err := runSSHApplyDirectConfigWithStdin([]string{"--payload-stdin"}, strings.NewReader(encoded), &stdout, &bytes.Buffer{}, ops); err != nil {
 		t.Fatalf("ready runSSHApplyDirectConfig() error = %v", err)
 	}
 	if got := ops.calls[len(ops.calls)-2:]; !reflect.DeepEqual(got, []string{
@@ -229,6 +229,15 @@ func TestRunSSHApplyDirectConfigAppliesTargetHostOnly(t *testing.T) {
 		"transition:" + configPath + ":mac-a:ssh_material_staged->ssh_keys_ready",
 	}) {
 		t.Fatalf("ready calls:\n got %#v", got)
+	}
+}
+
+func TestRunSSHApplyDirectConfigRejectsPayloadBase64Argv(t *testing.T) {
+	t.Parallel()
+
+	err := runSSHApplyDirectConfigWithStdin([]string{"--payload-base64", "secret-bearing-payload"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, newFakeDirectProvisionConfigOps())
+	if err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
+		t.Fatalf("runSSHApplyDirectConfigWithStdin() error = %v, want undefined payload-base64 flag", err)
 	}
 }
 
@@ -343,7 +352,7 @@ func TestRunSSHApplyDirectConfigRejectsHostMismatchBeforeMutation(t *testing.T) 
 		t.Fatal(err)
 	}
 	ops := newFakeDirectProvisionConfigOps()
-	err = runSSHApplyDirectConfig([]string{"--payload-base64", encoded}, &bytes.Buffer{}, &bytes.Buffer{}, ops)
+	err = runSSHApplyDirectConfigWithStdin([]string{"--payload-stdin"}, strings.NewReader(encoded), &bytes.Buffer{}, &bytes.Buffer{}, ops)
 	if !errors.Is(err, config.ErrHostIDMismatch) {
 		t.Fatalf("runSSHApplyDirectConfig() error = %v, want ErrHostIDMismatch", err)
 	}
