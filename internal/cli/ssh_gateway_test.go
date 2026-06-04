@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,6 +55,43 @@ func TestRunSSHGatewayAllowsProbeCommand(t *testing.T) {
 	}
 	assertPathMissing(t, filepath.Join(configRoot, "clipfan"))
 	assertPathMissing(t, filepath.Join(stateRoot, "clipfan"))
+}
+
+func TestRunSSHGatewayAllowsInjectedPrivateSyncStreamCommand(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	var got SSHGatewayIdentity
+	err := runSSHGatewayWithHandlers(
+		[]string{"--authorized-peer", "linux-a", "--authorized-key-id", "key-123456"},
+		&stdout,
+		&stderr,
+		func(key string) string {
+			if key == "SSH_ORIGINAL_COMMAND" {
+				return sshprovision.SSHGatewaySyncStreamCommand
+			}
+			return ""
+		},
+		SSHGatewayHandlers{
+			SyncStream: func(identity SSHGatewayIdentity, stdout io.Writer) error {
+				got = identity
+				_, err := stdout.Write([]byte("stream-owned\n"))
+				return err
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("runSSHGatewayWithHandlers() error = %v", err)
+	}
+	if got.PeerID != "linux-a" || got.KeyID != "key-123456" {
+		t.Fatalf("identity = %#v", got)
+	}
+	if stdout.String() != "stream-owned\n" {
+		t.Fatalf("stdout = %q, want handler-owned stream output", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
 }
 
 func TestRunSSHGatewayRejectsShellAndUnknownCommands(t *testing.T) {

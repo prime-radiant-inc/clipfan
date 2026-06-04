@@ -79,6 +79,14 @@ type RegularSSHRunProbeSpec struct {
 }
 
 func PinnedSSHProbeCommand(spec PinnedSSHCommand) (SSHCommand, error) {
+	return pinnedSSHGatewayCommand(spec, SSHGatewayProbeCommand)
+}
+
+func PinnedSSHSyncStreamCommand(spec PinnedSSHCommand) (SSHCommand, error) {
+	return pinnedSSHGatewayCommand(spec, SSHGatewaySyncStreamCommand)
+}
+
+func pinnedSSHGatewayCommand(spec PinnedSSHCommand, remoteCommand string) (SSHCommand, error) {
 	normalized, err := normalizePinnedSSHCommand(spec)
 	if err != nil {
 		return SSHCommand{}, err
@@ -100,7 +108,7 @@ func PinnedSSHProbeCommand(spec PinnedSSHCommand) (SSHCommand, error) {
 		"-i", normalized.PrivateKeyPath,
 		"-p", strconv.Itoa(normalized.Port),
 		normalized.User + "@" + normalized.Host,
-		SSHGatewayProbeCommand,
+		remoteCommand,
 	}}, nil
 }
 
