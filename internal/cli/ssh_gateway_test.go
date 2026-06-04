@@ -74,7 +74,7 @@ func TestRunSSHGatewayRejectsShellAndUnknownCommands(t *testing.T) {
 		{name: "sftp", command: "sftp"},
 		{name: "version", command: "version"},
 		{name: "receive", command: "receive"},
-		{name: "sync stream", command: "sync-stream"},
+		{name: "sync stream gated off", command: sshprovision.SSHGatewaySyncStreamCommand},
 		{name: "peer metadata in command", command: sshprovision.SSHGatewayProbeCommand + " --authorized-peer linux-a"},
 		{name: "key metadata in command", command: sshprovision.SSHGatewayProbeCommand + " --authorized-key-id key-123456"},
 	} {
@@ -151,6 +151,9 @@ func TestSSHGatewayForcedCommandMatchesManagedAuthorizedKey(t *testing.T) {
 	}
 	if sshprovision.SSHGatewayProbeCommand != "probe-authorized-key" {
 		t.Fatalf("SSHGatewayProbeCommand = %q, want probe-authorized-key", sshprovision.SSHGatewayProbeCommand)
+	}
+	if sshprovision.SSHGatewaySyncStreamCommand != "sync-stream" {
+		t.Fatalf("SSHGatewaySyncStreamCommand = %q, want sync-stream", sshprovision.SSHGatewaySyncStreamCommand)
 	}
 }
 

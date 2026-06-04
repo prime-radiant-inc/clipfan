@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	authorizedKeyMarkerPrefix = "clipfan-sync:"
-	managedKeyType            = "ssh-ed25519"
-	SSHGatewayProbeCommand    = "probe-authorized-key"
+	authorizedKeyMarkerPrefix   = "clipfan-sync:"
+	managedKeyType              = "ssh-ed25519"
+	SSHGatewayProbeCommand      = "probe-authorized-key"
+	SSHGatewaySyncStreamCommand = "sync-stream"
 )
 
 var (

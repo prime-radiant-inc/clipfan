@@ -522,24 +522,21 @@ func (s *Server) postClip(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if s.recipient != "" && !RecipientMatches(env.Recipient, s.recipient) {
+	c, origin, err := OpenEnvelope(s.auth, env, s.recipient, signed.receivedAt)
+	if errors.Is(err, ErrWrongRecipient) {
 		http.Error(w, "wrong recipient", http.StatusForbidden)
 		return
 	}
-	if env.TS.After(signed.receivedAt.Add(signatureSkew)) {
+	if errors.Is(err, ErrFutureEnvelopeTimestamp) {
 		http.Error(w, "future envelope timestamp", http.StatusBadRequest)
 		return
 	}
-	raw, err := env.Bytes(s.auth)
 	if err != nil {
 		http.Error(w, "decrypt envelope body", http.StatusBadRequest)
 		return
 	}
-	c := clipboard.New(clipboard.Kind(env.Kind), raw, env.TS)
-	c.ID = env.ID
-	c.Concealed = env.Concealed
-	slog.Debug("clip received", "id", env.ID, "origin", env.Origin, "kind", env.Kind, "bytes", len(raw))
-	s.onRecv(c, env.Origin)
+	slog.Debug("clip received", "id", env.ID, "origin", origin, "kind", env.Kind, "bytes", len(c.Bytes))
+	s.onRecv(c, origin)
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -49,19 +49,9 @@ func (c *Client) PushAs(ctx context.Context, host string, port int, content clip
 	if c.peerHTTPRuntimeDisabled && !isLoopbackHost(host) {
 		return fmt.Errorf("%w: %s", ErrPeerHTTPRuntimeDisabled, net.JoinHostPort(host, strconv.Itoa(port)))
 	}
-	body, bodyNonce, err := c.auth.SealBody(content.Bytes)
+	env, err := BuildEnvelope(c.auth, content, origin, host)
 	if err != nil {
 		return err
-	}
-	env := Envelope{
-		ID:        content.ID,
-		Origin:    origin,
-		Recipient: host,
-		TS:        content.TS,
-		Kind:      string(content.Kind),
-		Body:      body,
-		Nonce:     bodyNonce,
-		Concealed: content.Concealed,
 	}
 	raw, err := json.Marshal(env)
 	if err != nil {
