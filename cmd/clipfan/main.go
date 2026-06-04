@@ -77,6 +77,18 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 				return 1
 			}
 			return 0
+		case "ssh-ensure-sync-key":
+			if err := cli.RunSSHEnsureSyncKey(args[1:], stdout, stderr); err != nil {
+				fmt.Fprintln(stderr, "clipfan ssh-ensure-sync-key:", err)
+				return 1
+			}
+			return 0
+		case "ssh-install-known-host":
+			if err := cli.RunSSHInstallKnownHost(args[1:], stdout, stderr); err != nil {
+				fmt.Fprintln(stderr, "clipfan ssh-install-known-host:", err)
+				return 1
+			}
+			return 0
 		case "help", "-h", "--help":
 			usage(stderr)
 			return 0
