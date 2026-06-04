@@ -71,6 +71,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 				return 1
 			}
 			return 0
+		case "ssh-install-authorized-key":
+			if err := cli.RunSSHInstallAuthorizedKey(args[1:], stdout, stderr); err != nil {
+				fmt.Fprintln(stderr, "clipfan ssh-install-authorized-key:", err)
+				return 1
+			}
+			return 0
 		case "help", "-h", "--help":
 			usage(stderr)
 			return 0

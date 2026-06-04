@@ -102,3 +102,42 @@ func TestRunSSHGatewayCommandDispatchesForcedCommandProbe(t *testing.T) {
 		t.Fatalf("payload = %#v", payload)
 	}
 }
+
+func TestRunSSHInstallAuthorizedKeyDispatchesWithoutDaemonFallback(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	var stdout, stderr bytes.Buffer
+	exitCode := run([]string{
+		"ssh-install-authorized-key",
+		"--peer", "linux-b",
+		"--key-id", "key-123456",
+		"--gateway-path", "/home/jesse/.local/bin/clipfan",
+		"--public-key", "AAAAC3NzaC1lZDI1NTE5AAAAIC6JxQKUfHw2JMc2+5ZUTc5xI8QX1sGm8c5C7h4eY7p1",
+	}, &stdout, &stderr)
+
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	var payload struct {
+		Status  string `json:"status"`
+		Changed bool   `json:"changed"`
+		PeerID  string `json:"peer_id"`
+		KeyID   string `json:"key_id"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if payload.Status != "ok" || !payload.Changed || payload.PeerID != "linux-b" || payload.KeyID != "key-123456" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".ssh", "authorized_keys")); err != nil {
+		t.Fatalf("authorized_keys not written: %v", err)
+	}
+}
