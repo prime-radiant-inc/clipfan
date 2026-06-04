@@ -19,17 +19,95 @@ func addPeerInstallButtonTitle(installing: Bool, installCount: Int, failure: Add
     return installCount <= 1 ? "Install" : "Install on \(installCount) hosts"
 }
 
+enum AddPeerHostPlatform: String, CaseIterable, Identifiable {
+    case linux = "Linux"
+    case macOS = "macOS"
+
+    var id: String { rawValue }
+
+    static func fromTailnetOS(_ value: String) -> AddPeerHostPlatform {
+        value.lowercased().contains("darwin") || value.lowercased().contains("mac") ? .macOS : .linux
+    }
+
+    func homeDirectory(for user: String) -> String {
+        switch self {
+        case .linux: return "/home/\(user)"
+        case .macOS: return "/Users/\(user)"
+        }
+    }
+}
+
+struct AddPeerRemoteHostDraft: Identifiable, Equatable {
+    let id = UUID()
+    var sshHost: String = ""
+    var hostID: String = ""
+    var user: String = NSUserName()
+    var port: Int = 22
+    var platform: AddPeerHostPlatform = .linux
+}
+
+func addPeerDerivedHostID(from host: String) -> String {
+    let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    let short = trimmed.split(separator: ".", maxSplits: 1).first.map(String.init) ?? trimmed
+    let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+    let scalars = short.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
+    let normalized = String(scalars).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    return normalized.isEmpty ? trimmed : normalized
+}
+
+func addPeerDirectMeshSpec(hostID: String,
+                           sshHost: String,
+                           user: String,
+                           port: Int,
+                           installPath: String,
+                           configPath: String,
+                           knownHostsPath: String,
+                           syncKeyPath: String) -> String {
+    [
+        "id=\(hostID)",
+        "ssh=\(sshHost)",
+        "user=\(user)",
+        "port=\(port)",
+        "install=\(installPath)",
+        "config=\(configPath)",
+        "known_hosts=\(knownHostsPath)",
+        "sync_key=\(syncKeyPath)"
+    ].joined(separator: ",")
+}
+
+func addPeerRemoteDirectMeshSpec(_ draft: AddPeerRemoteHostDraft) -> String? {
+    let sshHost = draft.sshHost.trimmingCharacters(in: .whitespacesAndNewlines)
+    let user = draft.user.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !sshHost.isEmpty, !user.isEmpty else { return nil }
+    let hostID = draft.hostID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ? addPeerDerivedHostID(from: sshHost)
+        : draft.hostID.trimmingCharacters(in: .whitespacesAndNewlines)
+    let home = draft.platform.homeDirectory(for: user)
+    return addPeerDirectMeshSpec(
+        hostID: hostID,
+        sshHost: sshHost,
+        user: user,
+        port: draft.port,
+        installPath: "\(home)/.local/bin/clipfan",
+        configPath: "\(home)/.config/clipfan/config.json",
+        knownHostsPath: "\(home)/.config/clipfan/ssh/known_hosts",
+        syncKeyPath: "\(home)/.config/clipfan/ssh/sync_ed25519"
+    )
+}
+
 struct AddPeerSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var daemon: DaemonClient
 
-    @State private var user: String = NSUserName()
-    @State private var host: String = ""
-    @State private var port: Int = 22
     @State private var sshKey: String = ""
     @State private var withTmux = false
-    @State private var directMeshHostSpecs: String = ""
+    @State private var remoteDrafts: [AddPeerRemoteHostDraft] = [AddPeerRemoteHostDraft()]
+    @State private var localSSHHost: String = ""
+    @State private var localSSHUser: String = NSUserName()
+    @State private var localSSHPort: Int = 22
     @State private var directMeshRegularKnownHosts: String = "~/.ssh/known_hosts"
-    @State private var trustDirectMeshKeyscan = false
+    @State private var showingAdvancedSSH = false
 
     @State private var tailnet: [TailscalePeer] = []
     @State private var tailnetSelected: Set<String> = []
@@ -41,16 +119,81 @@ struct AddPeerSheet: View {
     @State private var failure: AddPeerOperationFailure?
 
     private var installCount: Int {
-        let directSpecs = directMeshHostSpecLines.count
-        if directSpecs > 0 { return directSpecs }
-        return tailnetSelected.count + (host.isEmpty ? 0 : 1)
+        if SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled {
+            return directMeshHostSpecLines.count
+        }
+        return remoteHostDraftsForInstall.count
     }
 
     private var directMeshHostSpecLines: [String] {
-        directMeshHostSpecs
-            .split(whereSeparator: \.isNewline)
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        guard SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled,
+              !remoteHostDraftsForInstall.isEmpty,
+              let localSpec = localDirectMeshSpec else {
+            return []
+        }
+        let remoteSpecs = remoteHostDraftsForInstall.compactMap(addPeerRemoteDirectMeshSpec)
+        guard !remoteSpecs.isEmpty else { return [] }
+        return [localSpec] + remoteSpecs
+    }
+
+    private var remoteHostDraftsForInstall: [AddPeerRemoteHostDraft] {
+        var seenIDs = Set<String>()
+        return (remoteDrafts.filter { !$0.sshHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } +
+                selectedTailnetDrafts).filter { draft in
+            let key = draft.hostID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? addPeerDerivedHostID(from: draft.sshHost)
+                : draft.hostID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !seenIDs.contains(key) else { return false }
+            seenIDs.insert(key)
+            return true
+        }
+    }
+
+    private var selectedTailnetDrafts: [AddPeerRemoteHostDraft] {
+        tailnet.filter { tailnetSelected.contains($0.id) }.map { peer in
+            let host = peer.dnsName.isEmpty ? peer.hostName : peer.dnsName.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            return AddPeerRemoteHostDraft(sshHost: host,
+                                          hostID: addPeerDerivedHostID(from: peer.hostName),
+                                          user: NSUserName(),
+                                          port: 22,
+                                          platform: AddPeerHostPlatform.fromTailnetOS(peer.os))
+        }
+    }
+
+    private var localHostID: String {
+        let origin = daemon.origin.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !origin.isEmpty, origin != "—" { return origin }
+        return addPeerDerivedHostID(from: localSSHHost)
+    }
+
+    private var localDirectMeshSpec: String? {
+        let sshHost = localSSHHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        let user = localSSHUser.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hostID = localHostID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sshHost.isEmpty, !user.isEmpty, !hostID.isEmpty else { return nil }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let sshDir = home.appendingPathComponent(".config/clipfan/ssh").path
+        return addPeerDirectMeshSpec(
+            hostID: hostID,
+            sshHost: sshHost,
+            user: user,
+            port: localSSHPort,
+            installPath: Installer.localClipfanBinaryPath(),
+            configPath: Installer.localConfigURL().path,
+            knownHostsPath: "\(sshDir)/known_hosts",
+            syncKeyPath: "\(sshDir)/sync_ed25519"
+        )
+    }
+
+    private var installButtonTitle: String {
+        if installing || failure != nil {
+            return addPeerInstallButtonTitle(installing: installing, installCount: installCount, failure: failure)
+        }
+        if SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled {
+            let count = remoteHostDraftsForInstall.count
+            return count <= 1 ? "Add peer" : "Add \(count) peers"
+        }
+        return addPeerInstallButtonTitle(installing: installing, installCount: installCount, failure: failure)
     }
 
     var body: some View {
@@ -66,7 +209,7 @@ struct AddPeerSheet: View {
 
             manualSection
             if SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled {
-                privateDirectMeshSection
+                directMeshOptionsSection
             }
 
             Toggle(isOn: $withTmux) {
@@ -88,20 +231,22 @@ struct AddPeerSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                Button(addPeerInstallButtonTitle(installing: installing,
-                                                 installCount: installCount,
-                                                 failure: failure)) { install() }
+                Button(installButtonTitle) { install() }
                     .keyboardShortcut(.return)
                     .disabled(isAddPeerInstallDisabled(installCount: installCount,
                                                        installing: installing,
-                                                       privateDirectMeshRequested: !directMeshHostSpecLines.isEmpty,
-                                                       trustKeyscan: trustDirectMeshKeyscan))
+                                                       privateDirectMeshRequested: SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled,
+                                                       trustKeyscan: true))
             }
         }
         .padding(20)
-        .frame(width: 560)
-        .frame(minHeight: tailnetAvailable ? 620 : 500)
-        .task { await loadTailnet() }
+        .frame(width: 620)
+        .frame(minHeight: tailnetAvailable ? 660 : 520)
+        .task {
+            await daemon.refresh()
+            seedLocalSSHDefaults()
+            await loadTailnet()
+        }
     }
 
     // MARK: tailnet
@@ -139,28 +284,74 @@ struct AddPeerSheet: View {
     // MARK: manual
 
     private var manualSection: some View {
-        Form {
-            TextField("Host", text: $host, prompt: Text("host.local or 192.168.1.42"))
-            TextField("User", text: $user)
-            TextField("SSH port", value: $port, format: .number)
-            if !tailnetAvailable || !host.isEmpty {
-                TextField("SSH key (optional)", text: $sshKey, prompt: Text("~/.ssh/id_ed25519"))
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Remote hosts", systemImage: "server.rack")
+                .font(.headline)
+            ForEach($remoteDrafts) { $draft in
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        TextField("Host", text: $draft.sshHost, prompt: Text("linux-b.tailnet.ts.net"))
+                        TextField("Peer ID", text: $draft.hostID, prompt: Text(addPeerDerivedHostID(from: draft.sshHost)))
+                            .frame(width: 120)
+                    }
+                    HStack {
+                        TextField("User", text: $draft.user)
+                        TextField("SSH port", value: $draft.port, format: .number)
+                            .frame(width: 80)
+                        Picker("OS", selection: $draft.platform) {
+                            ForEach(AddPeerHostPlatform.allCases) { platform in
+                                Text(platform.rawValue).tag(platform)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(width: 150)
+                        if remoteDrafts.count > 1 {
+                            Button {
+                                removeRemoteDraft(draft.id)
+                            } label: {
+                                Label("Remove host", systemImage: "minus.circle")
+                                    .labelStyle(.iconOnly)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+                .padding(10)
+                .background(Color.secondary.opacity(0.05))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.12)))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            HStack {
+                Button {
+                    remoteDrafts.append(AddPeerRemoteHostDraft(user: NSUserName()))
+                } label: {
+                    Label("Add another host", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+                if !SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled,
+                   (!tailnetAvailable || remoteDrafts.contains(where: { !$0.sshHost.isEmpty })) {
+                    TextField("SSH key (optional)", text: $sshKey, prompt: Text("~/.ssh/id_ed25519"))
+                }
             }
         }
-        .formStyle(.grouped)
     }
 
-    private var privateDirectMeshSection: some View {
+    private var directMeshOptionsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Private SSH mesh", systemImage: "point.3.connected.trianglepath.dotted")
-                .font(.headline)
-            TextEditor(text: $directMeshHostSpecs)
-                .font(.system(.caption, design: .monospaced))
-                .frame(minHeight: 96)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25)))
             TextField("known_hosts", text: $directMeshRegularKnownHosts)
                 .textFieldStyle(.roundedBorder)
-            Toggle("Trust ssh-keyscan host keys", isOn: $trustDirectMeshKeyscan)
+            DisclosureGroup("This Mac over SSH", isExpanded: $showingAdvancedSSH) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        TextField("Host", text: $localSSHHost)
+                        TextField("User", text: $localSSHUser)
+                        TextField("Port", value: $localSSHPort, format: .number)
+                            .frame(width: 80)
+                    }
+                }
+                .padding(.top, 4)
+            }
         }
     }
 
@@ -212,6 +403,23 @@ struct AddPeerSheet: View {
         }
     }
 
+    private func seedLocalSSHDefaults() {
+        guard localSSHHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let origin = daemon.origin.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !origin.isEmpty, origin != "—" {
+            localSSHHost = origin
+            return
+        }
+        localSSHHost = ProcessInfo.processInfo.hostName
+    }
+
+    private func removeRemoteDraft(_ id: UUID) {
+        remoteDrafts.removeAll { $0.id == id }
+        if remoteDrafts.isEmpty {
+            remoteDrafts = [AddPeerRemoteHostDraft(user: NSUserName())]
+        }
+    }
+
     private func install() {
         installing = true
         progress = ""
@@ -220,7 +428,13 @@ struct AddPeerSheet: View {
         Task {
             var targets: [(user: String, host: String, port: Int, key: String)] = []
             let directSpecs = directMeshHostSpecLines
-            if !directSpecs.isEmpty {
+            if SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled {
+                guard !directSpecs.isEmpty else {
+                    await MainActor.run {
+                        installing = false
+                    }
+                    return
+                }
                 await MainActor.run {
                     progress = "Provisioning private SSH mesh…"
                     log = AddPeerOperationLog(host: "private-ssh-mesh")
@@ -229,7 +443,7 @@ struct AddPeerSheet: View {
                     try await Installer.provisionPrivateDirectMesh(
                         hostSpecs: directSpecs,
                         regularKnownHosts: directMeshRegularKnownHosts,
-                        trustKeyscan: trustDirectMeshKeyscan,
+                        trustKeyscan: true,
                         withTmux: withTmux,
                         onProgress: { @MainActor p in
                             let s = friendly(p, host: "private-ssh-mesh")
@@ -258,11 +472,8 @@ struct AddPeerSheet: View {
                 }
                 return
             }
-            for peer in tailnet where tailnetSelected.contains(peer.id) {
-                targets.append((NSUserName(), peer.hostName, 22, ""))
-            }
-            if !host.isEmpty {
-                targets.append((user, host, port, sshKey))
+            for draft in remoteHostDraftsForInstall {
+                targets.append((draft.user, draft.sshHost, draft.port, sshKey))
             }
 
             for t in targets {

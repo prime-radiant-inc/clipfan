@@ -118,6 +118,56 @@ final class SSHTransportGatePolicyTests: XCTestCase {
                                                trustKeyscan: true))
     }
 
+    func testPrivateDirectMeshInstallButtonAllowsOneRemotePlusLocalSpec() {
+        let privateEnabled = SSHTransportGatePolicy(
+            peerHTTPRuntimeDisabled: true,
+            configV2WriteEnabled: true,
+            remoteSecretWriteReleaseEnabled: false,
+            publicAddPeerSuccessEnabled: false,
+            receivePrimitiveEnabled: true,
+            syncStreamEnabled: true,
+            persistentCurrentEnabled: true,
+            syncKeyRotationEnabled: false
+        )
+
+        XCTAssertFalse(isAddPeerInstallDisabled(installCount: 2,
+                                                installing: false,
+                                                policy: privateEnabled,
+                                                privateDirectMeshRequested: true,
+                                                trustKeyscan: true))
+    }
+
+    func testAddPeerDerivedHostIDUsesShortSafeHostName() {
+        XCTAssertEqual(addPeerDerivedHostID(from: "linux-b.tailnet.example."), "linux-b")
+        XCTAssertEqual(addPeerDerivedHostID(from: "weird host.local"), "weird-host")
+    }
+
+    func testAddPeerRemoteDirectMeshSpecUsesPlatformDefaults() {
+        let linux = AddPeerRemoteHostDraft(
+            sshHost: "linux-b.tailnet",
+            hostID: "",
+            user: "jesse",
+            port: 2200,
+            platform: .linux
+        )
+        let mac = AddPeerRemoteHostDraft(
+            sshHost: "mac-b.tailnet",
+            hostID: "mac-b",
+            user: "jesse",
+            port: 22,
+            platform: .macOS
+        )
+
+        XCTAssertEqual(
+            addPeerRemoteDirectMeshSpec(linux),
+            "id=linux-b,ssh=linux-b.tailnet,user=jesse,port=2200,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/.config/clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519"
+        )
+        XCTAssertEqual(
+            addPeerRemoteDirectMeshSpec(mac),
+            "id=mac-b,ssh=mac-b.tailnet,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519"
+        )
+    }
+
     func testRegularSSHUpdateButtonRemainsEnabledWhenPublicAddPeerIsDisabled() {
         XCTAssertFalse(isPeerUpdateButtonDisabled(host: "fsck.com", updating: false, policy: .current))
         XCTAssertTrue(isPeerUpdateButtonDisabled(host: "", updating: false, policy: .current))
