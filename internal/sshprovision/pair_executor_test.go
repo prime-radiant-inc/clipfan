@@ -23,8 +23,8 @@ func TestDirectPairProvisionerRunsMaterialAndProbeBeforeConfigWrites(t *testing.
 	}
 
 	wantOps := []string{
-		"scan:mac-a",
-		"pin:linux-b:mac-a.tailnet ssh-ed25519 " + testEd25519Key,
+		"confirm:mac-a",
+		"pin:linux-b:mac-a:mac-a.tailnet ssh-ed25519 " + testEd25519Key,
 		"key:linux-b",
 		"auth:mac-a:linux-b:key-123456",
 		"probe-from:linux-b:jesse@mac-a.tailnet:22:/home/jesse/.config/clipfan/ssh/sync_ed25519:/home/jesse/.config/clipfan/ssh/known_hosts",
@@ -95,14 +95,14 @@ func TestDirectPairProvisionerStopsBeforeMutationOnHostKeyMismatch(t *testing.T)
 	t.Parallel()
 
 	fake := newFakeDirectPairDriver()
-	fake.hostKeyScanLine = "other.example ssh-ed25519 " + testEd25519Key
+	fake.confirmedHostKeyLine = "other.example ssh-ed25519 " + testEd25519Key
 	provisioner := DirectPairProvisioner{Driver: fake, configV2WriteGate: func() bool { return true }}
 
 	result, err := provisioner.Provision(context.Background(), validDirectPairProvisionInput())
 	if !errors.Is(err, ErrKnownHostMismatch) {
 		t.Fatalf("Provision() error = %v, want ErrKnownHostMismatch", err)
 	}
-	if wantOps := []string{"scan:mac-a"}; !reflect.DeepEqual(fake.ops, wantOps) {
+	if wantOps := []string{"confirm:mac-a"}; !reflect.DeepEqual(fake.ops, wantOps) {
 		t.Fatalf("ops:\n got %#v\nwant %#v", fake.ops, wantOps)
 	}
 	if len(result.CompletedSteps) != 0 {
@@ -134,16 +134,16 @@ func validDirectPairProvisionInput() DirectPairProvisionInput {
 }
 
 type fakeDirectPairDriver struct {
-	hostKeyScanLine     string
-	key                 SyncKeyMaterial
-	configWritesEnabled bool
-	configMutation      DirectPairConfigMutation
-	ops                 []string
+	confirmedHostKeyLine string
+	key                  SyncKeyMaterial
+	configWritesEnabled  bool
+	configMutation       DirectPairConfigMutation
+	ops                  []string
 }
 
 func newFakeDirectPairDriver() *fakeDirectPairDriver {
 	return &fakeDirectPairDriver{
-		hostKeyScanLine: "mac-a.tailnet ssh-ed25519 " + testEd25519Key,
+		confirmedHostKeyLine: "mac-a.tailnet ssh-ed25519 " + testEd25519Key,
 		key: SyncKeyMaterial{
 			PrivateKeyPath: "/home/jesse/.config/clipfan/ssh/sync_ed25519",
 			PublicKey:      testEd25519Key,
@@ -152,13 +152,13 @@ func newFakeDirectPairDriver() *fakeDirectPairDriver {
 	}
 }
 
-func (f *fakeDirectPairDriver) ScanHostKey(_ context.Context, host DirectPairHost) (string, error) {
-	f.ops = append(f.ops, "scan:"+host.ID)
-	return f.hostKeyScanLine, nil
+func (f *fakeDirectPairDriver) ConfirmHostKey(_ context.Context, host DirectPairHost) (string, error) {
+	f.ops = append(f.ops, "confirm:"+host.ID)
+	return f.confirmedHostKeyLine, nil
 }
 
-func (f *fakeDirectPairDriver) UpsertKnownHostPin(_ context.Context, host DirectPairHost, _ string, pin KnownHostPin) error {
-	f.ops = append(f.ops, "pin:"+host.ID+":"+pin.Line())
+func (f *fakeDirectPairDriver) UpsertKnownHostPin(_ context.Context, host DirectPairHost, target DirectPairHost, _ string, pin KnownHostPin) error {
+	f.ops = append(f.ops, "pin:"+host.ID+":"+target.ID+":"+pin.Line())
 	return nil
 }
 

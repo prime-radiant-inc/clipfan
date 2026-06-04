@@ -43,8 +43,8 @@ type DirectPairProvisionResult struct {
 }
 
 type DirectPairProvisionDriver interface {
-	ScanHostKey(context.Context, DirectPairHost) (string, error)
-	UpsertKnownHostPin(context.Context, DirectPairHost, string, KnownHostPin) error
+	ConfirmHostKey(context.Context, DirectPairHost) (string, error)
+	UpsertKnownHostPin(context.Context, DirectPairHost, DirectPairHost, string, KnownHostPin) error
 	EnsureSyncKey(context.Context, DirectPairHost) (SyncKeyMaterial, error)
 	InstallAuthorizedKey(context.Context, DirectPairHost, ManagedAuthorizedKey) error
 	RunProbe(context.Context, SSHCommand, DirectPairHost) error
@@ -93,18 +93,18 @@ func (provisioner DirectPairProvisioner) Provision(ctx context.Context, input Di
 		return result, config.ErrConfigV2WritesDisabled
 	}
 
-	scanLine, err := provisioner.Driver.ScanHostKey(ctx, acceptor.Host)
+	confirmedHostKeyLine, err := provisioner.Driver.ConfirmHostKey(ctx, acceptor.Host)
 	if err != nil {
 		return result, err
 	}
-	pin, err := ParseKnownHostScanLine(acceptor.Host.SSHHost, acceptor.Host.SSHPort, scanLine)
+	pin, err := ParseKnownHostScanLine(acceptor.Host.SSHHost, acceptor.Host.SSHPort, confirmedHostKeyLine)
 	if err != nil {
 		return result, err
 	}
 	result.KnownHostPin = pin
 	result.CompletedSteps = append(result.CompletedSteps, StepConfirmHostKey)
 
-	if err := provisioner.Driver.UpsertKnownHostPin(ctx, connector.Host, connector.KnownHostsPath, pin); err != nil {
+	if err := provisioner.Driver.UpsertKnownHostPin(ctx, connector.Host, acceptor.Host, connector.KnownHostsPath, pin); err != nil {
 		return result, err
 	}
 	result.CompletedSteps = append(result.CompletedSteps, StepUpsertKnownHostPin)
