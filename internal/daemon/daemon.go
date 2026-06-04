@@ -38,6 +38,14 @@ type pusher interface {
 	PushAs(ctx context.Context, host string, port int, content clipboard.Content, origin string) error
 }
 
+// SSHSyncRuntime owns persistent SSH sync sessions for transport:"ssh".
+// The daemon publishes only already-accepted current-state events through this
+// interface so polling, receive, history, echo, and tmux rules stay centralized.
+type SSHSyncRuntime interface {
+	Start(ctx context.Context)
+	Publish(ctx context.Context, content clipboard.Content, origin string, skipOrigin string)
+}
+
 type Daemon struct {
 	cfg              *config.Config
 	cb               clipboard.Backend
@@ -53,6 +61,7 @@ type Daemon struct {
 	stateDir         string
 	configPath       string
 	peerHTTPDisabled bool
+	sshSync          SSHSyncRuntime
 
 	mu      sync.Mutex
 	seen    *seenSet
@@ -81,6 +90,7 @@ type Options struct {
 	StoragePreflight        StoragePreflightPolicy
 	ListenerBoundaryEnabled *bool
 	PeerHTTPRuntimeDisabled *bool
+	SSHSyncRuntime          SSHSyncRuntime
 }
 
 func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
@@ -137,6 +147,7 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 		stateDir:         stateDir,
 		configPath:       config.Path(),
 		peerHTTPDisabled: peerHTTPDisabled,
+		sshSync:          opts.SSHSyncRuntime,
 		peerStatus:       map[string]*PeerState{},
 		seen:             newSeenSet(),
 	}
@@ -331,6 +342,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return err
 		}
 	}
+	if d.sshSync != nil {
+		d.sshSync.Start(ctx)
+	}
 
 	if c, err := d.cb.Read(); err == nil && len(c.Bytes) > 0 {
 		d.mu.Lock()
@@ -430,6 +444,7 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 		return
 	}
 	d.fanout(ctx, c, "" /* skipOrigin = none */)
+	d.publishSSH(ctx, c, d.origin, "" /* skipOrigin = none */)
 }
 
 // isEcho reports whether a freshly read clipboard content `c` is just our own
@@ -565,6 +580,7 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 	// through the Mac hub. Relay-loop prevention uses clip-ID dedup (seen set)
 	// and our-own-write echo suppression (d.current / isEcho).
 	go d.fanout(context.Background(), c, origin)
+	go d.publishSSH(context.Background(), c, origin, origin)
 }
 
 // fanout pushes content to every discovered peer except `skipOrigin`. When
@@ -601,6 +617,13 @@ func (d *Daemon) fanout(ctx context.Context, c clipboard.Content, skipOrigin str
 			}
 		}()
 	}
+}
+
+func (d *Daemon) publishSSH(ctx context.Context, c clipboard.Content, origin string, skipOrigin string) {
+	if d.listenerPlan.SafeMode || d.sshSync == nil {
+		return
+	}
+	d.sshSync.Publish(ctx, c, origin, skipOrigin)
 }
 
 func (d *Daemon) recordPush(p discovery.Peer, err error) {
@@ -685,6 +708,7 @@ func (d *Daemon) Restore(id string) error {
 	}
 
 	d.fanout(context.Background(), c, "")
+	d.publishSSH(context.Background(), c, d.origin, "")
 	return nil
 }
 
