@@ -140,6 +140,7 @@ final class SSHTransportGatePolicyTests: XCTestCase {
     func testAddPeerDerivedHostIDUsesShortSafeHostName() {
         XCTAssertEqual(addPeerDerivedHostID(from: "linux-b.tailnet.example."), "linux-b")
         XCTAssertEqual(addPeerDerivedHostID(from: "weird host.local"), "weird-host")
+        XCTAssertEqual(addPeerDerivedHostID(from: "192.168.1.42"), "192-168-1-42")
     }
 
     func testAddPeerRemoteDirectMeshSpecUsesPlatformDefaults() {

@@ -49,11 +49,24 @@ struct AddPeerRemoteHostDraft: Identifiable, Equatable {
 func addPeerDerivedHostID(from host: String) -> String {
     let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
         .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    if addPeerLooksLikeIPv4Address(trimmed) {
+        return trimmed.replacingOccurrences(of: ".", with: "-")
+    }
     let short = trimmed.split(separator: ".", maxSplits: 1).first.map(String.init) ?? trimmed
     let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
     let scalars = short.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
     let normalized = String(scalars).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
     return normalized.isEmpty ? trimmed : normalized
+}
+
+func addPeerLooksLikeIPv4Address(_ host: String) -> Bool {
+    let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+    guard parts.count == 4 else { return false }
+    return parts.allSatisfy { part in
+        guard !part.isEmpty, part.allSatisfy(\.isNumber),
+              let value = Int(part) else { return false }
+        return (0...255).contains(value)
+    }
 }
 
 func addPeerDirectMeshSpec(hostID: String,
@@ -107,6 +120,7 @@ struct AddPeerSheet: View {
     @State private var localSSHUser: String = NSUserName()
     @State private var localSSHPort: Int = 22
     @State private var directMeshRegularKnownHosts: String = "~/.ssh/known_hosts"
+    @State private var trustDirectMeshKeyscan = false
     @State private var showingAdvancedSSH = false
 
     @State private var tailnet: [TailscalePeer] = []
@@ -236,7 +250,7 @@ struct AddPeerSheet: View {
                     .disabled(isAddPeerInstallDisabled(installCount: installCount,
                                                        installing: installing,
                                                        privateDirectMeshRequested: SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled,
-                                                       trustKeyscan: true))
+                                                       trustKeyscan: trustDirectMeshKeyscan))
             }
         }
         .padding(20)
@@ -341,6 +355,7 @@ struct AddPeerSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             TextField("known_hosts", text: $directMeshRegularKnownHosts)
                 .textFieldStyle(.roundedBorder)
+            Toggle("Confirm SSH host keys are trusted", isOn: $trustDirectMeshKeyscan)
             DisclosureGroup("This Mac over SSH", isExpanded: $showingAdvancedSSH) {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -443,7 +458,7 @@ struct AddPeerSheet: View {
                     try await Installer.provisionPrivateDirectMesh(
                         hostSpecs: directSpecs,
                         regularKnownHosts: directMeshRegularKnownHosts,
-                        trustKeyscan: true,
+                        trustKeyscan: trustDirectMeshKeyscan,
                         withTmux: withTmux,
                         onProgress: { @MainActor p in
                             let s = friendly(p, host: "private-ssh-mesh")
