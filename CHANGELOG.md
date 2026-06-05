@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.11] - 2026-06-04
+
+### Fixed
+
+- Direct SSH mesh provisioning now migrates existing static configs into revisioned config v2, persists missing host IDs, and clears stale legacy peer rows when switching to SSH transport.
+
 ## [0.3.10] - 2026-06-04
 
 ### Added
