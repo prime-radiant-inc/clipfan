@@ -75,6 +75,12 @@ func addPeerPreferredTailnetSSHHost(_ peer: TailscalePeer) -> String {
     if !dnsName.isEmpty {
         return dnsName
     }
+    if AddPeerHostPlatform.fromTailnetOS(peer.os) == .macOS {
+        let localName = addPeerLocalSSHHostCandidate(peer.hostName)
+        if !localName.isEmpty {
+            return localName
+        }
+    }
     let ip = peer.ip.trimmingCharacters(in: .whitespacesAndNewlines)
     if !ip.isEmpty {
         return ip
@@ -91,8 +97,26 @@ func addPeerPreferredLocalTailnetSSHHost(_ peer: TailscalePeer) -> String {
     return peer.ip.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
-func addPeerDefaultLocalSSHHost(tailnetSSHHost: String) -> String {
-    tailnetSSHHost.trimmingCharacters(in: .whitespacesAndNewlines)
+func addPeerDefaultLocalSSHHost(systemHostName: String = ProcessInfo.processInfo.hostName,
+                                tailnetSSHHost: String) -> String {
+    let localName = addPeerLocalSSHHostCandidate(systemHostName)
+    if !localName.isEmpty {
+        return localName
+    }
+    return tailnetSSHHost.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+func addPeerLocalSSHHostCandidate(_ hostName: String) -> String {
+    let localName = hostName
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    if localName.isEmpty || localName.lowercased() == "localhost" {
+        return ""
+    }
+    if localName.contains(".") {
+        return localName
+    }
+    return "\(localName).local"
 }
 
 func addPeerDirectMeshSpec(hostID: String,

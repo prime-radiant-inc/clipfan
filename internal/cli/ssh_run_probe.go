@@ -56,6 +56,9 @@ func runSSHRunProbe(ctx context.Context, args []string, stdout io.Writer, stderr
 	}
 	output, err := runner.Run(ctx, command)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("ssh_probe_timeout: %w", ctxErr)
+		}
 		return err
 	}
 	if output.StdoutTruncated || output.StderrTruncated {

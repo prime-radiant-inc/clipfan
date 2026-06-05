@@ -112,6 +112,8 @@ func pinnedSSHGatewayCommand(spec PinnedSSHCommand, remoteCommand string) (SSHCo
 		"-F", "/dev/null",
 		"-o", "BatchMode=yes",
 		"-o", "IdentitiesOnly=yes",
+		"-o", "ConnectTimeout=5",
+		"-o", "ConnectionAttempts=1",
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=" + normalized.KnownHostsPath,
 		"-o", "GlobalKnownHostsFile=/dev/null",

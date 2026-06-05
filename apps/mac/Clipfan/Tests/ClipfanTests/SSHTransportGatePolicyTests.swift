@@ -169,7 +169,7 @@ final class SSHTransportGatePolicyTests: XCTestCase {
         )
     }
 
-    func testAddPeerPreferredTailnetSSHHostUsesDNSThenIPThenHostName() {
+    func testAddPeerPreferredTailnetSSHHostUsesDNSThenMacLocalNameThenIP() {
         XCTAssertEqual(addPeerPreferredTailnetSSHHost(TailscalePeer(
             hostName: "m4",
             dnsName: "m4.tailnet.example.",
@@ -185,7 +185,23 @@ final class SSHTransportGatePolicyTests: XCTestCase {
             os: "darwin",
             online: true,
             user: "uid-1"
+        )), "m4.local")
+        XCTAssertEqual(addPeerPreferredTailnetSSHHost(TailscalePeer(
+            hostName: "linux-b",
+            dnsName: "",
+            ip: "100.64.0.1",
+            os: "linux",
+            online: true,
+            user: "uid-1"
         )), "100.64.0.1")
+        XCTAssertEqual(addPeerPreferredTailnetSSHHost(TailscalePeer(
+            hostName: "",
+            dnsName: "",
+            ip: "100.64.0.2",
+            os: "darwin",
+            online: true,
+            user: "uid-1"
+        )), "100.64.0.2")
         XCTAssertEqual(addPeerPreferredTailnetSSHHost(TailscalePeer(
             hostName: "m4",
             dnsName: "",
@@ -193,7 +209,7 @@ final class SSHTransportGatePolicyTests: XCTestCase {
             os: "darwin",
             online: true,
             user: "uid-1"
-        )), "m4")
+        )), "m4.local")
     }
 
     func testAddPeerPreferredLocalTailnetSSHHostRequiresRoutableTailnetAddress() {
@@ -223,13 +239,28 @@ final class SSHTransportGatePolicyTests: XCTestCase {
         )), "")
     }
 
-    func testAddPeerDefaultLocalSSHHostDoesNotFallbackToShortLocalNames() {
+    func testAddPeerDefaultLocalSSHHostPrefersLocalNameWhenAvailable() {
         XCTAssertEqual(
-            addPeerDefaultLocalSSHHost(tailnetSSHHost: " jesse-paradise-park.trout-rigel.ts.net "),
+            addPeerDefaultLocalSSHHost(systemHostName: "m4",
+                                       tailnetSSHHost: " jesse-paradise-park.trout-rigel.ts.net "),
+            "m4.local"
+        )
+        XCTAssertEqual(
+            addPeerDefaultLocalSSHHost(systemHostName: "m4.local.",
+                                       tailnetSSHHost: " jesse-paradise-park.trout-rigel.ts.net "),
+            "m4.local"
+        )
+    }
+
+    func testAddPeerDefaultLocalSSHHostFallsBackToTailnetWhenLocalNameIsMissing() {
+        XCTAssertEqual(
+            addPeerDefaultLocalSSHHost(systemHostName: " localhost ",
+                                       tailnetSSHHost: " jesse-paradise-park.trout-rigel.ts.net "),
             "jesse-paradise-park.trout-rigel.ts.net"
         )
         XCTAssertEqual(
-            addPeerDefaultLocalSSHHost(tailnetSSHHost: ""),
+            addPeerDefaultLocalSSHHost(systemHostName: "",
+                                       tailnetSSHHost: ""),
             ""
         )
     }

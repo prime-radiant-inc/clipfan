@@ -41,6 +41,8 @@ func TestRunSSHRunProbeBuildsAndRunsPinnedProbe(t *testing.T) {
 		"-F", "/dev/null",
 		"-o", "BatchMode=yes",
 		"-o", "IdentitiesOnly=yes",
+		"-o", "ConnectTimeout=5",
+		"-o", "ConnectionAttempts=1",
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=/home/jesse/.config/clipfan/ssh/known_hosts",
 		"-o", "GlobalKnownHostsFile=/dev/null",
@@ -120,6 +122,25 @@ func TestRunSSHRunProbeReturnsRunnerFailure(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), privateKey) || strings.Contains(err.Error(), knownHosts) {
 		t.Fatalf("runner failure leaked sensitive paths: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestRunSSHRunProbeReturnsExplicitContextTimeout(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	cancel()
+	runner := &fakeProbeRunner{err: context.DeadlineExceeded}
+	var stdout, stderr bytes.Buffer
+	err := runSSHRunProbe(ctx, validRunProbeArgs(), &stdout, &stderr, runner)
+	if err == nil {
+		t.Fatal("runSSHRunProbe() error = nil, want error")
+	}
+	if got := err.Error(); got != "ssh_probe_timeout: context deadline exceeded" {
+		t.Fatalf("runSSHRunProbe() error = %q, want explicit timeout", got)
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q, want empty", stdout.String())
