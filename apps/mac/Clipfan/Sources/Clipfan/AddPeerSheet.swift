@@ -109,6 +109,19 @@ func addPeerRemoteDirectMeshSpec(_ draft: AddPeerRemoteHostDraft) -> String? {
     )
 }
 
+func addPeerPrivateDirectMeshRemoteDraftsForInstall(manualDrafts: [AddPeerRemoteHostDraft],
+                                                    selectedTailnetDrafts: [AddPeerRemoteHostDraft]) -> [AddPeerRemoteHostDraft] {
+    if let selected = selectedTailnetDrafts.first {
+        return [selected]
+    }
+    guard let manual = manualDrafts.first(where: {
+        !$0.sshHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }) else {
+        return []
+    }
+    return [manual]
+}
+
 struct AddPeerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var daemon: DaemonClient
@@ -151,6 +164,10 @@ struct AddPeerSheet: View {
     }
 
     private var remoteHostDraftsForInstall: [AddPeerRemoteHostDraft] {
+        if SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled {
+            return addPeerPrivateDirectMeshRemoteDraftsForInstall(manualDrafts: remoteDrafts,
+                                                                 selectedTailnetDrafts: selectedTailnetDrafts)
+        }
         var seenIDs = Set<String>()
         return (remoteDrafts.filter { !$0.sshHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } +
                 selectedTailnetDrafts).filter { draft in
@@ -204,8 +221,7 @@ struct AddPeerSheet: View {
             return addPeerInstallButtonTitle(installing: installing, installCount: installCount, failure: failure)
         }
         if SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled {
-            let count = remoteHostDraftsForInstall.count
-            return count <= 1 ? "Add peer" : "Add \(count) peers"
+            return "Add peer"
         }
         return addPeerInstallButtonTitle(installing: installing, installCount: installCount, failure: failure)
     }
@@ -213,7 +229,7 @@ struct AddPeerSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Add a peer").font(.title3).bold()
-            Text("Install clipfan on another host over SSH")
+            Text("Connect another host to this Mac over SSH")
                 .font(.callout).foregroundStyle(.secondary)
 
             if tailnetAvailable {
@@ -292,14 +308,18 @@ struct AddPeerSheet: View {
     }
 
     private func toggle(_ id: String) {
-        if tailnetSelected.contains(id) { tailnetSelected.remove(id) } else { tailnetSelected.insert(id) }
+        if tailnetSelected.contains(id) {
+            tailnetSelected.remove(id)
+        } else {
+            tailnetSelected = [id]
+        }
     }
 
     // MARK: manual
 
     private var manualSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Remote hosts", systemImage: "server.rack")
+            Label("Remote host", systemImage: "server.rack")
                 .font(.headline)
             ForEach($remoteDrafts) { $draft in
                 VStack(alignment: .leading, spacing: 8) {
@@ -337,12 +357,6 @@ struct AddPeerSheet: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }
             HStack {
-                Button {
-                    remoteDrafts.append(AddPeerRemoteHostDraft(user: NSUserName()))
-                } label: {
-                    Label("Add another host", systemImage: "plus")
-                }
-                .buttonStyle(.borderless)
                 if !SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled,
                    (!tailnetAvailable || remoteDrafts.contains(where: { !$0.sshHost.isEmpty })) {
                     TextField("SSH key (optional)", text: $sshKey, prompt: Text("~/.ssh/id_ed25519"))
@@ -353,10 +367,10 @@ struct AddPeerSheet: View {
 
     private var directMeshOptionsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField("known_hosts", text: $directMeshRegularKnownHosts)
+            TextField("Known hosts file", text: $directMeshRegularKnownHosts)
                 .textFieldStyle(.roundedBorder)
-            Toggle("Confirm SSH host keys are trusted", isOn: $trustDirectMeshKeyscan)
-            DisclosureGroup("This Mac over SSH", isExpanded: $showingAdvancedSSH) {
+            Toggle("Trust SSH host key from ssh-keyscan", isOn: $trustDirectMeshKeyscan)
+            DisclosureGroup("Local host identity", isExpanded: $showingAdvancedSSH) {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         TextField("Host", text: $localSSHHost)
@@ -535,6 +549,7 @@ struct AddPeerSheet: View {
     private func friendly(_ p: InstallProgress, host: String) -> String {
         let phrase: String
         switch p.step {
+        case "Keyscan": phrase = "Trusting host key"
         case "Probe":   phrase = "Connecting"
         case "Config":  phrase = "Preparing keys"
         case "Upload":  phrase = "Copying clipfan"

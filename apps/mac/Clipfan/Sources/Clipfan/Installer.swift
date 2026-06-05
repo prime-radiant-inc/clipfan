@@ -527,6 +527,14 @@ actor Installer {
         let hosts = try specs.map { try privateDirectMeshHost(from: $0) }
         let localHostID = await readLocalHostID() ?? ""
 
+        for host in hosts {
+            await MainActor.run { onProgress(.init(step: "Keyscan", detail: "trusting SSH host key for \(host.sshHost)")) }
+            try await trustPrivateDirectMeshBootstrapHostKey(sshHost: host.sshHost,
+                                                             port: host.port,
+                                                             regularKnownHosts: knownHosts,
+                                                             runCommand: runCommand)
+        }
+
         if bootstrapInstall {
             for host in hosts where host.id != localHostID {
                 if let bootstrapRemoteHost {
@@ -612,6 +620,173 @@ actor Installer {
                                                             onProgress(.init(step: "Install",
                                                                              detail: "installing clipfan on \(target)"))
                                                         })
+    }
+
+    static func trustPrivateDirectMeshBootstrapHostKey(sshHost: String,
+                                                       port: Int,
+                                                       regularKnownHosts: String,
+                                                       runCommand: CommandRunner = run) async throws {
+        try validatePrivateDirectMeshSSHHost(sshHost)
+        guard port > 0, port <= 65535 else {
+            throw InstallError.configIO("invalid_private_direct_mesh_port")
+        }
+        try validatePrivateDirectMeshExecutablePath(regularKnownHosts, code: "invalid_regular_known_hosts_path")
+
+        let output = try await runCommand("/usr/bin/ssh-keyscan", ["-T", "5", "-p", "\(port)", sshHost])
+        let knownHostLines = matchingKnownHostLines(fromKeyscanOutput: output,
+                                                    sshHost: sshHost,
+                                                    port: port)
+        guard !knownHostLines.isEmpty else {
+            throw InstallError.configIO("ssh_keyscan_no_host_key")
+        }
+
+        let fileManager = FileManager.default
+        let knownHostsURL = URL(fileURLWithPath: regularKnownHosts)
+        let parentURL = knownHostsURL.deletingLastPathComponent()
+        var isDirectory = ObjCBool(false)
+        if fileManager.fileExists(atPath: parentURL.path, isDirectory: &isDirectory) {
+            guard isDirectory.boolValue else {
+                throw InstallError.configIO("regular_known_hosts_parent_not_directory")
+            }
+        } else {
+            try fileManager.createDirectory(at: parentURL, withIntermediateDirectories: true)
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parentURL.path)
+        }
+
+        let existing: String
+        if fileManager.fileExists(atPath: knownHostsURL.path) {
+            existing = try String(contentsOf: knownHostsURL, encoding: .utf8)
+        } else {
+            existing = ""
+        }
+        let existingEntries = try await existingKnownHostLookupEntries(sshHost: sshHost,
+                                                                       port: port,
+                                                                       regularKnownHosts: regularKnownHosts,
+                                                                       fileExists: !existing.isEmpty,
+                                                                       runCommand: runCommand)
+        var linesToAppend: [String] = []
+        var scannedPinsByKeyType: [String: String] = [:]
+        for knownHostLine in knownHostLines {
+            guard let newEntry = knownHostEntry(from: knownHostLine) else {
+                continue
+            }
+            if let scannedKey = scannedPinsByKeyType[newEntry.keyType] {
+                guard scannedKey == newEntry.key else {
+                    throw InstallError.configIO("ssh_known_hosts_conflict")
+                }
+                continue
+            }
+            scannedPinsByKeyType[newEntry.keyType] = newEntry.key
+            var alreadyPinned = false
+            for existingEntry in existingEntries {
+                guard existingEntry.keyType == newEntry.keyType else {
+                    continue
+                }
+                guard existingEntry.marker == nil else {
+                    throw InstallError.configIO("ssh_known_hosts_conflict")
+                }
+                if existingEntry.key == newEntry.key {
+                    alreadyPinned = true
+                    break
+                }
+                throw InstallError.configIO("ssh_known_hosts_conflict")
+            }
+            if !alreadyPinned {
+                linesToAppend.append(knownHostLine)
+            }
+        }
+        if linesToAppend.isEmpty {
+            return
+        }
+
+        var body = existing
+        if !body.isEmpty, !body.hasSuffix("\n") {
+            body += "\n"
+        }
+        body += linesToAppend.joined(separator: "\n") + "\n"
+        try body.write(to: knownHostsURL, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: knownHostsURL.path)
+    }
+
+    private static func existingKnownHostLookupEntries(sshHost: String,
+                                                       port: Int,
+                                                       regularKnownHosts: String,
+                                                       fileExists: Bool,
+                                                       runCommand: CommandRunner) async throws -> [KnownHostEntry] {
+        guard fileExists else {
+            return []
+        }
+        do {
+            let output = try await runCommand("/usr/bin/ssh-keygen", [
+                "-F", knownHostLookupToken(sshHost: sshHost, port: port),
+                "-f", regularKnownHosts
+            ])
+            return output.components(separatedBy: .newlines).compactMap(knownHostEntry)
+        } catch let failure as InstallCommandFailure where failure.exitStatus == 1 {
+            return []
+        }
+    }
+
+    private static func matchingKnownHostLines(fromKeyscanOutput output: String,
+                                               sshHost: String,
+                                               port: Int) -> [String] {
+        var lines: [String] = []
+        for rawLine in output.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let entry = knownHostEntry(from: line),
+                  knownHostTokensMatch(entry.hostTokens, sshHost: sshHost, port: port) else {
+                continue
+            }
+            lines.append(line)
+        }
+        return lines
+    }
+
+    private struct KnownHostEntry {
+        let marker: String?
+        let hostTokens: [String]
+        let keyType: String
+        let key: String
+    }
+
+    private static func knownHostEntry(from line: String) -> KnownHostEntry? {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed.hasPrefix("#") {
+            return nil
+        }
+        let fields = trimmed.split { $0 == " " || $0 == "\t" }
+        let marker: String?
+        let hostIndex: Int
+        if fields.first?.hasPrefix("@") == true {
+            marker = String(fields[0])
+            hostIndex = 1
+        } else {
+            marker = nil
+            hostIndex = 0
+        }
+        guard fields.count >= hostIndex + 3 else {
+            return nil
+        }
+        return KnownHostEntry(marker: marker,
+                              hostTokens: fields[hostIndex].split(separator: ",").map(String.init),
+                              keyType: String(fields[hostIndex + 1]),
+                              key: String(fields[hostIndex + 2]))
+    }
+
+    private static func knownHostLookupToken(sshHost: String, port: Int) -> String {
+        port == 22 ? sshHost : "[\(sshHost)]:\(port)"
+    }
+
+    private static func knownHostTokensMatch(_ hostTokens: [String],
+                                             sshHost: String,
+                                             port: Int) -> Bool {
+        let expectedHostToken = knownHostLookupToken(sshHost: sshHost, port: port)
+        let normalized = hostTokens.map { $0.lowercased() }
+        if port == 22 {
+            return normalized.contains(expectedHostToken.lowercased())
+                || normalized.contains(sshHost.lowercased())
+        }
+        return normalized.contains(expectedHostToken.lowercased())
     }
 
     private static func sshInvocation(user: String, host: String, port: Int, sshKey: String)

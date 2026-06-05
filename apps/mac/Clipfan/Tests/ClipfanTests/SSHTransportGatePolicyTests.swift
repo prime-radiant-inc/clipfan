@@ -169,6 +169,41 @@ final class SSHTransportGatePolicyTests: XCTestCase {
         )
     }
 
+    func testPrivateDirectMeshRemoteSelectionUsesOnePeerAtATime() {
+        let manualA = AddPeerRemoteHostDraft(
+            sshHost: "linux-b.tailnet",
+            hostID: "linux-b",
+            user: "jesse",
+            port: 22,
+            platform: .linux
+        )
+        let manualB = AddPeerRemoteHostDraft(
+            sshHost: "flower-garden.tailnet",
+            hostID: "flower-garden",
+            user: "jesse",
+            port: 22,
+            platform: .linux
+        )
+        let selectedTailnet = AddPeerRemoteHostDraft(
+            sshHost: "magic-kingdom.tailnet",
+            hostID: "magic-kingdom",
+            user: "jesse",
+            port: 22,
+            platform: .macOS
+        )
+
+        XCTAssertEqual(
+            addPeerPrivateDirectMeshRemoteDraftsForInstall(manualDrafts: [manualA, manualB],
+                                                           selectedTailnetDrafts: []).map(\.sshHost),
+            ["linux-b.tailnet"]
+        )
+        XCTAssertEqual(
+            addPeerPrivateDirectMeshRemoteDraftsForInstall(manualDrafts: [manualA, manualB],
+                                                           selectedTailnetDrafts: [selectedTailnet]).map(\.sshHost),
+            ["magic-kingdom.tailnet"]
+        )
+    }
+
     func testRegularSSHUpdateButtonRemainsEnabledWhenPublicAddPeerIsDisabled() {
         XCTAssertFalse(isPeerUpdateButtonDisabled(host: "fsck.com", updating: false, policy: .current))
         XCTAssertTrue(isPeerUpdateButtonDisabled(host: "", updating: false, policy: .current))
