@@ -27,6 +27,51 @@ func TestReadConfigRevisionReturnsVersionedStatus(t *testing.T) {
 	}
 }
 
+func TestEnsureConfigV2RevisionUpgradesPreV2ConfigPreservingUnknowns(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfigForV2Test(t, `{"shared_key":"k","listen":":7853","discovery":"static","static_peers":["old-box"],"future_top":{"keep":true}}`)
+
+	status, err := ensureConfigV2RevisionWithGate(path, true, ConfigRevisionStatus{
+		RevisionState: RevisionStatePreV2,
+	})
+	if err != nil {
+		t.Fatalf("EnsureConfigV2Revision error = %v", err)
+	}
+	if status.ConfigVersion == nil || *status.ConfigVersion != 2 {
+		t.Fatalf("ConfigVersion = %v, want 2", status.ConfigVersion)
+	}
+	if status.ConfigRevision == nil || *status.ConfigRevision != 1 {
+		t.Fatalf("ConfigRevision = %v, want 1", revisionString(status.ConfigRevision))
+	}
+
+	after := readJSONMap(t, path)
+	assertJSONNumber(t, after["config_version"], 2)
+	assertJSONNumber(t, after["config_revision"], 1)
+	assertJSONValueEqual(t, []any{"old-box"}, after["static_peers"])
+	assertJSONValueEqual(t, map[string]any{"keep": true}, after["future_top"])
+}
+
+func TestEnsureConfigV2RevisionFailsClosedWhenGateDisabled(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfigForV2Test(t, `{"shared_key":"k","static_peers":["old-box"]}`)
+
+	_, err := ensureConfigV2RevisionWithGate(path, false, ConfigRevisionStatus{
+		RevisionState: RevisionStatePreV2,
+	})
+	if !errors.Is(err, ErrConfigV2WritesDisabled) {
+		t.Fatalf("error = %v, want ErrConfigV2WritesDisabled", err)
+	}
+	after := readJSONMap(t, path)
+	if _, ok := after["config_version"]; ok {
+		t.Fatalf("config_version was written with gate disabled: %#v", after["config_version"])
+	}
+	if _, ok := after["config_revision"]; ok {
+		t.Fatalf("config_revision was written with gate disabled: %#v", after["config_revision"])
+	}
+}
+
 func TestUpdateSSHLocalMaterialPreservesRawSSHAndIncrementsRevision(t *testing.T) {
 	t.Parallel()
 
@@ -97,6 +142,41 @@ func TestUpdateSSHLocalMaterialTransportOnlyEnablesSSHMode(t *testing.T) {
 	after := readJSONMap(t, path)
 	assertJSONNumber(t, after["config_revision"], 8)
 	assertJSONValueEqual(t, TransportSSH, after["transport"])
+	assertJSONValueEqual(t, map[string]any{"keep": true}, after["future_top"])
+}
+
+func TestUpdateSSHLocalMaterialTransportClearsLegacyStaticDiscovery(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfigForV2Test(t, `{
+  "config_version": 2,
+  "config_revision": 7,
+  "shared_key": "k",
+  "hostname": "m4",
+  "discovery": "tailscale",
+  "static_peers": ["old-box"],
+  "max_history": 50,
+  "future_top": {"keep": true}
+}`)
+
+	transport := TransportSSH
+	status, err := updateSSHLocalMaterialWithGate(path, true, SSHLocalMaterialUpdateRequest{
+		ExpectedConfigRevision: uint64Ptr(7),
+		Transport:              &transport,
+	})
+	if err != nil {
+		t.Fatalf("UpdateSSHLocalMaterial error = %v", err)
+	}
+	if status.ConfigRevision == nil || *status.ConfigRevision != 8 {
+		t.Fatalf("ConfigRevision = %v, want 8", revisionString(status.ConfigRevision))
+	}
+	after := readJSONMap(t, path)
+	assertJSONNumber(t, after["config_revision"], 8)
+	assertJSONValueEqual(t, TransportSSH, after["transport"])
+	assertJSONValueEqual(t, "static", after["discovery"])
+	if _, ok := after["static_peers"]; ok {
+		t.Fatalf("static_peers survived ssh transport migration: %#v", after["static_peers"])
+	}
 	assertJSONValueEqual(t, map[string]any{"keep": true}, after["future_top"])
 }
 

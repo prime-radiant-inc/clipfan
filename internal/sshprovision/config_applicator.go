@@ -14,6 +14,7 @@ var ErrDirectPairConfigPathMissing = errors.New("direct_pair_config_path_missing
 
 type DirectPairConfigOps interface {
 	ReadConfigRevision(path string) (config.ConfigRevisionStatus, error)
+	EnsureConfigV2Revision(path string, observed config.ConfigRevisionStatus) (config.ConfigRevisionStatus, error)
 	UpdateSSHLocalMaterial(path string, req config.SSHLocalMaterialUpdateRequest) (config.ConfigRevisionStatus, error)
 	UpsertSSHPeer(path string, peerID string, req config.SSHPeerUpsertRequest) (config.SSHPeerConfigReadResult, error)
 	PatchSSHPeerProof(path string, peerID string, req config.SSHPeerProofPatchRequest) (config.SSHPeerConfigReadResult, error)
@@ -256,6 +257,12 @@ func (a DirectPairConfigApplicator) readRevisions(paths map[string]string, ops D
 			return nil, err
 		}
 		if status.RevisionState != config.RevisionStateVersioned || status.ConfigRevision == nil || *status.ConfigRevision == 0 {
+			status, err = ops.EnsureConfigV2Revision(paths[hostID], status)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if status.RevisionState != config.RevisionStateVersioned || status.ConfigRevision == nil || *status.ConfigRevision == 0 {
 			return nil, config.ErrConfigRevisionConflict
 		}
 		revisions[hostID] = *status.ConfigRevision
@@ -305,6 +312,10 @@ type defaultDirectPairConfigOps struct{}
 
 func (defaultDirectPairConfigOps) ReadConfigRevision(path string) (config.ConfigRevisionStatus, error) {
 	return config.ReadConfigRevision(path)
+}
+
+func (defaultDirectPairConfigOps) EnsureConfigV2Revision(path string, observed config.ConfigRevisionStatus) (config.ConfigRevisionStatus, error) {
+	return config.EnsureConfigV2Revision(path, observed)
 }
 
 func (defaultDirectPairConfigOps) UpdateSSHLocalMaterial(path string, req config.SSHLocalMaterialUpdateRequest) (config.ConfigRevisionStatus, error) {

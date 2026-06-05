@@ -58,6 +58,33 @@ func TestDirectPairConfigApplicatorAppliesRevisionOrderedConfigMutations(t *test
 	}
 }
 
+func TestDirectPairConfigApplicatorEnsuresRevisionForPreV2Configs(t *testing.T) {
+	t.Parallel()
+
+	ops := newFakeDirectPairConfigOps()
+	ops.revisionStates["/configs/linux-b.json"] = config.RevisionStatePreV2
+	applicator := DirectPairConfigApplicator{}
+
+	revisions, err := applicator.readRevisions(map[string]string{
+		"linux-b": "/configs/linux-b.json",
+		"mac-a":   "/configs/mac-a.json",
+	}, ops)
+	if err != nil {
+		t.Fatalf("readRevisions error = %v", err)
+	}
+	if revisions["linux-b"] != 1 || revisions["mac-a"] != 7 {
+		t.Fatalf("revisions = %#v, want linux-b=1 mac-a=7", revisions)
+	}
+	wantCalls := []string{
+		"read:/configs/linux-b.json",
+		"ensure:/configs/linux-b.json:state=pre_v2:rev=<nil>",
+		"read:/configs/mac-a.json",
+	}
+	if !reflect.DeepEqual(ops.calls, wantCalls) {
+		t.Fatalf("calls:\n got %#v\nwant %#v", ops.calls, wantCalls)
+	}
+}
+
 func TestDirectPairConfigApplicatorRejectsInvalidSharedKeyBeforeMutation(t *testing.T) {
 	t.Parallel()
 
@@ -171,8 +198,9 @@ func TestDirectPairConfigApplicatorDefaultOpsFailClosedWithGeneratedGate(t *test
 }
 
 type fakeDirectPairConfigOps struct {
-	revisions map[string]uint64
-	calls     []string
+	revisions      map[string]uint64
+	revisionStates map[string]config.RevisionState
+	calls          []string
 }
 
 func newFakeDirectPairConfigOps() *fakeDirectPairConfigOps {
@@ -181,11 +209,19 @@ func newFakeDirectPairConfigOps() *fakeDirectPairConfigOps {
 			"/configs/linux-b.json": 7,
 			"/configs/mac-a.json":   7,
 		},
+		revisionStates: map[string]config.RevisionState{},
 	}
 }
 
 func (f *fakeDirectPairConfigOps) ReadConfigRevision(path string) (config.ConfigRevisionStatus, error) {
 	f.calls = append(f.calls, "read:"+path)
+	return f.status(path), nil
+}
+
+func (f *fakeDirectPairConfigOps) EnsureConfigV2Revision(path string, status config.ConfigRevisionStatus) (config.ConfigRevisionStatus, error) {
+	f.calls = append(f.calls, "ensure:"+path+":state="+string(status.RevisionState)+":rev="+revString(status.ConfigRevision))
+	f.revisionStates[path] = config.RevisionStateVersioned
+	f.revisions[path] = 1
 	return f.status(path), nil
 }
 
@@ -224,6 +260,13 @@ func (f *fakeDirectPairConfigOps) TransitionSSHPeer(path string, peerID string, 
 }
 
 func (f *fakeDirectPairConfigOps) status(path string) config.ConfigRevisionStatus {
+	switch f.revisionStates[path] {
+	case config.RevisionStatePreV2:
+		return config.ConfigRevisionStatus{RevisionState: config.RevisionStatePreV2}
+	case config.RevisionStateMissingRevision:
+		version := 2
+		return config.ConfigRevisionStatus{ConfigVersion: &version, RevisionState: config.RevisionStateMissingRevision}
+	}
 	revision := f.revisions[path]
 	version := 2
 	return config.ConfigRevisionStatus{

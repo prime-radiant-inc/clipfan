@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -128,6 +129,20 @@ func requireSSHApplyDirectConfigTarget(payload SSHApplyDirectConfigPayload) erro
 	_, err = config.RequirePersistedHostIDAtRevision(payload.ConfigPath, payload.HostID, config.RevisionExpectation{
 		State:    status.RevisionState,
 		Revision: status.ConfigRevision,
+	})
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, config.ErrHostIDNotPersisted) {
+		return err
+	}
+	result, err := config.EnsurePersistedHostIDValue(payload.ConfigPath, payload.HostID)
+	if err != nil {
+		return err
+	}
+	_, err = config.RequirePersistedHostIDAtRevision(payload.ConfigPath, payload.HostID, config.RevisionExpectation{
+		State:    result.RevisionState,
+		Revision: result.ConfigRevision,
 	})
 	return err
 }

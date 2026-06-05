@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/prime-radiant-inc/clipfan/internal/config"
+	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
 	"github.com/prime-radiant-inc/clipfan/internal/sshprovision"
 )
 
@@ -305,6 +306,45 @@ func TestRunSSHApplyDirectConfigReadsPayloadFromStdin(t *testing.T) {
 	}
 }
 
+func TestRunSSHApplyDirectConfigMigratesExistingStaticConfigOnDisk(t *testing.T) {
+	if !releaseflags.ConfigV2WriteEnabled {
+		t.Skip("requires generated ConfigV2WriteEnabled=true profile")
+	}
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "pre-v2 missing host id",
+			body: `{"shared_key":"k","discovery":"static","static_peers":["old"],"future_top":{"keep":true}}`,
+		},
+		{
+			name: "v2 with stale static peers",
+			body: `{"config_version":2,"config_revision":7,"shared_key":"k","hostname":"linux-b","discovery":"tailscale","static_peers":["old"],"future_top":{"keep":true}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := writeDirectApplyConfigBodyForTest(t, tc.body)
+			payload := directApplyPayloadForTest(t, "linux-b", configPath, "stage")
+			encoded, err := encodeSSHApplyDirectConfigPayloadForTest(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stdout bytes.Buffer
+			if err := runSSHApplyDirectConfigWithStdin([]string{"--payload-stdin"}, strings.NewReader(encoded), &stdout, &bytes.Buffer{}, nil); err != nil {
+				t.Fatalf("runSSHApplyDirectConfigWithStdin() error = %v", err)
+			}
+
+			after := readCLIJSONMap(t, configPath)
+			assertDirectApplyMigratedSSHConfig(t, after, "linux-b", "mac-a")
+			if !reflect.DeepEqual(after["future_top"], map[string]any{"keep": true}) {
+				t.Fatalf("future_top = %#v, want preserved", after["future_top"])
+			}
+		})
+	}
+}
+
 func TestRunSSHApplyDirectConfigRejectsHostMismatchBeforeMutation(t *testing.T) {
 	t.Parallel()
 
@@ -452,6 +492,12 @@ func (f *fakeDirectProvisionConfigOps) ReadConfigRevision(path string) (config.C
 	return f.status(path), nil
 }
 
+func (f *fakeDirectProvisionConfigOps) EnsureConfigV2Revision(path string, status config.ConfigRevisionStatus) (config.ConfigRevisionStatus, error) {
+	f.calls = append(f.calls, "ensure:"+path)
+	f.revisions[path] = 1
+	return f.status(path), nil
+}
+
 func (f *fakeDirectProvisionConfigOps) UpdateSSHLocalMaterial(path string, req config.SSHLocalMaterialUpdateRequest) (config.ConfigRevisionStatus, error) {
 	f.calls = append(f.calls, "local:"+path)
 	return f.bump(path), nil
@@ -536,6 +582,49 @@ func encodeSSHApplyDirectConfigPayloadForTest(payload SSHApplyDirectConfigPayloa
 	return base64.StdEncoding.EncodeToString(data), nil
 }
 
+func directApplyPayloadForTest(t *testing.T, hostID string, configPath string, phase string) SSHApplyDirectConfigPayload {
+	t.Helper()
+	plan, err := sshprovision.BuildDirectPairPlan(sshprovision.DirectPairPlanInput{
+		Local: sshprovision.DirectPairHost{
+			ID:          "mac-a",
+			SSHHost:     "mac-a.tailnet",
+			SSHUser:     "jesse",
+			SSHPort:     22,
+			InstallPath: "/Users/jesse/.local/bin/clipfan",
+			GatewayPath: "/Users/jesse/.local/bin/clipfan",
+		},
+		Remote: sshprovision.DirectPairHost{
+			ID:          "linux-b",
+			SSHHost:     "linux-b.tailnet",
+			SSHUser:     "jesse",
+			SSHPort:     22,
+			InstallPath: "/home/jesse/.local/bin/clipfan",
+			GatewayPath: "/home/jesse/.local/bin/clipfan",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return SSHApplyDirectConfigPayload{
+		HostID:     hostID,
+		ConfigPath: configPath,
+		Phase:      phase,
+		Mutation: sshprovision.DirectPairConfigMutation{
+			Plan:      plan,
+			Writes:    append([]sshprovision.DirectPairConfigWrite(nil), plan.ConfigWrites...),
+			SharedKey: testDirectProvisionSharedKey,
+			SyncKeys: map[string]sshprovision.SyncKeyMaterial{
+				"linux-b": {PrivateKeyPath: "/home/jesse/.config/clipfan/ssh/sync_ed25519", PublicKey: testDirectProvisionEd25519Key, KeyID: testDirectProvisionEd25519KeyID},
+				"mac-a":   {PrivateKeyPath: "/Users/jesse/.config/clipfan/ssh/sync_ed25519", PublicKey: testDirectProvisionOtherEd25519Key, KeyID: "1892e27b582e5293"},
+			},
+			KnownHostsPaths: map[string]string{
+				"linux-b": "/home/jesse/.config/clipfan/ssh/known_hosts",
+				"mac-a":   "/Users/jesse/.config/clipfan/ssh/known_hosts",
+			},
+		},
+	}
+}
+
 func writeDirectApplyConfigForTest(t *testing.T, hostID string) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "Clipfan Config")
@@ -548,4 +637,69 @@ func writeDirectApplyConfigForTest(t *testing.T, hostID string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func writeDirectApplyConfigBodyForTest(t *testing.T, body string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "Clipfan Config")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func assertDirectApplyMigratedSSHConfig(t *testing.T, after map[string]any, hostID string, peerID string) {
+	t.Helper()
+	if after["config_version"] != float64(2) {
+		t.Fatalf("config_version = %#v, want 2", after["config_version"])
+	}
+	if _, ok := after["config_revision"].(float64); !ok {
+		t.Fatalf("config_revision = %#v, want number", after["config_revision"])
+	}
+	if after["hostname"] != hostID {
+		t.Fatalf("hostname = %#v, want %s", after["hostname"], hostID)
+	}
+	if after["transport"] != config.TransportSSH {
+		t.Fatalf("transport = %#v, want ssh", after["transport"])
+	}
+	if after["discovery"] != "static" {
+		t.Fatalf("discovery = %#v, want static", after["discovery"])
+	}
+	if _, ok := after["static_peers"]; ok {
+		t.Fatalf("static_peers survived direct apply migration: %#v", after["static_peers"])
+	}
+	ssh, ok := after["ssh"].(map[string]any)
+	if !ok {
+		t.Fatalf("ssh = %#v, want object", after["ssh"])
+	}
+	if ssh["sync_key"] == "" || ssh["known_hosts"] == "" {
+		t.Fatalf("ssh local material missing: %#v", ssh)
+	}
+	peer := directApplySSHPeerByID(t, ssh, peerID)
+	if peer["migration_state"] != string(config.MigrationStateSSHMaterialStaged) {
+		t.Fatalf("peer migration_state = %#v, want staged", peer["migration_state"])
+	}
+}
+
+func directApplySSHPeerByID(t *testing.T, ssh map[string]any, peerID string) map[string]any {
+	t.Helper()
+	peers, ok := ssh["peers"].([]any)
+	if !ok {
+		t.Fatalf("ssh.peers = %#v, want array", ssh["peers"])
+	}
+	for _, item := range peers {
+		peer, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("ssh peer = %#v, want object", item)
+		}
+		if peer["id"] == peerID {
+			return peer
+		}
+	}
+	t.Fatalf("peer %s missing in %#v", peerID, peers)
+	return nil
 }

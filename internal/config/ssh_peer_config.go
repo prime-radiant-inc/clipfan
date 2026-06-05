@@ -1974,7 +1974,9 @@ func setRawPointer[T any](raw map[string]json.RawMessage, key string, value *T) 
 
 func marshalConfigDocumentPreservingRawSSH(doc *configDocument, cfg Config, raw map[string]json.RawMessage, nextRevision uint64) ([]byte, error) {
 	out := cloneRawMap(raw)
-	applyConfigScalars(out, doc, cfg, nextRevision)
+	rawDoc := *doc
+	rawDoc.raw = raw
+	applyConfigScalars(out, &rawDoc, cfg, nextRevision)
 	if cfg.SSH == nil {
 		delete(out, "ssh")
 	} else if _, ok := out["ssh"]; !ok {

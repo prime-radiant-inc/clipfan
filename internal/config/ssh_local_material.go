@@ -32,6 +32,36 @@ func ReadConfigRevision(path string) (ConfigRevisionStatus, error) {
 	}, nil
 }
 
+func EnsureConfigV2Revision(path string, observed ConfigRevisionStatus) (ConfigRevisionStatus, error) {
+	return ensureConfigV2RevisionWithGate(path, releaseflags.ConfigV2WriteEnabled, observed)
+}
+
+func ensureConfigV2RevisionWithGate(path string, gateEnabled bool, observed ConfigRevisionStatus) (ConfigRevisionStatus, error) {
+	if observed.RevisionState == RevisionStateVersioned && observed.ConfigRevision != nil && *observed.ConfigRevision != 0 {
+		return observed, nil
+	}
+	expected := RevisionExpectation{
+		State:    observed.RevisionState,
+		Revision: copyUint64Ptr(observed.ConfigRevision),
+	}
+	switch expected.State {
+	case RevisionStatePreV2, RevisionStateMissingRevision:
+		if expected.Revision != nil {
+			return ConfigRevisionStatus{}, ErrConfigRevisionConflict
+		}
+	case RevisionStateVersioned:
+		return ConfigRevisionStatus{}, ErrConfigRevisionConflict
+	default:
+		return ConfigRevisionStatus{}, ErrConfigRevisionConflict
+	}
+	if err := updateConfigV2ScopedWithGate(path, gateEnabled, expected, func(*Config) error {
+		return nil
+	}); err != nil {
+		return ConfigRevisionStatus{}, err
+	}
+	return ReadConfigRevision(path)
+}
+
 func UpdateSSHLocalMaterial(path string, req SSHLocalMaterialUpdateRequest) (ConfigRevisionStatus, error) {
 	return updateSSHLocalMaterialWithGate(path, releaseflags.ConfigV2WriteEnabled, req)
 }
@@ -88,6 +118,10 @@ func updateSSHLocalMaterialWithGate(path string, gateEnabled bool, req SSHLocalM
 		if req.Transport != nil {
 			cfg.Transport = *req.Transport
 			setRaw(raw, "transport", *req.Transport)
+			cfg.Discovery = "static"
+			cfg.StaticPeers = nil
+			setRaw(raw, "discovery", "static")
+			delete(raw, "static_peers")
 		}
 		if req.SharedKey != nil {
 			cfg.SharedKey = *req.SharedKey

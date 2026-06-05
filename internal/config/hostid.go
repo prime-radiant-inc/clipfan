@@ -110,6 +110,15 @@ func EnsurePersistedHostID(path string) (HostIDMigrationResult, error) {
 	return ensurePersistedHostIDWithGate(path, releaseflags.ConfigV2WriteEnabled, DeriveHostID)
 }
 
+func EnsurePersistedHostIDValue(path string, hostID string) (HostIDMigrationResult, error) {
+	if err := ValidateHostID(hostID); err != nil {
+		return HostIDMigrationResult{}, err
+	}
+	return ensurePersistedHostIDWithGate(path, releaseflags.ConfigV2WriteEnabled, func() (string, error) {
+		return hostID, nil
+	})
+}
+
 func ensurePersistedHostIDWithGate(path string, gateEnabled bool, derive func() (string, error)) (HostIDMigrationResult, error) {
 	var result HostIDMigrationResult
 	if derive == nil {
