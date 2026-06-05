@@ -169,6 +169,21 @@ final class SSHTransportGatePolicyTests: XCTestCase {
         )
     }
 
+    func testAddPeerDirectMeshSpecCanMarkCallbackHostSource() {
+        XCTAssertEqual(
+            addPeerDirectMeshSpec(hostID: "m4",
+                                  sshHost: "m4.local",
+                                  user: "jesse",
+                                  port: 22,
+                                  installPath: "/Users/jesse/.local/bin/clipfan",
+                                  configPath: "/Users/jesse/.config/clipfan/config.json",
+                                  knownHostsPath: "/Users/jesse/.config/clipfan/ssh/known_hosts",
+                                  syncKeyPath: "/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+                                  callbackHostSource: "remote_observed"),
+            "id=m4,ssh=m4.local,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519,callback_host=remote_observed"
+        )
+    }
+
     func testAddPeerPreferredTailnetSSHHostUsesDNSThenMacLocalNameThenIP() {
         XCTAssertEqual(addPeerPreferredTailnetSSHHost(TailscalePeer(
             hostName: "m4",

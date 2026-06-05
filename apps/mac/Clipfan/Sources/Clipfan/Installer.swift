@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 enum InstallError: LocalizedError {
     case sshFailed(String, String)
@@ -90,6 +91,11 @@ actor Installer {
     typealias CommandRunner = (String, [String]) async throws -> String
     typealias LocalHostIDReader = () async -> String?
     typealias LocalDaemonRestarter = () async throws -> Void
+
+    private enum PrivateDirectMeshCallbackHostMode: String {
+        case manual
+        case remoteObserved = "remote_observed"
+    }
 
     static let shareDir: URL = {
         if let xdg = ProcessInfo.processInfo.environment["XDG_DATA_HOME"] {
@@ -524,10 +530,48 @@ actor Installer {
             throw InstallError.configIO("regular_known_hosts_required")
         }
         try validatePrivateDirectMeshExecutablePath(knownHosts, code: "invalid_regular_known_hosts_path")
-        let hosts = try specs.map { try privateDirectMeshHost(from: $0) }
-        let localHostID = await readLocalHostID() ?? ""
+        var hosts = try specs.map { try privateDirectMeshHost(from: $0) }
+        var provisionSpecs = specs
+        let configuredLocalHostID = await readLocalHostID() ?? ""
+        let remoteObservedLocalIndexes = hosts.indices.filter {
+            hosts[$0].callbackHostMode == .remoteObserved
+        }
+        guard remoteObservedLocalIndexes.count <= 1 else {
+            throw InstallError.configIO("multiple_remote_observed_callback_hosts")
+        }
+        let remoteObservedLocalIndex = remoteObservedLocalIndexes.first
+        let localHostID = remoteObservedLocalIndex.map { hosts[$0].id } ?? configuredLocalHostID
+        var trustedBootstrapHostIDs = Set<String>()
+
+        if let localIndex = remoteObservedLocalIndex {
+            guard let observer = hosts.first(where: { $0.id != hosts[localIndex].id }) else {
+                throw InstallError.configIO("remote_observed_callback_requires_remote_host")
+            }
+            await MainActor.run {
+                onProgress(.init(step: "Keyscan", detail: "trusting SSH host key for \(observer.sshHost)"))
+            }
+            try await trustPrivateDirectMeshBootstrapHostKey(sshHost: observer.sshHost,
+                                                             user: observer.user,
+                                                             port: observer.port,
+                                                             regularKnownHosts: knownHosts,
+                                                             runCommand: runCommand)
+            trustedBootstrapHostIDs.insert(observer.id)
+
+            await MainActor.run {
+                onProgress(.init(step: "Probe", detail: "detecting this Mac as seen from \(observer.sshHost)"))
+            }
+            let observedHost = try await readPrivateDirectMeshObservedSSHClientHost(from: observer,
+                                                                                    regularKnownHosts: knownHosts,
+                                                                                    runCommand: runCommand)
+            hosts[localIndex].sshHost = observedHost
+            provisionSpecs[localIndex] = try privateDirectMeshHostSpecReplacingSSHHost(specs[localIndex],
+                                                                                       sshHost: observedHost)
+        }
 
         for host in hosts {
+            if trustedBootstrapHostIDs.contains(host.id) {
+                continue
+            }
             await MainActor.run { onProgress(.init(step: "Keyscan", detail: "trusting SSH host key for \(host.sshHost)")) }
             try await trustPrivateDirectMeshBootstrapHostKey(sshHost: host.sshHost,
                                                              user: host.user,
@@ -552,7 +596,7 @@ actor Installer {
 
         await MainActor.run { onProgress(.init(step: "Provision", detail: "running ssh-provision-direct")) }
         var args = ["ssh-provision-direct", "--trust-keyscan", "--regular-known-hosts", knownHosts]
-        for spec in specs {
+        for spec in provisionSpecs {
             args += ["--host", spec]
         }
         _ = try await runCommand(clipfanBinary, args)
@@ -882,11 +926,12 @@ actor Installer {
 
     private struct PrivateDirectMeshHost {
         let id: String
-        let sshHost: String
+        var sshHost: String
         let user: String
         let port: Int
         let installPath: String
         let configPath: String
+        let callbackHostMode: PrivateDirectMeshCallbackHostMode
     }
 
     private static func privateDirectMeshHost(from spec: String) throws -> PrivateDirectMeshHost {
@@ -931,12 +976,74 @@ actor Installer {
             throw InstallError.configIO("unsupported_private_direct_mesh_gateway_path")
         }
         try validatePrivateDirectMeshSafeAbsolutePath(configPath, code: "invalid_private_direct_mesh_config_path")
+        let callbackHostMode: PrivateDirectMeshCallbackHostMode
+        switch fields["callback_host"] ?? fields["callback"] ?? "manual" {
+        case PrivateDirectMeshCallbackHostMode.manual.rawValue:
+            callbackHostMode = .manual
+        case PrivateDirectMeshCallbackHostMode.remoteObserved.rawValue:
+            callbackHostMode = .remoteObserved
+        default:
+            throw InstallError.configIO("invalid_private_direct_mesh_callback_host")
+        }
         return PrivateDirectMeshHost(id: id,
                                      sshHost: sshHost,
                                      user: user,
                                      port: port,
                                      installPath: installPath,
-                                     configPath: configPath)
+                                     configPath: configPath,
+                                     callbackHostMode: callbackHostMode)
+    }
+
+    static func privateDirectMeshObservedSSHClientHostCommand() -> String {
+        #"set -- $SSH_CONNECTION; test -n "${1:-}" || exit 44; printf '%s\n' "$1""#
+    }
+
+    private static func readPrivateDirectMeshObservedSSHClientHost(from host: PrivateDirectMeshHost,
+                                                                   regularKnownHosts: String,
+                                                                   runCommand: CommandRunner) async throws -> String {
+        let args = regularSSHRemoteCommandArgs(user: host.user,
+                                               host: host.sshHost,
+                                               port: host.port,
+                                               knownHosts: regularKnownHosts,
+                                               remoteCommand: privateDirectMeshObservedSSHClientHostCommand())
+        let output = try await runCommand("/usr/bin/ssh", args)
+        let lines = output.split(whereSeparator: \.isNewline)
+        guard lines.count == 1 else {
+            throw InstallError.configIO("invalid_remote_observed_callback_host")
+        }
+        let observedHost = String(lines[0]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !observedHost.isEmpty else {
+            throw InstallError.configIO("missing_remote_observed_callback_host")
+        }
+        do {
+            try validatePrivateDirectMeshSSHHost(observedHost)
+        } catch {
+            throw InstallError.configIO("invalid_remote_observed_callback_host")
+        }
+        return observedHost
+    }
+
+    private static func privateDirectMeshHostSpecReplacingSSHHost(_ spec: String,
+                                                                  sshHost: String) throws -> String {
+        try validatePrivateDirectMeshSSHHost(sshHost)
+        var replaced = false
+        let fields = try spec.split(separator: ",", omittingEmptySubsequences: false).map { rawField -> String in
+            let parts = rawField.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 2 else {
+                throw InstallError.configIO("invalid_private_direct_mesh_host_spec")
+            }
+            let key = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "-", with: "_")
+            if !replaced && (key == "ssh" || key == "host") {
+                replaced = true
+                return "\(parts[0].trimmingCharacters(in: .whitespacesAndNewlines))=\(sshHost)"
+            }
+            return rawField.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard replaced else {
+            throw InstallError.configIO("missing_private_direct_mesh_host_field")
+        }
+        return fields.joined(separator: ",")
     }
 
     private static func validatePrivateDirectMeshHostID(_ value: String) throws {
@@ -960,22 +1067,26 @@ actor Installer {
 
     private static func validatePrivateDirectMeshSSHHost(_ value: String) throws {
         let invalid = CharacterSet.whitespacesAndNewlines
-            .union(CharacterSet(charactersIn: "@/\\\"'`$;&|<>(){}[]*?!:"))
+            .union(CharacterSet(charactersIn: "@/\\\"'`$;&|<>(){}[]*?!%"))
         guard !value.isEmpty,
               value.first != "-",
               value.rangeOfCharacter(from: invalid) == nil else {
             throw InstallError.configIO("invalid_private_direct_mesh_ssh_host")
+        }
+        if value.contains(":") {
+            guard isRawIPv6Literal(value) else {
+                throw InstallError.configIO("invalid_private_direct_mesh_ssh_host")
+            }
         }
     }
 
+    private static func isRawIPv6Literal(_ value: String) -> Bool {
+        var addr = in6_addr()
+        return value.withCString { inet_pton(AF_INET6, $0, &addr) == 1 }
+    }
+
     private static func validatePrivateDirectMeshKeyscanHost(_ value: String) throws {
-        let invalid = CharacterSet.whitespacesAndNewlines
-            .union(CharacterSet(charactersIn: "@/\\\"'`$;&|<>(){}[]*?!"))
-        guard !value.isEmpty,
-              value.first != "-",
-              value.rangeOfCharacter(from: invalid) == nil else {
-            throw InstallError.configIO("invalid_private_direct_mesh_ssh_host")
-        }
+        try validatePrivateDirectMeshSSHHost(value)
     }
 
     private static func validatePrivateDirectMeshExecutablePath(_ value: String, code: String) throws {
@@ -1033,6 +1144,23 @@ actor Installer {
             scpArgs += ["-P", "\(port)"]
         }
         return (sshArgs, scpArgs)
+    }
+
+    static func remoteSCPDestination(target: String, remotePath: String) -> String {
+        let parts = target.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+        let userPrefix: String
+        var host: String
+        if parts.count == 2 {
+            userPrefix = "\(parts[0])@"
+            host = parts[1]
+        } else {
+            userPrefix = ""
+            host = target
+        }
+        if host.contains(":"), !host.hasPrefix("[") {
+            host = "[\(host)]"
+        }
+        return "\(userPrefix)\(host):\(remotePath)"
     }
 
     static func remoteRestartDaemonCommand(installPath: String) -> String {
@@ -1123,7 +1251,7 @@ actor Installer {
         let remoteStage = try validatedRemoteStagePath(remoteStageOutput)
         let scpFull: [String] = scpArgs +
             stagedFiles.map { stage.appendingPathComponent($0).path } +
-            ["\(target):\(remoteStage)/"]
+            [remoteSCPDestination(target: target, remotePath: "\(remoteStage)/")]
         do {
             _ = try await runCommand("/usr/bin/scp", scpFull)
 
@@ -1150,7 +1278,7 @@ actor Installer {
         let remoteStage = try validatedRemoteStagePath(remoteStageOutput)
         let scpFull: [String] = scpArgs +
             stagedFiles.map { stage.appendingPathComponent($0).path } +
-            ["\(target):\(remoteStage)/"]
+            [remoteSCPDestination(target: target, remotePath: "\(remoteStage)/")]
         do {
             _ = try await runCommand("/usr/bin/scp", scpFull)
 
@@ -1177,7 +1305,7 @@ actor Installer {
         let remoteStage = try validatedRemoteStagePath(remoteStageOutput)
         let scpFull: [String] = scpArgs +
             stagedFiles.map { stage.appendingPathComponent($0).path } +
-            ["\(target):\(remoteStage)/"]
+            [remoteSCPDestination(target: target, remotePath: "\(remoteStage)/")]
         do {
             _ = try await runCommand("/usr/bin/scp", scpFull)
 

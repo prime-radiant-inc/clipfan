@@ -167,8 +167,9 @@ func addPeerDirectMeshSpec(hostID: String,
                            installPath: String,
                            configPath: String,
                            knownHostsPath: String,
-                           syncKeyPath: String) -> String {
-    [
+                           syncKeyPath: String,
+                           callbackHostSource: String? = nil) -> String {
+    var fields = [
         "id=\(hostID)",
         "ssh=\(sshHost)",
         "user=\(user)",
@@ -177,7 +178,12 @@ func addPeerDirectMeshSpec(hostID: String,
         "config=\(configPath)",
         "known_hosts=\(knownHostsPath)",
         "sync_key=\(syncKeyPath)"
-    ].joined(separator: ",")
+    ]
+    let callbackSource = (callbackHostSource ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    if !callbackSource.isEmpty {
+        fields.append("callback_host=\(callbackSource)")
+    }
+    return fields.joined(separator: ",")
 }
 
 func addPeerRemoteDirectMeshSpec(_ draft: AddPeerRemoteHostDraft) -> String? {
@@ -311,7 +317,10 @@ struct AddPeerSheet: View {
             installPath: Installer.localClipfanBinaryPath(),
             configPath: Installer.localConfigURL().path,
             knownHostsPath: "\(sshDir)/known_hosts",
-            syncKeyPath: "\(sshDir)/sync_ed25519"
+            syncKeyPath: "\(sshDir)/sync_ed25519",
+            callbackHostSource: localSSHHostOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "remote_observed"
+                : "manual"
         )
     }
 

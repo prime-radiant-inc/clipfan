@@ -99,6 +99,24 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertFalse(defaultPortArgs.scpArgs.contains("-P"))
     }
 
+    func testRemoteSCPDestinationBracketsIPv6Hosts() {
+        XCTAssertEqual(
+            Installer.remoteSCPDestination(target: "jesse@fd7a:115c:a1e0::1234",
+                                           remotePath: "/tmp/clipfan-install.ABC123/"),
+            "jesse@[fd7a:115c:a1e0::1234]:/tmp/clipfan-install.ABC123/"
+        )
+        XCTAssertEqual(
+            Installer.remoteSCPDestination(target: "fd7a:115c:a1e0::1234",
+                                           remotePath: "/tmp/clipfan-install.ABC123/"),
+            "[fd7a:115c:a1e0::1234]:/tmp/clipfan-install.ABC123/"
+        )
+        XCTAssertEqual(
+            Installer.remoteSCPDestination(target: "jesse@linux-b.tailnet",
+                                           remotePath: "/tmp/clipfan-install.ABC123/"),
+            "jesse@linux-b.tailnet:/tmp/clipfan-install.ABC123/"
+        )
+    }
+
     func testTrustPrivateDirectMeshBootstrapHostKeyWritesKeyscanLine() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("clipfan-known-hosts-test-\(UUID().uuidString)")
@@ -168,6 +186,40 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertEqual(
             try String(contentsOf: knownHosts, encoding: .utf8),
             "magic-kingdom ssh-ed25519 AAAARESOLVED_KEY\n"
+        )
+    }
+
+    func testTrustPrivateDirectMeshBootstrapHostKeyUsesSSHConfigIPv6HostNameForKeyscan() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-known-hosts-test-\(UUID().uuidString)")
+        let knownHosts = root.appendingPathComponent("known_hosts")
+        let resolvedIPv6 = "fd7a:115c:a1e0::1234"
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var commands: [(String, [String])] = []
+        try await Installer.trustPrivateDirectMeshBootstrapHostKey(
+            sshHost: "linux-v6",
+            user: "jesse",
+            port: 22,
+            regularKnownHosts: knownHosts.path,
+            runCommand: { exe, args in
+                commands.append((exe, args))
+                if exe == "/usr/bin/ssh" {
+                    return """
+                    hostname \(resolvedIPv6)
+                    port 22
+                    """
+                }
+                return "\(resolvedIPv6) ssh-ed25519 AAAAV6_KEY\n"
+            }
+        )
+
+        XCTAssertEqual(commands.map(\.0), ["/usr/bin/ssh", "/usr/bin/ssh-keyscan"])
+        XCTAssertEqual(commands[0].1, ["-G", "-l", "jesse", "linux-v6"])
+        XCTAssertEqual(commands[1].1, ["-T", "5", "-p", "22", resolvedIPv6])
+        XCTAssertEqual(
+            try String(contentsOf: knownHosts, encoding: .utf8),
+            "linux-v6 ssh-ed25519 AAAAV6_KEY\n"
         )
     }
 
@@ -815,6 +867,35 @@ final class InstallerFlagTests: XCTestCase {
         ))
     }
 
+    func testUploadAndInstallPrivateDirectMeshHostBracketsIPv6SCPDestination() async throws {
+        let stage = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-direct-install-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: stage) }
+
+        var commands: [(String, [String])] = []
+        try await Installer.uploadAndInstallPrivateDirectMeshHost(
+            target: "jesse@fd7a:115c:a1e0::1234",
+            sshArgs: ["-o", "ConnectTimeout=5"],
+            scpArgs: ["-q"],
+            stage: stage,
+            stagedFiles: ["clipfan-linux-arm64", "install.sh"],
+            configPath: "/home/jesse/.config/clipfan/config.json",
+            installPath: "/home/jesse/.local/bin/clipfan",
+            withTmux: false,
+            runCommand: { exe, args in
+                commands.append((exe, args))
+                if exe == "/usr/bin/ssh", args.last == Installer.remoteStageCommand() {
+                    return "/tmp/clipfan-install.ABC123\n"
+                }
+                return ""
+            }
+        )
+
+        let scpCommand = try XCTUnwrap(commands.first { $0.0 == "/usr/bin/scp" })
+        XCTAssertEqual(scpCommand.1.last, "jesse@[fd7a:115c:a1e0::1234]:/tmp/clipfan-install.ABC123/")
+    }
+
     func testProvisionPrivateDirectMeshBuildsHiddenCLIArgv() async throws {
         var commands: [(String, [String])] = []
         var localRestarts = 0
@@ -880,6 +961,207 @@ final class InstallerFlagTests: XCTestCase {
             Installer.remoteRestartDaemonCommand(installPath: "/home/jesse/.local/bin/clipfan")
         ])
         XCTAssertEqual(localRestarts, 1)
+    }
+
+    func testProvisionPrivateDirectMeshUsesRemoteObservedCallbackHostForLocalSpec() async throws {
+        var commands: [(String, [String])] = []
+        var localRestarts = 0
+        let knownHostsRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-provision-known-hosts-\(UUID().uuidString)")
+        let regularKnownHosts = knownHostsRoot.appendingPathComponent("known_hosts").path
+        defer { try? FileManager.default.removeItem(at: knownHostsRoot) }
+
+        try await Installer.provisionPrivateDirectMesh(
+            hostSpecs: [
+                "id=mac-a,ssh=mac-a.local,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519,callback_host=remote_observed",
+                "id=linux-b,ssh=linux-b.tailnet,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/.config/clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519"
+            ],
+            regularKnownHosts: regularKnownHosts,
+            trustKeyscan: true,
+            clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+            bootstrapInstall: false,
+            runCommand: { exe, args in
+                commands.append((exe, args))
+                if exe == "/usr/bin/ssh-keyscan" {
+                    return self.keyscanFixtureOutput(args)
+                }
+                if exe == "/usr/bin/ssh", args.last == Installer.privateDirectMeshObservedSSHClientHostCommand() {
+                    return "100.64.10.20\n"
+                }
+                return #"{"status":"ok"}"#
+            },
+            readLocalHostID: { "mac-a" },
+            restartLocalDaemon: {
+                localRestarts += 1
+            },
+            onProgress: { _ in }
+        )
+
+        let observedCommand = try XCTUnwrap(commands.first { exe, args in
+            exe == "/usr/bin/ssh" && args.last == Installer.privateDirectMeshObservedSSHClientHostCommand()
+        })
+        XCTAssertEqual(observedCommand.1.dropLast(), [
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "UserKnownHostsFile=\(regularKnownHosts)",
+            "-o", "GlobalKnownHostsFile=/dev/null",
+            "-o", "PermitLocalCommand=no",
+            "-o", "RequestTTY=no",
+            "-o", "ClearAllForwardings=yes",
+            "-o", "LogLevel=ERROR",
+            "jesse@linux-b.tailnet"
+        ])
+        XCTAssertEqual(commands.filter { $0.0 == "/usr/bin/ssh-keyscan" }.map { $0.1.last },
+                       ["linux-b.tailnet", "100.64.10.20"])
+        let command = try XCTUnwrap(commands.first { $0.0 == "/Users/jesse/.local/bin/clipfan" })
+        XCTAssertTrue(command.1.contains("id=mac-a,ssh=100.64.10.20,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519,callback_host=remote_observed"))
+        XCTAssertFalse(command.1.contains { $0.contains("ssh=mac-a.local") })
+        XCTAssertEqual(localRestarts, 1)
+    }
+
+    func testProvisionPrivateDirectMeshKeepsManualCallbackHostOverride() async throws {
+        var commands: [(String, [String])] = []
+        var localRestarts = 0
+        let knownHostsRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-provision-known-hosts-\(UUID().uuidString)")
+        let regularKnownHosts = knownHostsRoot.appendingPathComponent("known_hosts").path
+        defer { try? FileManager.default.removeItem(at: knownHostsRoot) }
+
+        try await Installer.provisionPrivateDirectMesh(
+            hostSpecs: [
+                "id=mac-a,ssh=mac-override.example,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519,callback_host=manual",
+                "id=linux-b,ssh=linux-b.tailnet,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/.config/clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519"
+            ],
+            regularKnownHosts: regularKnownHosts,
+            trustKeyscan: true,
+            clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+            bootstrapInstall: false,
+            runCommand: { exe, args in
+                commands.append((exe, args))
+                if exe == "/usr/bin/ssh-keyscan" {
+                    return self.keyscanFixtureOutput(args)
+                }
+                return #"{"status":"ok"}"#
+            },
+            readLocalHostID: { "mac-a" },
+            restartLocalDaemon: {
+                localRestarts += 1
+            },
+            onProgress: { _ in }
+        )
+
+        XCTAssertFalse(commands.contains { exe, args in
+            exe == "/usr/bin/ssh" && args.last == Installer.privateDirectMeshObservedSSHClientHostCommand()
+        })
+        XCTAssertEqual(commands.filter { $0.0 == "/usr/bin/ssh-keyscan" }.map { $0.1.last },
+                       ["mac-override.example", "linux-b.tailnet"])
+        let command = try XCTUnwrap(commands.first { $0.0 == "/Users/jesse/.local/bin/clipfan" })
+        XCTAssertTrue(command.1.contains("id=mac-a,ssh=mac-override.example,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519,callback_host=manual"))
+        XCTAssertEqual(localRestarts, 1)
+    }
+
+    func testProvisionPrivateDirectMeshRejectsInvalidRemoteObservedCallbackHost() async throws {
+        var commands: [(String, [String])] = []
+        let knownHostsRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-provision-known-hosts-\(UUID().uuidString)")
+        let regularKnownHosts = knownHostsRoot.appendingPathComponent("known_hosts").path
+        defer { try? FileManager.default.removeItem(at: knownHostsRoot) }
+
+        do {
+            try await Installer.provisionPrivateDirectMesh(
+                hostSpecs: [
+                    "id=mac-a,ssh=mac-a.local,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519,callback_host=remote_observed",
+                    "id=linux-b,ssh=linux-b.tailnet,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/.config/clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519"
+                ],
+                regularKnownHosts: regularKnownHosts,
+                trustKeyscan: true,
+                clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+                bootstrapInstall: false,
+                runCommand: { exe, args in
+                    commands.append((exe, args))
+                    if exe == "/usr/bin/ssh-keyscan" {
+                        return self.keyscanFixtureOutput(args)
+                    }
+                    if exe == "/usr/bin/ssh", args.last == Installer.privateDirectMeshObservedSSHClientHostCommand() {
+                        return "100.64.10.20\nextra\n"
+                    }
+                    return #"{"status":"ok"}"#
+                },
+                readLocalHostID: { "mac-a" },
+                onProgress: { _ in }
+            )
+            XCTFail("expected invalid remote observed callback host")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("invalid_remote_observed_callback_host"))
+        }
+
+        XCTAssertFalse(commands.contains { $0.0 == "/Users/jesse/.local/bin/clipfan" })
+    }
+
+    func testProvisionPrivateDirectMeshAcceptsIPv6RemoteObservedCallbackHost() async throws {
+        var commands: [(String, [String])] = []
+        let observedIPv6 = "fd7a:115c:a1e0::1234"
+        let knownHostsRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-provision-known-hosts-\(UUID().uuidString)")
+        let regularKnownHosts = knownHostsRoot.appendingPathComponent("known_hosts").path
+        defer { try? FileManager.default.removeItem(at: knownHostsRoot) }
+
+        try await Installer.provisionPrivateDirectMesh(
+            hostSpecs: [
+                "id=mac-a,ssh=mac-a.local,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519,callback_host=remote_observed",
+                "id=linux-b,ssh=linux-b.tailnet,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/.config/clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519"
+            ],
+            regularKnownHosts: regularKnownHosts,
+            trustKeyscan: true,
+            clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+            bootstrapInstall: false,
+            runCommand: { exe, args in
+                commands.append((exe, args))
+                if exe == "/usr/bin/ssh-keyscan" {
+                    return self.keyscanFixtureOutput(args)
+                }
+                if exe == "/usr/bin/ssh", args.last == Installer.privateDirectMeshObservedSSHClientHostCommand() {
+                    return "\(observedIPv6)\n"
+                }
+                return #"{"status":"ok"}"#
+            },
+            readLocalHostID: { "mac-a" },
+            restartLocalDaemon: {},
+            onProgress: { _ in }
+        )
+
+        XCTAssertEqual(commands.filter { $0.0 == "/usr/bin/ssh-keyscan" }.map { $0.1.last },
+                       ["linux-b.tailnet", observedIPv6])
+        let command = try XCTUnwrap(commands.first { $0.0 == "/Users/jesse/.local/bin/clipfan" })
+        XCTAssertTrue(command.1.contains("id=mac-a,ssh=\(observedIPv6),user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519,callback_host=remote_observed"))
+    }
+
+    func testProvisionPrivateDirectMeshRejectsMultipleRemoteObservedCallbackHostsBeforeSSH() async throws {
+        var called = false
+
+        do {
+            try await Installer.provisionPrivateDirectMesh(
+                hostSpecs: [
+                    "id=mac-a,ssh=mac-a.local,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519,callback_host=remote_observed",
+                    "id=linux-b,ssh=linux-b.tailnet,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/.config/clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519,callback_host=remote_observed"
+                ],
+                regularKnownHosts: "/Users/jesse/.ssh/known_hosts",
+                trustKeyscan: true,
+                clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+                bootstrapInstall: false,
+                runCommand: { _, _ in
+                    called = true
+                    return ""
+                },
+                readLocalHostID: { "mac-a" },
+                onProgress: { _ in }
+            )
+            XCTFail("expected multiple remote observed callback hosts")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("multiple_remote_observed_callback_hosts"))
+        }
+
+        XCTAssertFalse(called)
     }
 
     func testProvisionPrivateDirectMeshBootstrapsNonLocalHostsBeforeProvision() async throws {
