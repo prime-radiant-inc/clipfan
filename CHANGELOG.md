@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.15] - 2026-06-05
+
+### Added
+
+- Fleet settings can now remove a host from the local fleet config, with a signed daemon API and `clipfan remove-host` CLI path.
+
+### Fixed
+
+- Remove Host clears both legacy `static_peers` rows and SSH peer config entries, including stale hosts left from earlier setup attempts.
+- Remove Host now treats daemon restart/refresh problems as post-remove warnings instead of reporting that the config removal failed.
+
 ## [0.3.14] - 2026-06-05
 
 ### Fixed
