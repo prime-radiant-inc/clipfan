@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.12] - 2026-06-05
+
+### Changed
+
+- Add Peer now provisions one private SSH mesh peer at a time, with single-selection tailnet picking and simpler private mesh copy.
+
+### Fixed
+
+- Private direct SSH mesh setup now seeds regular SSH `known_hosts` before strict bootstrap probes, including local-host pins needed by direct provisioning.
+- Host key seeding now uses OpenSSH lookup behavior for existing pins, detects conflicts without silently rotating keys, and supports non-ED25519 SSH host keys.
+
 ## [0.3.11] - 2026-06-04
 
 ### Fixed
