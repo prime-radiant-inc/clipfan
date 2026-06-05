@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.17] - 2026-06-05
+
+### Fixed
+
+- Add Peer now derives this Mac's SSH callback host automatically from macOS LocalHostName and no longer requires entering the local Mac name during setup.
+- Advanced local SSH settings keep optional user, port, and host override controls without blocking the automatic path.
+
 ## [0.3.16] - 2026-06-05
 
 ### Fixed
