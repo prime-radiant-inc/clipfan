@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.16] - 2026-06-05
+
+### Fixed
+
+- Add Peer now prefers `.local` SSH names for selected macOS tailnet hosts when MagicDNS is unavailable, avoiding mesh configs that use a Tailscale IP another peer cannot reach.
+- Private SSH mesh probes now fail quickly with an explicit timeout when a peer cannot open the pinned SSH connection.
+
 ## [0.3.15] - 2026-06-05
 
 ### Added
