@@ -97,13 +97,54 @@ func addPeerPreferredLocalTailnetSSHHost(_ peer: TailscalePeer) -> String {
     return peer.ip.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
-func addPeerDefaultLocalSSHHost(systemHostName: String = ProcessInfo.processInfo.hostName,
+func addPeerDefaultLocalSSHHost(systemHostName: String = addPeerLiveSystemLocalHostName(),
                                 tailnetSSHHost: String) -> String {
     let localName = addPeerLocalSSHHostCandidate(systemHostName)
     if !localName.isEmpty {
         return localName
     }
     return tailnetSSHHost.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+func addPeerEffectiveLocalSSHHost(override: String,
+                                  systemHostName: String = addPeerLiveSystemLocalHostName(),
+                                  tailnetSSHHost: String) -> String {
+    let trimmedOverride = override.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmedOverride.isEmpty {
+        return trimmedOverride
+    }
+    return addPeerDefaultLocalSSHHost(systemHostName: systemHostName,
+                                      tailnetSSHHost: tailnetSSHHost)
+}
+
+func addPeerSystemLocalHostName(scutilLocalHostName: String?, processHostName: String) -> String {
+    let localHostName = (scutilLocalHostName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    if !localHostName.isEmpty {
+        return localHostName
+    }
+    return processHostName.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+func addPeerLiveSystemLocalHostName() -> String {
+    addPeerSystemLocalHostName(scutilLocalHostName: addPeerReadScutilLocalHostName(),
+                               processHostName: ProcessInfo.processInfo.hostName)
+}
+
+private func addPeerReadScutilLocalHostName() -> String? {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/usr/sbin/scutil")
+    proc.arguments = ["--get", "LocalHostName"]
+    let out = Pipe()
+    proc.standardOutput = out
+    do {
+        try proc.run()
+        proc.waitUntilExit()
+    } catch {
+        return nil
+    }
+    guard proc.terminationStatus == 0 else { return nil }
+    let data = out.fileHandleForReading.readDataToEndOfFile()
+    return String(decoding: data, as: UTF8.self)
 }
 
 func addPeerLocalSSHHostCandidate(_ hostName: String) -> String {
@@ -179,8 +220,9 @@ struct AddPeerSheet: View {
     @State private var sshKey: String = ""
     @State private var withTmux = false
     @State private var remoteDrafts: [AddPeerRemoteHostDraft] = [AddPeerRemoteHostDraft()]
-    @State private var localSSHHost: String = ""
     @State private var localTailnetSSHHost: String = ""
+    @State private var localSystemHostName: String = addPeerLiveSystemLocalHostName()
+    @State private var localSSHHostOverride: String = ""
     @State private var localSSHUser: String = NSUserName()
     @State private var localSSHPort: Int = 22
     @State private var directMeshRegularKnownHosts: String = "~/.ssh/known_hosts"
@@ -246,6 +288,12 @@ struct AddPeerSheet: View {
         let origin = daemon.origin.trimmingCharacters(in: .whitespacesAndNewlines)
         if !origin.isEmpty, origin != "—" { return origin }
         return addPeerDerivedHostID(from: localSSHHost)
+    }
+
+    private var localSSHHost: String {
+        addPeerEffectiveLocalSSHHost(override: localSSHHostOverride,
+                                     systemHostName: localSystemHostName,
+                                     tailnetSSHHost: localTailnetSSHHost)
     }
 
     private var localDirectMeshSpec: String? {
@@ -324,9 +372,9 @@ struct AddPeerSheet: View {
         .frame(width: 620)
         .frame(minHeight: tailnetAvailable ? 660 : 520)
         .task {
+            localSystemHostName = addPeerLiveSystemLocalHostName()
             await daemon.refresh()
             await loadTailnet()
-            seedLocalSSHDefaults()
         }
     }
 
@@ -423,11 +471,12 @@ struct AddPeerSheet: View {
             Toggle("Trust SSH host key from ssh-keyscan", isOn: $trustDirectMeshKeyscan)
             DisclosureGroup("Advanced local SSH", isExpanded: $showingAdvancedSSH) {
                 VStack(alignment: .leading, spacing: 8) {
+                    TextField("Host override", text: $localSSHHostOverride, prompt: Text("Automatic"))
+                    TextField("User", text: $localSSHUser)
                     HStack {
-                        TextField("Host", text: $localSSHHost)
-                        TextField("User", text: $localSSHUser)
                         TextField("Port", value: $localSSHPort, format: .number)
                             .frame(width: 80)
+                        Spacer()
                     }
                 }
                 .padding(.top, 4)
@@ -484,11 +533,6 @@ struct AddPeerSheet: View {
         } else {
             tailnetAvailable = false
         }
-    }
-
-    private func seedLocalSSHDefaults() {
-        guard localSSHHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        localSSHHost = addPeerDefaultLocalSSHHost(tailnetSSHHost: localTailnetSSHHost)
     }
 
     private func removeRemoteDraft(_ id: UUID) {

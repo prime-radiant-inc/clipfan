@@ -252,6 +252,34 @@ final class SSHTransportGatePolicyTests: XCTestCase {
         )
     }
 
+    func testAddPeerSystemLocalHostNamePrefersMacLocalHostName() {
+        XCTAssertEqual(
+            addPeerSystemLocalHostName(scutilLocalHostName: " m4 ",
+                                       processHostName: "jesses-macbook-pro-2"),
+            "m4"
+        )
+        XCTAssertEqual(
+            addPeerSystemLocalHostName(scutilLocalHostName: "",
+                                       processHostName: "jesses-macbook-pro-2"),
+            "jesses-macbook-pro-2"
+        )
+    }
+
+    func testAddPeerEffectiveLocalSSHHostUsesOverrideOnlyWhenPresent() {
+        XCTAssertEqual(
+            addPeerEffectiveLocalSSHHost(override: "",
+                                         systemHostName: "m4",
+                                         tailnetSSHHost: "m4.tailnet.example"),
+            "m4.local"
+        )
+        XCTAssertEqual(
+            addPeerEffectiveLocalSSHHost(override: " mac-from-linux.local ",
+                                         systemHostName: "m4",
+                                         tailnetSSHHost: "m4.tailnet.example"),
+            "mac-from-linux.local"
+        )
+    }
+
     func testAddPeerDefaultLocalSSHHostFallsBackToTailnetWhenLocalNameIsMissing() {
         XCTAssertEqual(
             addPeerDefaultLocalSSHHost(systemHostName: " localhost ",
