@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.14] - 2026-06-05
+
+### Fixed
+
+- Add Peer now discovers the local Mac's Tailscale identity from the macOS Tailscale app binary when GUI PATH does not include `tailscale`.
+- Private SSH mesh setup no longer falls back to short local hostnames such as `m4` for the local mesh endpoint, avoiding failed keyscans against names that remote peers cannot resolve.
+
 ## [0.3.13] - 2026-06-05
 
 ### Fixed
