@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.13] - 2026-06-05
+
+### Fixed
+
+- Private direct SSH mesh bootstrap now honors user SSH config and default identities for regular admin auth while keeping pinned runtime SSH targets resolved and managed.
+- Bootstrap host-key discovery now accepts OpenSSH's default `HostKeyAlias none` output without failing before keyscan.
+
 ## [0.3.12] - 2026-06-05
 
 ### Changed
