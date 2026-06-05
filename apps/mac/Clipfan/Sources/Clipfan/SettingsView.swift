@@ -42,6 +42,9 @@ struct FleetTab: View {
     @EnvironmentObject var daemon: DaemonClient
     @State private var showAdd = false
     @State private var updatePeer: Peer?
+    @State private var removePeer: Peer?
+    @State private var removingHost: String?
+    @State private var removeError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -92,6 +95,16 @@ struct FleetTab: View {
                                 }
                                 .buttonStyle(.borderless)
                                 .help("Update clipfan on \(peer.hostname)")
+
+                                Button(role: .destructive) {
+                                    removePeer = peer
+                                } label: {
+                                    Label("Remove host", systemImage: "trash")
+                                        .labelStyle(.iconOnly)
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(removingHost == peer.hostname)
+                                .help("Remove \(peer.hostname) from this Mac")
                             }
                         }
                         .padding(12)
@@ -120,8 +133,56 @@ struct FleetTab: View {
         .sheet(item: $updatePeer) { peer in
             UpdatePeerSheet(peer: peer)
         }
+        .confirmationDialog(
+            removePeer.map { "Remove \($0.hostname)?" } ?? "Remove host?",
+            isPresented: Binding(
+                get: { removePeer != nil },
+                set: { if !$0 { removePeer = nil } }
+            ),
+            presenting: removePeer
+        ) { peer in
+            Button("Remove Host", role: .destructive) {
+                Task { await remove(peer) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { peer in
+            Text("Removes \(peer.hostname) from this Mac and restarts the daemon.")
+        }
+        .alert(
+            "Remove host failed",
+            isPresented: Binding(
+                get: { removeError != nil },
+                set: { if !$0 { removeError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { removeError = nil }
+        } message: {
+            Text(removeError ?? "")
+        }
+        .alert(
+            "Host removed",
+            isPresented: Binding(
+                get: { daemon.hostRemoveWarning != nil },
+                set: { if !$0 { daemon.hostRemoveWarning = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { daemon.hostRemoveWarning = nil }
+        } message: {
+            Text(daemon.hostRemoveWarning ?? "")
+        }
         .onAppear {
             Task { await daemon.refreshPeerVersions() }
+        }
+    }
+
+    private func remove(_ peer: Peer) async {
+        removePeer = nil
+        removingHost = peer.hostname
+        defer { removingHost = nil }
+        do {
+            _ = try await daemon.removeHost(hostID: peer.hostname)
+        } catch {
+            removeError = String(describing: error)
         }
     }
 }

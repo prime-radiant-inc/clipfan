@@ -124,6 +124,42 @@ final class LocalDaemonSSHPeerConfigTests: XCTestCase {
         }
     }
 
+    func testBuildsHostRemoveRequest() throws {
+        let endpoint = signedEndpoint()
+        let request = LocalDaemonHostRemoveRequest(
+            expectedRevisionState: "versioned",
+            expectedConfigRevision: 12,
+            reason: "user_deleted",
+            logID: "host-remove-1780257600"
+        )
+
+        let prepared = try LocalDaemonRequestBuilder.hostRemoveRequest(
+            endpoint: endpoint,
+            hostID: "magic-kingdom",
+            request: request,
+            sharedKey: rawKey
+        )
+
+        try assertPreparedJSONRequest(prepared, method: "DELETE", requestURI: "/v1/config/peers/magic-kingdom") { body in
+            XCTAssertEqual(body["expected_revision_state"] as? String, "versioned")
+            XCTAssertEqual(body["expected_config_revision"] as? Int, 12)
+            XCTAssertEqual(body["reason"] as? String, "user_deleted")
+            XCTAssertEqual(body["log_id"] as? String, "host-remove-1780257600")
+        }
+    }
+
+    func testRejectsUnsafeHostRemovePathID() throws {
+        let endpoint = signedEndpoint()
+        XCTAssertThrowsError(try LocalDaemonRequestBuilder.hostRemoveRequest(
+            endpoint: endpoint,
+            hostID: "fsck/disable",
+            request: LocalDaemonHostRemoveRequest(expectedRevisionState: "versioned", expectedConfigRevision: 12, reason: "user_deleted", logID: "host-remove-1780257600"),
+            sharedKey: rawKey
+        )) { error in
+            XCTAssertEqual(error as? LocalDaemonRequestError, .invalidRequestURI("/v1/config/peers/fsck/disable"))
+        }
+    }
+
     func testDecodesSSHPeerConfigResponseWithRedactedPeer() throws {
         let json = Data("""
         {
@@ -222,6 +258,40 @@ final class LocalDaemonSSHPeerConfigTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
         XCTAssertEqual(object["verified_at"] as? String, "1970-01-01T00:00:00.000Z")
+    }
+
+    func testClientRemovesHost() async throws {
+        let endpoint = signedEndpoint()
+        var calls: [(String, String, Data)] = []
+        let client = LocalDaemonSSHPeerConfigClient(endpoint: endpoint, sharedKey: rawKey) { prepared in
+            let request = prepared.request
+            calls.append((request.httpMethod ?? "", request.url!.path, request.httpBody ?? Data()))
+            return Self.signedResponseBody(
+                for: prepared,
+                key: self.rawKey,
+                status: 200,
+                body: Self.hostRemoveResponseJSON(revision: 13)
+            )
+        }
+
+        let response = try await client.removeHost(
+            hostID: "magic-kingdom",
+            request: LocalDaemonHostRemoveRequest(
+                expectedRevisionState: "versioned",
+                expectedConfigRevision: 12,
+                reason: "user_deleted",
+                logID: "host-remove-1780257600"
+            )
+        )
+
+        XCTAssertEqual(response.hostID, "magic-kingdom")
+        XCTAssertTrue(response.removedStaticPeer)
+        XCTAssertTrue(response.removedSSHPeer)
+        XCTAssertEqual(response.configRevision, 13)
+        XCTAssertEqual(calls.map(\.1), ["/v1/config/peers/magic-kingdom"])
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: calls[0].2) as? [String: Any])
+        XCTAssertEqual(body["expected_config_revision"] as? Int, 12)
+        XCTAssertEqual(body["log_id"] as? String, "host-remove-1780257600")
     }
 
     func testClientRetriesStaleRevisionAfterRefreshingPeerConfig() async throws {
@@ -663,6 +733,22 @@ final class LocalDaemonSSHPeerConfigTests: XCTestCase {
             "id": "fsck",
             "enabled": true,
             "migration_state": "ssh_material_staged"
+          }
+        }
+        """.utf8)
+    }
+
+    private static func hostRemoveResponseJSON(revision: UInt64) -> Data {
+        Data("""
+        {
+          "config_version": 2,
+          "config_revision": \(revision),
+          "revision_state": "versioned",
+          "host_id": "magic-kingdom",
+          "removed_static_peer": true,
+          "removed_ssh_peer": true,
+          "ssh_cleanup_status": {
+            "cleanup_required": true
           }
         }
         """.utf8)

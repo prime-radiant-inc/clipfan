@@ -30,6 +30,16 @@ extension FleetRowTests {
         XCTAssertEqual(resp.max_history, 350)
     }
 
+    func testDecodePeersResponseRevisionMetadata() throws {
+        let json = """
+        {"origin":"p","peers":[],"config_version":2,"config_revision":17,"revision_state":"versioned"}
+        """.data(using: .utf8)!
+        let resp = try JSONDecoder.clipfan.decode(PeersResponse.self, from: json)
+        XCTAssertEqual(resp.config_version, 2)
+        XCTAssertEqual(resp.config_revision, 17)
+        XCTAssertEqual(resp.revision_state, "versioned")
+    }
+
     func testDecodePeersResponseSafeModeCompatibilityPayload() throws {
         let json = """
         {

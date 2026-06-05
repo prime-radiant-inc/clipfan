@@ -56,6 +56,29 @@ func TestPeersHandlerIncludesMaxHistory(t *testing.T) {
 	}
 }
 
+func TestPeersHandlerIncludesCurrentConfigRevision(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.json")
+	body := []byte(`{"config_version":2,"config_revision":17,"shared_key":"` + config.NewSharedKey() + `","hostname":"m4","listen":"127.0.0.1:7853","max_history":50}`)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, _, _ := newTestDaemon(t)
+	d.configPath = path
+
+	out := d.peersHandler().(map[string]any)
+
+	if out["revision_state"] != config.RevisionStateVersioned {
+		t.Fatalf("revision_state = %#v, want versioned", out["revision_state"])
+	}
+	if got, ok := out["config_revision"].(*uint64); !ok || got == nil || *got != 17 {
+		t.Fatalf("config_revision = %#v, want *17", out["config_revision"])
+	}
+	if got, ok := out["config_version"].(*int); !ok || got == nil || *got != 2 {
+		t.Fatalf("config_version = %#v, want *2", out["config_version"])
+	}
+}
+
 func TestSetMaxHistoryRejectsConfigV2WhenWritesDisabled(t *testing.T) {
 	if releaseflags.ConfigV2WriteEnabled {
 		t.Skip("requires generated ConfigV2WriteEnabled=false")

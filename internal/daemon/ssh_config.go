@@ -77,6 +77,18 @@ func (d *Daemon) sshPeerConfigDeleteHandler(peerID string, body []byte) (any, *t
 	return status, nil
 }
 
+func (d *Daemon) hostRemoveHandler(hostID string, body []byte) (any, *transport.HandlerError) {
+	req, err := config.DecodeHostRemoveRequest(bytes.NewReader(body))
+	if err != nil {
+		return nil, sshPeerConfigHandlerError(err)
+	}
+	status, err := config.RemoveHost(d.configPath, hostID, req)
+	if err != nil {
+		return nil, sshPeerConfigHandlerError(err)
+	}
+	return status, nil
+}
+
 func sshPeerConfigHandlerError(err error) *transport.HandlerError {
 	if err == nil {
 		return nil
@@ -91,20 +103,26 @@ func sshPeerConfigHandlerError(err error) *transport.HandlerError {
 	}
 	text := err.Error()
 	switch {
+	case hasErrorPrefix(text, "host_not_found"):
+		return &transport.HandlerError{Status: 404, Code: "host_not_found"}
 	case hasErrorPrefix(text, "ssh_peer_not_found"):
 		return &transport.HandlerError{Status: 404, Code: "ssh_peer_not_found"}
 	case hasErrorPrefix(text,
 		"unknown_field",
+		"missing_host_remove_field",
+		"missing_ssh_peer_remove_field",
 		"missing_ssh_peer_upsert_field",
 		"missing_ssh_peer_proof_patch_field",
 		"missing_ssh_peer_transition_field",
 		"missing_ssh_peer_disable_field",
 		"missing_ssh_peer_delete_field",
+		"malformed_host_remove_request",
 		"malformed_ssh_peer_upsert_request",
 		"malformed_ssh_peer_proof_patch_request",
 		"malformed_ssh_peer_transition_request",
 		"malformed_ssh_peer_disable_request",
 		"malformed_ssh_peer_delete_request",
+		"invalid_host_remove_field",
 		"invalid_ssh_peer_upsert_field",
 		"invalid_ssh_peer_proof_patch_field",
 		"invalid_ssh_peer_transition_field",
@@ -115,6 +133,8 @@ func sshPeerConfigHandlerError(err error) *transport.HandlerError {
 		return &transport.HandlerError{Status: 400, Code: "bad_request"}
 	case hasErrorPrefix(text, "invalid_ssh_peer_id"):
 		return &transport.HandlerError{Status: 400, Code: "invalid_ssh_peer_id"}
+	case hasErrorPrefix(text, "invalid_host_remove_id"):
+		return &transport.HandlerError{Status: 400, Code: "invalid_host_remove_id"}
 	case hasErrorPrefix(text, "ssh_peer_secret_field_not_allowed"):
 		return &transport.HandlerError{Status: 400, Code: "secret_field_not_allowed"}
 	case hasErrorPrefix(text, "ssh_peer_id_mismatch"):

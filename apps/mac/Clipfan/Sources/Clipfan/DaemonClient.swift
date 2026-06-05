@@ -39,6 +39,9 @@ final class DaemonClient: ObservableObject {
     @Published var safeModeLog: String = ""
     @Published var listenerRepairInProgress: Bool = false
     @Published var safeModeRepairMessage: String?
+    @Published var configRevision: UInt64?
+    @Published var revisionState: String?
+    @Published var hostRemoveWarning: String?
 
     var transportGatePolicy: SSHTransportGatePolicy = .current
     var peerVersionFetch: PeerUpdateVerifier.Fetch = PeerVersionProbe.fetch
@@ -323,6 +326,25 @@ final class DaemonClient: ObservableObject {
         )
     }
 
+    func removeHost(hostID: String) async throws -> LocalDaemonHostRemoveResponse {
+        try requireSSHPeerConfigMutationAvailable()
+        hostRemoveWarning = nil
+        if revisionState?.isEmpty != false {
+            await refresh()
+        }
+        let client = try sshPeerConfigClient()
+        do {
+            let response = try await client.removeHost(hostID: hostID, request: makeHostRemoveRequest())
+            await completeHostRemove(hostID: hostID)
+            return response
+        } catch LocalDaemonSSHPeerConfigError.api(let code, _) where code == localDaemonConfigRevisionConflictCode {
+            await refresh()
+            let response = try await client.removeHost(hostID: hostID, request: makeHostRemoveRequest())
+            await completeHostRemove(hostID: hostID)
+            return response
+        }
+    }
+
     private func signedRequest(method: String, path: String, body: [String: Any]) async {
         guard safeModeStatus?.active != true else { return }
         guard let key = loadSharedKey(),
@@ -375,6 +397,8 @@ final class DaemonClient: ObservableObject {
         self.origin = resp.origin
         self.version = resp.version
         if let m = resp.max_history { self.maxHistory = m }
+        self.configRevision = resp.config_revision
+        self.revisionState = resp.revision_state
         self.safeModeStatus = resp.safeMode
         if safeModeStatus?.active == true {
             self.peers = []
@@ -416,6 +440,42 @@ final class DaemonClient: ObservableObject {
     private func requireSSHPeerConfigMutationAvailable() throws {
         guard safeModeStatus?.active != true else {
             throw LocalDaemonSSHPeerConfigError.api(code: "safe_mode_active", statusCode: 503)
+        }
+    }
+
+    private func makeHostRemoveRequest() throws -> LocalDaemonHostRemoveRequest {
+        guard let revisionState, !revisionState.isEmpty else {
+            throw LocalDaemonSSHPeerConfigError.api(code: "missing_revision_state", statusCode: 409)
+        }
+        let expectedRevision: UInt64?
+        if revisionState == "versioned" {
+            guard let configRevision, configRevision > 0 else {
+                throw LocalDaemonSSHPeerConfigError.api(code: localDaemonConfigRevisionConflictCode, statusCode: 409)
+            }
+            expectedRevision = configRevision
+        } else {
+            expectedRevision = nil
+        }
+        return LocalDaemonHostRemoveRequest(
+            expectedRevisionState: revisionState,
+            expectedConfigRevision: expectedRevision,
+            reason: "user_deleted",
+            logID: "host-remove-\(Int(Date().timeIntervalSince1970))"
+        )
+    }
+
+    private func completeHostRemove(hostID: String) async {
+        peerVersions.removeValue(forKey: hostID)
+        guard restartDaemon() else {
+            hostRemoveWarning = "Removed \(hostID) from config, but Clipfan could not restart the daemon. Restart Clipfan to apply the change."
+            connected = false
+            return
+        }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        await refresh()
+        await refreshPeerVersions()
+        if peers.contains(where: { $0.hostname == hostID }) {
+            hostRemoveWarning = "Removed \(hostID) from config, but the daemon has not refreshed its peer list yet."
         }
     }
 

@@ -37,6 +37,12 @@ type RevisionExpectation struct {
 	Revision *uint64
 }
 
+type RevisionStatus struct {
+	ConfigVersion  *int          `json:"config_version,omitempty"`
+	ConfigRevision *uint64       `json:"config_revision,omitempty"`
+	RevisionState  RevisionState `json:"revision_state"`
+}
+
 type configDocument struct {
 	Config         Config
 	RevisionState  RevisionState
@@ -341,6 +347,18 @@ func readConfigDocumentLocked(path string) (*configDocument, error) {
 		return nil, err
 	}
 	return doc, nil
+}
+
+func ReadRevisionStatus(path string) (RevisionStatus, error) {
+	doc, err := readConfigDocumentLocked(path)
+	if err != nil {
+		return RevisionStatus{}, err
+	}
+	return RevisionStatus{
+		ConfigVersion:  copyIntPtr(doc.Config.ConfigVersion),
+		ConfigRevision: copyUint64Ptr(doc.ConfigRevision),
+		RevisionState:  doc.RevisionState,
+	}, nil
 }
 
 func readConfigFileSafe(path string) ([]byte, error) {

@@ -27,6 +27,8 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "                  — read stdin, push to local daemon and/or emit OSC 52")
 	fmt.Fprintln(w, "  paste [--raw]   — write current clipfan state to stdout")
 	fmt.Fprintln(w, "  storage-preflight — check local runtime storage and print offline repair guidance")
+	fmt.Fprintln(w, "  remove-host <host>")
+	fmt.Fprintln(w, "                  — remove a host from the local fleet config")
 	fmt.Fprintln(w, "  local-fleet-reset --confirm \"RESET LOCAL CLIPFAN FLEET\"")
 	fmt.Fprintln(w, "                  — destructively reset local fleet credentials when recovery requires it")
 	fmt.Fprintln(w, "  ssh-gateway --authorized-peer <peer> --authorized-key-id <key>")
@@ -56,6 +58,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		case "storage-preflight":
 			if err := cli.RunStoragePreflight(args[1:], stdout, stderr); err != nil {
 				fmt.Fprintln(stderr, "clipfan storage-preflight:", err)
+				return 1
+			}
+			return 0
+		case "remove-host":
+			if err := cli.RunRemoveHost(args[1:], stdout, stderr); err != nil {
+				fmt.Fprintln(stderr, "clipfan remove-host:", err)
 				return 1
 			}
 			return 0

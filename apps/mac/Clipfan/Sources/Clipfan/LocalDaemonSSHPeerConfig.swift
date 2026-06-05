@@ -86,6 +86,20 @@ extension LocalDaemonRequestBuilder {
                                      timeout: timeout)
     }
 
+    static func hostRemoveRequest(endpoint: LocalDaemonEndpoint,
+                                  hostID: String,
+                                  request: LocalDaemonHostRemoveRequest,
+                                  sharedKey: Data,
+                                  timeout: TimeInterval = 2) throws -> LocalDaemonPreparedRequest {
+        let path = try hostRemovePath(hostID: hostID)
+        return try signedJSONRequest(endpoint: endpoint,
+                                     method: "DELETE",
+                                     requestURI: path,
+                                     request: request,
+                                     sharedKey: sharedKey,
+                                     timeout: timeout)
+    }
+
     private static func signedJSONRequest<T: Encodable>(endpoint: LocalDaemonEndpoint,
                                                         method: String,
                                                         requestURI: String,
@@ -102,13 +116,21 @@ extension LocalDaemonRequestBuilder {
     }
 
     private static func sshPeerConfigPath(peerID: String) throws -> String {
+        try localConfigPathSegment(peerID, prefix: "/v1/config/ssh/peers/")
+    }
+
+    private static func hostRemovePath(hostID: String) throws -> String {
+        try localConfigPathSegment(hostID, prefix: "/v1/config/peers/")
+    }
+
+    private static func localConfigPathSegment(_ value: String, prefix: String) throws -> String {
         let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
-        guard !peerID.isEmpty,
-              !peerID.allSatisfy({ $0 == "." }),
-              peerID.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
-            throw LocalDaemonRequestError.invalidRequestURI("/v1/config/ssh/peers/\(peerID)")
+        guard !value.isEmpty,
+              !value.allSatisfy({ $0 == "." }),
+              value.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+            throw LocalDaemonRequestError.invalidRequestURI("\(prefix)\(value)")
         }
-        return "/v1/config/ssh/peers/\(peerID)"
+        return "\(prefix)\(value)"
     }
 }
 
@@ -169,6 +191,11 @@ struct LocalDaemonSSHPeerConfigClient {
 
     func delete(peerID: String, request body: LocalDaemonSSHPeerDeleteRequest) async throws -> LocalDaemonSSHPeerConfigResponse {
         let request = try LocalDaemonRequestBuilder.sshPeerConfigDeleteRequest(endpoint: endpoint, peerID: peerID, request: body, sharedKey: sharedKey)
+        return try await perform(request)
+    }
+
+    func removeHost(hostID: String, request body: LocalDaemonHostRemoveRequest) async throws -> LocalDaemonHostRemoveResponse {
+        let request = try LocalDaemonRequestBuilder.hostRemoveRequest(endpoint: endpoint, hostID: hostID, request: body, sharedKey: sharedKey)
         return try await perform(request)
     }
 

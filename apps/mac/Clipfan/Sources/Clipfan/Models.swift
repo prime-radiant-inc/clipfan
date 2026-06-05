@@ -318,6 +318,24 @@ struct LocalDaemonSSHPeerConfigResponse: Codable, Equatable {
     var configVersion: Int? { config_version }
 }
 
+struct LocalDaemonHostRemoveResponse: Codable, Equatable {
+    let host_id: String
+    let removed_static_peer: Bool
+    let removed_ssh_peer: Bool
+    let config_revision: UInt64?
+    let revision_state: String
+    let config_version: Int?
+    let ssh_cleanup_status: [String: LocalDaemonJSONValue]?
+
+    var hostID: String { host_id }
+    var removedStaticPeer: Bool { removed_static_peer }
+    var removedSSHPeer: Bool { removed_ssh_peer }
+    var configRevision: UInt64? { config_revision }
+    var revisionState: String { revision_state }
+    var configVersion: Int? { config_version }
+    var sshCleanupStatus: [String: LocalDaemonJSONValue]? { ssh_cleanup_status }
+}
+
 struct LocalDaemonSSHPeer: Codable, Equatable {
     let id: String
     let enabled: Bool?
@@ -588,6 +606,23 @@ struct LocalDaemonSSHPeerDeleteRequest: Codable, Equatable {
     let log_id: String
 
     init(expectedConfigRevision: UInt64, reason: String, logID: String) {
+        self.expected_config_revision = expectedConfigRevision
+        self.reason = reason
+        self.log_id = logID
+    }
+}
+
+struct LocalDaemonHostRemoveRequest: Codable, Equatable {
+    let expected_revision_state: String
+    let expected_config_revision: UInt64?
+    let reason: String
+    let log_id: String
+
+    init(expectedRevisionState: String,
+         expectedConfigRevision: UInt64?,
+         reason: String,
+         logID: String) {
+        self.expected_revision_state = expectedRevisionState
         self.expected_config_revision = expectedConfigRevision
         self.reason = reason
         self.log_id = logID

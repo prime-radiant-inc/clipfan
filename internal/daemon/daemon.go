@@ -199,6 +199,7 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 	d.sv.SetSSHPeerConfigTransition(d.sshPeerConfigTransitionHandler)
 	d.sv.SetSSHPeerConfigDisable(d.sshPeerConfigDisableHandler)
 	d.sv.SetSSHPeerConfigDelete(d.sshPeerConfigDeleteHandler)
+	d.sv.SetHostRemove(d.hostRemoveHandler)
 	d.serveListener = d.sv.ServeListener
 	return d, nil
 }
@@ -282,12 +283,18 @@ func hostsMatch(a, b string) bool {
 }
 
 func (d *Daemon) peersHandler() any {
-	return map[string]any{
+	payload := map[string]any{
 		"origin":      d.origin,
 		"peers":       d.Snapshot(context.Background()),
 		"version":     version.Version,
 		"max_history": store.CapLimit(),
 	}
+	if status, err := config.ReadRevisionStatus(d.configPath); err == nil {
+		payload["config_version"] = status.ConfigVersion
+		payload["config_revision"] = status.ConfigRevision
+		payload["revision_state"] = status.RevisionState
+	}
+	return payload
 }
 
 func (d *Daemon) versionHandler() any {

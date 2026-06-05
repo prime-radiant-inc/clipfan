@@ -52,6 +52,7 @@ type SSHPeerConfigProofPatchFunc func(peerID string, body []byte) (any, *Handler
 type SSHPeerConfigTransitionFunc func(peerID string, body []byte) (any, *HandlerError)
 type SSHPeerConfigDisableFunc func(peerID string, body []byte) (any, *HandlerError)
 type SSHPeerConfigDeleteFunc func(peerID string, body []byte) (any, *HandlerError)
+type HostRemoveFunc func(hostID string, body []byte) (any, *HandlerError)
 
 type HandlerError struct {
 	Status int
@@ -92,6 +93,7 @@ type Server struct {
 	sshPeerTransitionFn   SSHPeerConfigTransitionFunc
 	sshPeerDisableFn      SSHPeerConfigDisableFunc
 	sshPeerDeleteFn       SSHPeerConfigDeleteFunc
+	hostRemoveFn          HostRemoveFunc
 	localRequiredAuthVer  string
 	safeMode              bool
 	safeInfo              SafeModeInfo
@@ -177,6 +179,10 @@ func (s *Server) SetSSHPeerConfigDelete(deleteFn SSHPeerConfigDeleteFunc) {
 	s.sshPeerDeleteFn = deleteFn
 }
 
+func (s *Server) SetHostRemove(removeFn HostRemoveFunc) {
+	s.hostRemoveFn = removeFn
+}
+
 func (s *Server) SetRequiredLocalAuthVersion(authVersion string) {
 	s.localRequiredAuthVer = authVersion
 }
@@ -208,6 +214,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/restore", s.postRestore)
 	mux.HandleFunc("POST /v1/history/pin", s.postPin)
 	mux.HandleFunc("POST /v1/config", s.postConfig)
+	mux.HandleFunc("DELETE /v1/config/peers/{host_id}", s.deleteHostConfig)
 	mux.HandleFunc("GET /v1/config/ssh/peers/{peer_id}", s.getSSHPeerConfig)
 	mux.HandleFunc("PUT /v1/config/ssh/peers/{peer_id}", s.putSSHPeerConfig)
 	mux.HandleFunc("DELETE /v1/config/ssh/peers/{peer_id}", s.deleteSSHPeerConfig)
@@ -717,6 +724,23 @@ func (s *Server) putSSHPeerConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	payload, handlerErr := s.sshPeerPutFn(r.PathValue("peer_id"), signed.body)
+	if handlerErr != nil {
+		s.writeSignedError(w, signed, handlerErr.httpStatus(), handlerErr.Code)
+		return
+	}
+	s.writeSignedJSON(w, signed, payload)
+}
+
+func (s *Server) deleteHostConfig(w http.ResponseWriter, r *http.Request) {
+	signed := s.readSignedLocalRequiredAuthVersion(w, r, AuthVersionRequestHMAC)
+	if signed == nil {
+		return
+	}
+	if s.hostRemoveFn == nil {
+		s.writeSignedError(w, signed, http.StatusServiceUnavailable, "host_remove_unavailable")
+		return
+	}
+	payload, handlerErr := s.hostRemoveFn(r.PathValue("host_id"), signed.body)
 	if handlerErr != nil {
 		s.writeSignedError(w, signed, handlerErr.httpStatus(), handlerErr.Code)
 		return
