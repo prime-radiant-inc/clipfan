@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.18] - 2026-06-05
+
+### Fixed
+
+- Add Peer now detects this Mac's SSH callback address from the remote host's observed SSH connection, avoiding local hostname guesses during direct mesh setup.
+- Direct mesh setup now handles raw IPv6 callback hosts in SSH keyscan and SCP upload paths.
+
 ## [0.3.17] - 2026-06-05
 
 ### Fixed
