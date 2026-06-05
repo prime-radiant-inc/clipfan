@@ -196,6 +196,44 @@ final class SSHTransportGatePolicyTests: XCTestCase {
         )), "m4")
     }
 
+    func testAddPeerPreferredLocalTailnetSSHHostRequiresRoutableTailnetAddress() {
+        XCTAssertEqual(addPeerPreferredLocalTailnetSSHHost(TailscalePeer(
+            hostName: "m4",
+            dnsName: "m4.tailnet.example.",
+            ip: "100.64.0.1",
+            os: "darwin",
+            online: true,
+            user: "uid-1"
+        )), "m4.tailnet.example")
+        XCTAssertEqual(addPeerPreferredLocalTailnetSSHHost(TailscalePeer(
+            hostName: "m4",
+            dnsName: "",
+            ip: "100.64.0.1",
+            os: "darwin",
+            online: true,
+            user: "uid-1"
+        )), "100.64.0.1")
+        XCTAssertEqual(addPeerPreferredLocalTailnetSSHHost(TailscalePeer(
+            hostName: "m4",
+            dnsName: "",
+            ip: "",
+            os: "darwin",
+            online: true,
+            user: "uid-1"
+        )), "")
+    }
+
+    func testAddPeerDefaultLocalSSHHostDoesNotFallbackToShortLocalNames() {
+        XCTAssertEqual(
+            addPeerDefaultLocalSSHHost(tailnetSSHHost: " jesse-paradise-park.trout-rigel.ts.net "),
+            "jesse-paradise-park.trout-rigel.ts.net"
+        )
+        XCTAssertEqual(
+            addPeerDefaultLocalSSHHost(tailnetSSHHost: ""),
+            ""
+        )
+    }
+
     func testTailscaleStatusSnapshotParsesSelfAndPeers() throws {
         let json = """
         {
@@ -233,6 +271,19 @@ final class SSHTransportGatePolicyTests: XCTestCase {
         XCTAssertEqual(snapshot.selfPeer?.hostName, "m4")
         XCTAssertEqual(snapshot.selfPeer.map(addPeerPreferredTailnetSSHHost), "m4.tailnet.example")
         XCTAssertEqual(snapshot.peers.map(\.hostName), ["alpha", "zed"])
+    }
+
+    func testTailscaleStatusCommandPrefersMacAppBinaryBeforePathLookup() {
+        XCTAssertEqual(
+            TailscaleClient.statusCommand { $0 == "/Applications/Tailscale.app/Contents/MacOS/Tailscale" },
+            TailscaleStatusCommand(executablePath: "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+                                   arguments: ["status", "--json"])
+        )
+        XCTAssertEqual(
+            TailscaleClient.statusCommand { _ in false },
+            TailscaleStatusCommand(executablePath: "/usr/bin/env",
+                                   arguments: ["tailscale", "status", "--json"])
+        )
     }
 
     func testPrivateDirectMeshRemoteSelectionUsesOnePeerAtATime() {

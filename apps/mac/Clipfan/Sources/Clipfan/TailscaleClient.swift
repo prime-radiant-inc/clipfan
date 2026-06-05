@@ -5,6 +5,11 @@ struct TailscaleStatusSnapshot {
     let peers: [TailscalePeer]
 }
 
+struct TailscaleStatusCommand: Equatable {
+    let executablePath: String
+    let arguments: [String]
+}
+
 enum TailscaleClient {
     /// Shell out to `tailscale status --json` and return the live tailnet
     /// peers we could install clipfan on. Self is excluded.
@@ -13,9 +18,10 @@ enum TailscaleClient {
     }
 
     static func statusSnapshot() async throws -> TailscaleStatusSnapshot {
+        let command = statusCommand()
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = ["tailscale", "status", "--json"]
+        proc.executableURL = URL(fileURLWithPath: command.executablePath)
+        proc.arguments = command.arguments
         let pipe = Pipe()
         proc.standardOutput = pipe
         try proc.run()
@@ -27,6 +33,20 @@ enum TailscaleClient {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         return try parseStatusSnapshot(data)
     }
+
+    static func statusCommand(fileExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }) -> TailscaleStatusCommand {
+        for path in tailscaleExecutableCandidates where fileExists(path) {
+            return TailscaleStatusCommand(executablePath: path, arguments: ["status", "--json"])
+        }
+        return TailscaleStatusCommand(executablePath: "/usr/bin/env", arguments: ["tailscale", "status", "--json"])
+    }
+
+    private static let tailscaleExecutableCandidates = [
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+        "/Applications/Tailscale IPN.app/Contents/MacOS/Tailscale IPN",
+        "/opt/homebrew/bin/tailscale",
+        "/usr/local/bin/tailscale"
+    ]
 
     static func parseStatusSnapshot(_ data: Data) throws -> TailscaleStatusSnapshot {
         let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]

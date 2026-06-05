@@ -82,6 +82,19 @@ func addPeerPreferredTailnetSSHHost(_ peer: TailscalePeer) -> String {
     return peer.hostName.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
+func addPeerPreferredLocalTailnetSSHHost(_ peer: TailscalePeer) -> String {
+    let dnsName = peer.dnsName.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    if !dnsName.isEmpty {
+        return dnsName
+    }
+    return peer.ip.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+func addPeerDefaultLocalSSHHost(tailnetSSHHost: String) -> String {
+    tailnetSSHHost.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
 func addPeerDirectMeshSpec(hostID: String,
                            sshHost: String,
                            user: String,
@@ -442,7 +455,7 @@ struct AddPeerSheet: View {
             tailnet = snapshot.peers
             tailnetAvailable = !snapshot.peers.isEmpty
             if let selfPeer = snapshot.selfPeer {
-                localTailnetSSHHost = addPeerPreferredTailnetSSHHost(selfPeer)
+                localTailnetSSHHost = addPeerPreferredLocalTailnetSSHHost(selfPeer)
             }
         } else {
             tailnetAvailable = false
@@ -451,16 +464,7 @@ struct AddPeerSheet: View {
 
     private func seedLocalSSHDefaults() {
         guard localSSHHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        if !localTailnetSSHHost.isEmpty {
-            localSSHHost = localTailnetSSHHost
-            return
-        }
-        let origin = daemon.origin.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !origin.isEmpty, origin != "—" {
-            localSSHHost = origin
-            return
-        }
-        localSSHHost = ProcessInfo.processInfo.hostName
+        localSSHHost = addPeerDefaultLocalSSHHost(tailnetSSHHost: localTailnetSSHHost)
     }
 
     private func removeRemoteDraft(_ id: UUID) {
