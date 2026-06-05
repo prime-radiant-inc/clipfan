@@ -80,7 +80,7 @@ func runSSHProvisionDirect(args []string, stdout io.Writer, stderr io.Writer, op
 		runner = sshprovision.ExecCommandRunner{MaxOutputBytes: 64 * 1024}
 	}
 	ctx := context.Background()
-	confirmedHostKeys, err := scanSSHProvisionDirectHostKeys(ctx, runner, hosts)
+	hosts, confirmedHostKeys, err := scanSSHProvisionDirectHostKeys(ctx, runner, hosts)
 	if err != nil {
 		return err
 	}
@@ -263,42 +263,125 @@ func otherValidationHost(id string) sshprovision.DirectPairHost {
 	}
 }
 
-func scanSSHProvisionDirectHostKeys(ctx context.Context, runner sshprovision.CommandRunner, hosts []sshprovision.DirectPairProvisionHost) (map[string]string, error) {
+func scanSSHProvisionDirectHostKeys(ctx context.Context, runner sshprovision.CommandRunner, hosts []sshprovision.DirectPairProvisionHost) ([]sshprovision.DirectPairProvisionHost, map[string]string, error) {
 	out := make(map[string]string, len(hosts))
+	resolvedHosts := make([]sshprovision.DirectPairProvisionHost, 0, len(hosts))
 	for _, host := range hosts {
+		keyscanTarget, err := resolveSSHProvisionDirectKeyscanTarget(ctx, runner, host.Host)
+		if err != nil {
+			return nil, nil, err
+		}
+		adminHost := host.Host
+		host.AdminHost = adminHost
+		host.Host.SSHHost = keyscanTarget.Host
+		host.Host.SSHPort = keyscanTarget.Port
 		command, err := sshprovision.SSHKeyscanCommand(sshprovision.SSHKeyscanSpec{
-			Host: host.Host.SSHHost,
-			Port: host.Host.SSHPort,
+			Host: keyscanTarget.Host,
+			Port: keyscanTarget.Port,
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		output, err := runner.Run(ctx, command)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if output.StdoutTruncated {
-			return nil, fmt.Errorf("ssh_keyscan_output_truncated: %s", host.Host.ID)
+			return nil, nil, fmt.Errorf("ssh_keyscan_output_truncated: %s", host.Host.ID)
 		}
-		line, err := selectSSHProvisionDirectHostKeyLine(host.Host, string(output.Stdout))
+		line, err := selectSSHProvisionDirectHostKeyLine(host.Host, keyscanTarget, string(output.Stdout))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out[host.Host.ID] = line
+		resolvedHosts = append(resolvedHosts, host)
 	}
-	return out, nil
+	return resolvedHosts, out, nil
 }
 
-func selectSSHProvisionDirectHostKeyLine(host sshprovision.DirectPairHost, output string) (string, error) {
+type sshProvisionDirectKeyscanTarget struct {
+	Host string
+	Port int
+}
+
+func resolveSSHProvisionDirectKeyscanTarget(ctx context.Context, runner sshprovision.CommandRunner, host sshprovision.DirectPairHost) (sshProvisionDirectKeyscanTarget, error) {
+	command, err := sshprovision.RegularSSHConfigCommand(sshprovision.SSHConfigSpec{
+		User: host.SSHUser,
+		Host: host.SSHHost,
+		Port: host.SSHPort,
+	})
+	if err != nil {
+		return sshProvisionDirectKeyscanTarget{}, err
+	}
+	output, err := runner.Run(ctx, command)
+	if err != nil {
+		return sshProvisionDirectKeyscanTarget{}, err
+	}
+	if output.StdoutTruncated {
+		return sshProvisionDirectKeyscanTarget{}, fmt.Errorf("ssh_config_output_truncated: %s", host.ID)
+	}
+	return parseSSHProvisionDirectKeyscanTarget(host, string(output.Stdout))
+}
+
+func parseSSHProvisionDirectKeyscanTarget(host sshprovision.DirectPairHost, output string) (sshProvisionDirectKeyscanTarget, error) {
+	target := sshProvisionDirectKeyscanTarget{Host: host.SSHHost, Port: host.SSHPort}
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, " ")
+		if !ok {
+			continue
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		value = strings.TrimSpace(value)
+		switch key {
+		case "hostname":
+			canonical, err := config.CanonicalSSHHost(value)
+			if err != nil {
+				return sshProvisionDirectKeyscanTarget{}, fmt.Errorf("invalid_ssh_config_hostname: %s: %w", host.ID, err)
+			}
+			target.Host = canonical
+		case "port":
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed < 1 || parsed > 65535 {
+				return sshProvisionDirectKeyscanTarget{}, fmt.Errorf("invalid_ssh_config_port: %s", host.ID)
+			}
+			target.Port = parsed
+		case "proxycommand", "proxyjump":
+			if value != "" && value != "none" {
+				return sshProvisionDirectKeyscanTarget{}, fmt.Errorf("unsupported_ssh_config_for_keyscan: %s: %s", host.ID, key)
+			}
+		case "hostkeyalias":
+			if value != "" && value != "none" {
+				return sshProvisionDirectKeyscanTarget{}, fmt.Errorf("unsupported_ssh_config_for_keyscan: %s: %s", host.ID, key)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return sshProvisionDirectKeyscanTarget{}, err
+	}
+	return target, nil
+}
+
+func selectSSHProvisionDirectHostKeyLine(host sshprovision.DirectPairHost, target sshProvisionDirectKeyscanTarget, output string) (string, error) {
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if _, err := sshprovision.ParseKnownHostScanLine(host.SSHHost, host.SSHPort, line); err == nil {
-			return line, nil
+		pin, err := sshprovision.ParseKnownHostScanLine(target.Host, target.Port, line)
+		if err != nil {
+			continue
 		}
+		retargeted, err := sshprovision.NewKnownHostPin(host.SSHHost, host.SSHPort, pin.KeyType, pin.PublicKey)
+		if err != nil {
+			return "", err
+		}
+		return retargeted.Line(), nil
 	}
 	if err := scanner.Err(); err != nil {
 		return "", err

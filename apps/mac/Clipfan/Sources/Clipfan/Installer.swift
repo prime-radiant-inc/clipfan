@@ -530,6 +530,7 @@ actor Installer {
         for host in hosts {
             await MainActor.run { onProgress(.init(step: "Keyscan", detail: "trusting SSH host key for \(host.sshHost)")) }
             try await trustPrivateDirectMeshBootstrapHostKey(sshHost: host.sshHost,
+                                                             user: host.user,
                                                              port: host.port,
                                                              regularKnownHosts: knownHosts,
                                                              runCommand: runCommand)
@@ -623,19 +624,27 @@ actor Installer {
     }
 
     static func trustPrivateDirectMeshBootstrapHostKey(sshHost: String,
+                                                       user: String,
                                                        port: Int,
                                                        regularKnownHosts: String,
                                                        runCommand: CommandRunner = run) async throws {
         try validatePrivateDirectMeshSSHHost(sshHost)
+        try validatePrivateDirectMeshUser(user)
         guard port > 0, port <= 65535 else {
             throw InstallError.configIO("invalid_private_direct_mesh_port")
         }
         try validatePrivateDirectMeshExecutablePath(regularKnownHosts, code: "invalid_regular_known_hosts_path")
 
-        let output = try await runCommand("/usr/bin/ssh-keyscan", ["-T", "5", "-p", "\(port)", sshHost])
+        let keyscanTarget = try await privateDirectMeshKeyscanTarget(sshHost: sshHost,
+                                                                     user: user,
+                                                                     port: port,
+                                                                     runCommand: runCommand)
+        let output = try await runCommand("/usr/bin/ssh-keyscan", ["-T", "5", "-p", "\(keyscanTarget.port)", keyscanTarget.host])
         let knownHostLines = matchingKnownHostLines(fromKeyscanOutput: output,
-                                                    sshHost: sshHost,
-                                                    port: port)
+                                                    keyscanHost: keyscanTarget.host,
+                                                    keyscanPort: keyscanTarget.port,
+                                                    knownHost: sshHost,
+                                                    knownHostPort: keyscanTarget.port)
         guard !knownHostLines.isEmpty else {
             throw InstallError.configIO("ssh_keyscan_no_host_key")
         }
@@ -660,7 +669,7 @@ actor Installer {
             existing = ""
         }
         let existingEntries = try await existingKnownHostLookupEntries(sshHost: sshHost,
-                                                                       port: port,
+                                                                       port: keyscanTarget.port,
                                                                        regularKnownHosts: regularKnownHosts,
                                                                        fileExists: !existing.isEmpty,
                                                                        runCommand: runCommand)
@@ -708,6 +717,59 @@ actor Installer {
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: knownHostsURL.path)
     }
 
+    private struct PrivateDirectMeshKeyscanTarget {
+        let host: String
+        let port: Int
+    }
+
+    private static func privateDirectMeshKeyscanTarget(sshHost: String,
+                                                       user: String,
+                                                       port: Int,
+                                                       runCommand: CommandRunner) async throws -> PrivateDirectMeshKeyscanTarget {
+        let output = try await runCommand("/usr/bin/ssh", regularSSHConfigArgs(sshHost: sshHost,
+                                                                               user: user,
+                                                                               port: port))
+        var target = PrivateDirectMeshKeyscanTarget(host: sshHost, port: port)
+        for rawLine in output.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { continue }
+            let key = parts[0].lowercased()
+            let value = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            switch key {
+            case "hostname":
+                try validatePrivateDirectMeshKeyscanHost(value)
+                target = PrivateDirectMeshKeyscanTarget(host: value, port: target.port)
+            case "port":
+                guard let parsed = Int(value), parsed > 0, parsed <= 65535 else {
+                    throw InstallError.configIO("invalid_ssh_config_port")
+                }
+                target = PrivateDirectMeshKeyscanTarget(host: target.host, port: parsed)
+            case "proxycommand", "proxyjump":
+                if !value.isEmpty, value != "none" {
+                    throw InstallError.configIO("unsupported_ssh_config_for_keyscan")
+                }
+            case "hostkeyalias":
+                if !value.isEmpty, value != "none" {
+                    throw InstallError.configIO("unsupported_ssh_config_for_keyscan")
+                }
+            default:
+                continue
+            }
+        }
+        return target
+    }
+
+    private static func regularSSHConfigArgs(sshHost: String, user: String, port: Int) -> [String] {
+        var args = ["-G", "-l", user]
+        if port != 22 {
+            args += ["-p", "\(port)"]
+        }
+        args.append(sshHost)
+        return args
+    }
+
     private static func existingKnownHostLookupEntries(sshHost: String,
                                                        port: Int,
                                                        regularKnownHosts: String,
@@ -728,16 +790,18 @@ actor Installer {
     }
 
     private static func matchingKnownHostLines(fromKeyscanOutput output: String,
-                                               sshHost: String,
-                                               port: Int) -> [String] {
+                                               keyscanHost: String,
+                                               keyscanPort: Int,
+                                               knownHost: String,
+                                               knownHostPort: Int) -> [String] {
         var lines: [String] = []
         for rawLine in output.components(separatedBy: .newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard let entry = knownHostEntry(from: line),
-                  knownHostTokensMatch(entry.hostTokens, sshHost: sshHost, port: port) else {
+                  knownHostTokensMatch(entry.hostTokens, sshHost: keyscanHost, port: keyscanPort) else {
                 continue
             }
-            lines.append(line)
+            lines.append("\(knownHostLookupToken(sshHost: knownHost, port: knownHostPort)) \(entry.keyType) \(entry.key)")
         }
         return lines
     }
@@ -904,6 +968,16 @@ actor Installer {
         }
     }
 
+    private static func validatePrivateDirectMeshKeyscanHost(_ value: String) throws {
+        let invalid = CharacterSet.whitespacesAndNewlines
+            .union(CharacterSet(charactersIn: "@/\\\"'`$;&|<>(){}[]*?!"))
+        guard !value.isEmpty,
+              value.first != "-",
+              value.rangeOfCharacter(from: invalid) == nil else {
+            throw InstallError.configIO("invalid_private_direct_mesh_ssh_host")
+        }
+    }
+
     private static func validatePrivateDirectMeshExecutablePath(_ value: String, code: String) throws {
         try validatePrivateDirectMeshSafeAbsolutePath(value, code: code)
         let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/@+-")
@@ -943,19 +1017,22 @@ actor Installer {
 
     static func regularSSHConnectionArgs(port: Int, knownHosts: String) -> (sshArgs: [String], scpArgs: [String]) {
         let common = [
-            "-F", "/dev/null",
             "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=yes",
             "-o", "UserKnownHostsFile=\(knownHosts)",
             "-o", "GlobalKnownHostsFile=/dev/null",
-            "-o", "ProxyCommand=none",
-            "-o", "ProxyJump=none",
             "-o", "PermitLocalCommand=no",
             "-o", "RequestTTY=no",
             "-o", "ClearAllForwardings=yes",
             "-o", "LogLevel=ERROR"
         ]
-        return (common + ["-p", "\(port)"], ["-q"] + common + ["-P", "\(port)"])
+        var sshArgs = common
+        var scpArgs = ["-q"] + common
+        if port != 22 {
+            sshArgs += ["-p", "\(port)"]
+            scpArgs += ["-P", "\(port)"]
+        }
+        return (sshArgs, scpArgs)
     }
 
     static func remoteRestartDaemonCommand(installPath: String) -> String {

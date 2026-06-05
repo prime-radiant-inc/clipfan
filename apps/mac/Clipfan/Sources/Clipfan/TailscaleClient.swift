@@ -1,9 +1,18 @@
 import Foundation
 
+struct TailscaleStatusSnapshot {
+    let selfPeer: TailscalePeer?
+    let peers: [TailscalePeer]
+}
+
 enum TailscaleClient {
     /// Shell out to `tailscale status --json` and return the live tailnet
     /// peers we could install clipfan on. Self is excluded.
     static func status() async throws -> [TailscalePeer] {
+        try await statusSnapshot().peers
+    }
+
+    static func statusSnapshot() async throws -> TailscaleStatusSnapshot {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         proc.arguments = ["tailscale", "status", "--json"]
@@ -16,30 +25,42 @@ enum TailscaleClient {
                           userInfo: [NSLocalizedDescriptionKey: "tailscale status failed (is tailscale installed and authed?)"])
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return try parseStatusSnapshot(data)
+    }
+
+    static func parseStatusSnapshot(_ data: Data) throws -> TailscaleStatusSnapshot {
         let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
 
+        let selfPeer = (raw["Self"] as? [String: Any]).flatMap(peer(from:))
         var peers: [TailscalePeer] = []
         if let peerDict = raw["Peer"] as? [String: [String: Any]] {
             for (_, info) in peerDict {
-                guard let host = info["HostName"] as? String,
-                      let online = info["Online"] as? Bool,
-                      let os = info["OS"] as? String else { continue }
-                let dnsName = (info["DNSName"] as? String) ?? ""
-                let ips = (info["TailscaleIPs"] as? [String]) ?? []
-                let user = (info["UserID"] as? Int).map { "uid-\($0)" } ?? ""
-                peers.append(TailscalePeer(
-                    hostName: host,
-                    dnsName: dnsName,
-                    ip: ips.first ?? "",
-                    os: os,
-                    online: online,
-                    user: user
-                ))
+                if let peer = peer(from: info) {
+                    peers.append(peer)
+                }
             }
         }
-        return peers.sorted { a, b in
+        let sortedPeers = peers.sorted { a, b in
             if a.online != b.online { return a.online && !b.online }
             return a.hostName < b.hostName
         }
+        return TailscaleStatusSnapshot(selfPeer: selfPeer, peers: sortedPeers)
+    }
+
+    private static func peer(from info: [String: Any]) -> TailscalePeer? {
+        guard let host = info["HostName"] as? String,
+              let online = info["Online"] as? Bool,
+              let os = info["OS"] as? String else { return nil }
+        let dnsName = (info["DNSName"] as? String) ?? ""
+        let ips = (info["TailscaleIPs"] as? [String]) ?? []
+        let user = (info["UserID"] as? Int).map { "uid-\($0)" } ?? ""
+        return TailscalePeer(
+            hostName: host,
+            dnsName: dnsName,
+            ip: ips.first ?? "",
+            os: os,
+            online: online,
+            user: user
+        )
     }
 }

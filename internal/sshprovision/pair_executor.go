@@ -13,6 +13,7 @@ var ErrDirectPairProvisionerNotReady = errors.New("direct_pair_provisioner_not_r
 
 type DirectPairProvisionHost struct {
 	Host           DirectPairHost
+	AdminHost      DirectPairHost
 	KnownHostsPath string
 	SyncKeyPath    string
 }
@@ -226,6 +227,16 @@ func normalizeDirectPairProvisionHost(host DirectPairProvisionHost) (DirectPairP
 	if err != nil {
 		return DirectPairProvisionHost{}, err
 	}
+	normalizedAdminHost := normalizedHost
+	if host.AdminHost.ID != "" {
+		normalizedAdminHost, err = normalizeDirectPairHost(host.AdminHost)
+		if err != nil {
+			return DirectPairProvisionHost{}, fmt.Errorf("invalid admin host: %w", err)
+		}
+		if normalizedAdminHost.ID != normalizedHost.ID {
+			return DirectPairProvisionHost{}, fmt.Errorf("admin host id mismatch: %s", normalizedHost.ID)
+		}
+	}
 	if err := config.ValidateSSHExecutablePath(host.KnownHostsPath); err != nil {
 		return DirectPairProvisionHost{}, fmt.Errorf("invalid known_hosts path: %w", err)
 	}
@@ -236,6 +247,7 @@ func normalizeDirectPairProvisionHost(host DirectPairProvisionHost) (DirectPairP
 		return DirectPairProvisionHost{}, fmt.Errorf("invalid sync key ssh path: %w", err)
 	}
 	host.Host = normalizedHost
+	host.AdminHost = normalizedAdminHost
 	return host, nil
 }
 

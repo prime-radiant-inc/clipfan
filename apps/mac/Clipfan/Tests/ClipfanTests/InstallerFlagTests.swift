@@ -71,14 +71,14 @@ final class InstallerFlagTests: XCTestCase {
             knownHosts: "/Users/jesse/.ssh/clipfan_regular_known_hosts"
         )
 
-        XCTAssertTrue(args.sshArgs.contains("-F"))
-        XCTAssertTrue(args.sshArgs.contains("/dev/null"))
+        XCTAssertFalse(args.sshArgs.contains("-F"))
+        XCTAssertFalse(args.sshArgs.contains("/dev/null"))
         XCTAssertTrue(args.sshArgs.contains("BatchMode=yes"))
         XCTAssertTrue(args.sshArgs.contains("StrictHostKeyChecking=yes"))
         XCTAssertTrue(args.sshArgs.contains("UserKnownHostsFile=/Users/jesse/.ssh/clipfan_regular_known_hosts"))
         XCTAssertTrue(args.sshArgs.contains("GlobalKnownHostsFile=/dev/null"))
-        XCTAssertTrue(args.sshArgs.contains("ProxyCommand=none"))
-        XCTAssertTrue(args.sshArgs.contains("ProxyJump=none"))
+        XCTAssertFalse(args.sshArgs.contains("ProxyCommand=none"))
+        XCTAssertFalse(args.sshArgs.contains("ProxyJump=none"))
         XCTAssertTrue(args.sshArgs.contains("ClearAllForwardings=yes"))
         XCTAssertTrue(args.sshArgs.contains("-p"))
         XCTAssertTrue(args.sshArgs.contains("2200"))
@@ -90,6 +90,13 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertTrue(args.scpArgs.contains("GlobalKnownHostsFile=/dev/null"))
         XCTAssertTrue(args.scpArgs.contains("-P"))
         XCTAssertTrue(args.scpArgs.contains("2200"))
+
+        let defaultPortArgs = Installer.regularSSHConnectionArgs(
+            port: 22,
+            knownHosts: "/Users/jesse/.ssh/clipfan_regular_known_hosts"
+        )
+        XCTAssertFalse(defaultPortArgs.sshArgs.contains("-p"))
+        XCTAssertFalse(defaultPortArgs.scpArgs.contains("-P"))
     }
 
     func testTrustPrivateDirectMeshBootstrapHostKeyWritesKeyscanLine() async throws {
@@ -101,10 +108,17 @@ final class InstallerFlagTests: XCTestCase {
         var commands: [(String, [String])] = []
         try await Installer.trustPrivateDirectMeshBootstrapHostKey(
             sshHost: "100.114.54.38",
+            user: "jesse",
             port: 22,
             regularKnownHosts: knownHosts.path,
             runCommand: { exe, args in
                 commands.append((exe, args))
+                if exe == "/usr/bin/ssh" {
+                    return """
+                    hostname 100.114.54.38
+                    port 22
+                    """
+                }
                 return """
                 # 100.114.54.38:22 SSH-2.0-OpenSSH
                 100.114.54.38 ssh-rsa AAAATEST_RSA
@@ -113,13 +127,207 @@ final class InstallerFlagTests: XCTestCase {
             }
         )
 
-        XCTAssertEqual(commands.count, 1)
-        XCTAssertEqual(commands[0].0, "/usr/bin/ssh-keyscan")
-        XCTAssertEqual(commands[0].1, ["-T", "5", "-p", "22", "100.114.54.38"])
+        XCTAssertEqual(commands.count, 2)
+        XCTAssertEqual(commands[0].0, "/usr/bin/ssh")
+        XCTAssertEqual(commands[0].1, ["-G", "-l", "jesse", "100.114.54.38"])
+        XCTAssertEqual(commands[1].0, "/usr/bin/ssh-keyscan")
+        XCTAssertEqual(commands[1].1, ["-T", "5", "-p", "22", "100.114.54.38"])
         XCTAssertEqual(
             try String(contentsOf: knownHosts, encoding: .utf8),
             "100.114.54.38 ssh-rsa AAAATEST_RSA\n100.114.54.38 ssh-ed25519 AAAATEST_ED25519\n"
         )
+    }
+
+    func testTrustPrivateDirectMeshBootstrapHostKeyUsesSSHConfigHostNameForKeyscan() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-known-hosts-test-\(UUID().uuidString)")
+        let knownHosts = root.appendingPathComponent("known_hosts")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var commands: [(String, [String])] = []
+        try await Installer.trustPrivateDirectMeshBootstrapHostKey(
+            sshHost: "magic-kingdom",
+            user: "jesse",
+            port: 22,
+            regularKnownHosts: knownHosts.path,
+            runCommand: { exe, args in
+                commands.append((exe, args))
+                if exe == "/usr/bin/ssh" {
+                    return """
+                    hostname 100.114.54.38
+                    port 22
+                    """
+                }
+                return "100.114.54.38 ssh-ed25519 AAAARESOLVED_KEY\n"
+            }
+        )
+
+        XCTAssertEqual(commands.map(\.0), ["/usr/bin/ssh", "/usr/bin/ssh-keyscan"])
+        XCTAssertEqual(commands[0].1, ["-G", "-l", "jesse", "magic-kingdom"])
+        XCTAssertEqual(commands[1].1, ["-T", "5", "-p", "22", "100.114.54.38"])
+        XCTAssertEqual(
+            try String(contentsOf: knownHosts, encoding: .utf8),
+            "magic-kingdom ssh-ed25519 AAAARESOLVED_KEY\n"
+        )
+    }
+
+    func testTrustPrivateDirectMeshBootstrapHostKeyUsesSSHConfigPortForKeyscan() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-known-hosts-test-\(UUID().uuidString)")
+        let knownHosts = root.appendingPathComponent("known_hosts")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var commands: [(String, [String])] = []
+        try await Installer.trustPrivateDirectMeshBootstrapHostKey(
+            sshHost: "linux-b",
+            user: "jesse",
+            port: 22,
+            regularKnownHosts: knownHosts.path,
+            runCommand: { exe, args in
+                commands.append((exe, args))
+                if exe == "/usr/bin/ssh" {
+                    return """
+                    hostname linux-b
+                    port 2222
+                    """
+                }
+                return "[linux-b]:2222 ssh-ed25519 AAAAPORT_KEY\n"
+            }
+        )
+
+        XCTAssertEqual(commands.map(\.0), ["/usr/bin/ssh", "/usr/bin/ssh-keyscan"])
+        XCTAssertEqual(commands[0].1, ["-G", "-l", "jesse", "linux-b"])
+        XCTAssertEqual(commands[1].1, ["-T", "5", "-p", "2222", "linux-b"])
+        XCTAssertEqual(
+            try String(contentsOf: knownHosts, encoding: .utf8),
+            "[linux-b]:2222 ssh-ed25519 AAAAPORT_KEY\n"
+        )
+    }
+
+    func testTrustPrivateDirectMeshBootstrapHostKeyAcceptsSSHConfigHostNameCaseNormalization() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-known-hosts-test-\(UUID().uuidString)")
+        let knownHosts = root.appendingPathComponent("known_hosts")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var commands: [(String, [String])] = []
+        try await Installer.trustPrivateDirectMeshBootstrapHostKey(
+            sshHost: "linux-v6",
+            user: "jesse",
+            port: 22,
+            regularKnownHosts: knownHosts.path,
+            runCommand: { exe, args in
+                commands.append((exe, args))
+                if exe == "/usr/bin/ssh" {
+                    return """
+                    hostname linux-v6.
+                    port 22
+                    """
+                }
+                return "linux-v6. ssh-ed25519 AAAARESOLVED_KEY\n"
+            }
+        )
+
+        XCTAssertEqual(commands.map(\.0), ["/usr/bin/ssh", "/usr/bin/ssh-keyscan"])
+        XCTAssertEqual(commands[1].1, ["-T", "5", "-p", "22", "linux-v6."])
+        XCTAssertEqual(
+            try String(contentsOf: knownHosts, encoding: .utf8),
+            "linux-v6 ssh-ed25519 AAAARESOLVED_KEY\n"
+        )
+    }
+
+    func testTrustPrivateDirectMeshBootstrapHostKeyRejectsUnsupportedSSHConfigProxyBeforeKeyscan() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-known-hosts-test-\(UUID().uuidString)")
+        let knownHosts = root.appendingPathComponent("known_hosts")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var commands: [(String, [String])] = []
+        do {
+            try await Installer.trustPrivateDirectMeshBootstrapHostKey(
+                sshHost: "linux-b",
+                user: "jesse",
+                port: 22,
+                regularKnownHosts: knownHosts.path,
+                runCommand: { exe, args in
+                    commands.append((exe, args))
+                    return """
+                    hostname linux-b
+                    port 22
+                    proxyjump bastion
+                    """
+                }
+            )
+            XCTFail("expected unsupported proxy config to fail")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("unsupported_ssh_config_for_keyscan"))
+        }
+
+        XCTAssertEqual(commands.map(\.0), ["/usr/bin/ssh"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: knownHosts.path))
+    }
+
+    func testTrustPrivateDirectMeshBootstrapHostKeyAllowsDefaultSSHConfigHostKeyAlias() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-known-hosts-test-\(UUID().uuidString)")
+        let knownHosts = root.appendingPathComponent("known_hosts")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var commands: [(String, [String])] = []
+        try await Installer.trustPrivateDirectMeshBootstrapHostKey(
+            sshHost: "linux-b",
+            user: "jesse",
+            port: 22,
+            regularKnownHosts: knownHosts.path,
+            runCommand: { exe, args in
+                commands.append((exe, args))
+                if exe == "/usr/bin/ssh" {
+                    return """
+                    hostname linux-b
+                    port 22
+                    hostkeyalias none
+                    """
+                }
+                return "linux-b ssh-ed25519 AAAADEFAULT_ALIAS_KEY\n"
+            }
+        )
+
+        XCTAssertEqual(commands.map(\.0), ["/usr/bin/ssh", "/usr/bin/ssh-keyscan"])
+        XCTAssertEqual(
+            try String(contentsOf: knownHosts, encoding: .utf8),
+            "linux-b ssh-ed25519 AAAADEFAULT_ALIAS_KEY\n"
+        )
+    }
+
+    func testTrustPrivateDirectMeshBootstrapHostKeyRejectsSSHConfigHostKeyAliasBeforeKeyscan() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-known-hosts-test-\(UUID().uuidString)")
+        let knownHosts = root.appendingPathComponent("known_hosts")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var commands: [(String, [String])] = []
+        do {
+            try await Installer.trustPrivateDirectMeshBootstrapHostKey(
+                sshHost: "linux-b",
+                user: "jesse",
+                port: 22,
+                regularKnownHosts: knownHosts.path,
+                runCommand: { exe, args in
+                    commands.append((exe, args))
+                    return """
+                    hostname linux-b
+                    port 22
+                    hostkeyalias fleet-alias
+                    """
+                }
+            )
+            XCTFail("expected host key alias to fail")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("unsupported_ssh_config_for_keyscan"))
+        }
+
+        XCTAssertEqual(commands.map(\.0), ["/usr/bin/ssh"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: knownHosts.path))
     }
 
     func testTrustPrivateDirectMeshBootstrapHostKeyAcceptsNonED25519Key() async throws {
@@ -130,7 +338,8 @@ final class InstallerFlagTests: XCTestCase {
 
         try await Installer.trustPrivateDirectMeshBootstrapHostKey(
             sshHost: "linux-b.tailnet",
-            port: 22,
+            user: "jesse",
+                port: 22,
             regularKnownHosts: knownHosts.path,
             runCommand: { _, _ in
                 "linux-b.tailnet ssh-rsa AAAATEST_RSA\n"
@@ -152,6 +361,7 @@ final class InstallerFlagTests: XCTestCase {
         do {
             try await Installer.trustPrivateDirectMeshBootstrapHostKey(
                 sshHost: "linux-b.tailnet",
+                user: "jesse",
                 port: 22,
                 regularKnownHosts: knownHosts.path,
                 runCommand: { _, _ in
@@ -178,6 +388,7 @@ final class InstallerFlagTests: XCTestCase {
         do {
             try await Installer.trustPrivateDirectMeshBootstrapHostKey(
                 sshHost: "100.114.54.38",
+                user: "jesse",
                 port: 22,
                 regularKnownHosts: knownHosts.path,
                 runCommand: { exe, args in
@@ -195,8 +406,8 @@ final class InstallerFlagTests: XCTestCase {
         } catch {
             XCTAssertTrue(String(describing: error).contains("ssh_known_hosts_conflict"))
         }
-        XCTAssertEqual(commands.map(\.0), ["/usr/bin/ssh-keyscan", "/usr/bin/ssh-keygen"])
-        XCTAssertEqual(commands[1].1, ["-F", "100.114.54.38", "-f", knownHosts.path])
+        XCTAssertEqual(commands.map(\.0), ["/usr/bin/ssh", "/usr/bin/ssh-keyscan", "/usr/bin/ssh-keygen"])
+        XCTAssertEqual(commands[2].1, ["-F", "100.114.54.38", "-f", knownHosts.path])
         XCTAssertEqual(
             try String(contentsOf: knownHosts, encoding: .utf8),
             "100.114.54.38 ssh-ed25519 AAAAOLD_KEY\n"
@@ -214,7 +425,8 @@ final class InstallerFlagTests: XCTestCase {
 
         try await Installer.trustPrivateDirectMeshBootstrapHostKey(
             sshHost: "linux-b.tailnet",
-            port: 2200,
+            user: "jesse",
+                port: 2200,
             regularKnownHosts: knownHosts.path,
             runCommand: { exe, _ in
                 if exe == "/usr/bin/ssh-keygen" {
@@ -246,6 +458,7 @@ final class InstallerFlagTests: XCTestCase {
         do {
             try await Installer.trustPrivateDirectMeshBootstrapHostKey(
                 sshHost: "linux-b.tailnet",
+                user: "jesse",
                 port: 22,
                 regularKnownHosts: knownHosts.path,
                 runCommand: { _, _ in
@@ -640,37 +853,29 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertEqual(command.1.filter { $0 == "--host" }.count, 2)
         XCTAssertTrue(command.1.contains("id=mac-a,ssh=mac-a.tailnet,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519"))
 
-        let restartCommands = commands.filter { $0.0 == "/usr/bin/ssh" }
+        let restartCommands = commands.filter { exe, args in exe == "/usr/bin/ssh" && args.first != "-G" }
         XCTAssertEqual(restartCommands.count, 2)
         XCTAssertEqual(restartCommands[0].1, [
-            "-F", "/dev/null",
             "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=yes",
             "-o", "UserKnownHostsFile=\(regularKnownHosts)",
             "-o", "GlobalKnownHostsFile=/dev/null",
-            "-o", "ProxyCommand=none",
-            "-o", "ProxyJump=none",
             "-o", "PermitLocalCommand=no",
             "-o", "RequestTTY=no",
             "-o", "ClearAllForwardings=yes",
             "-o", "LogLevel=ERROR",
-            "-p", "22",
             "jesse@mac-a.tailnet",
             Installer.remoteRestartDaemonCommand(installPath: "/Users/jesse/.local/bin/clipfan")
         ])
         XCTAssertEqual(restartCommands[1].1, [
-            "-F", "/dev/null",
             "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=yes",
             "-o", "UserKnownHostsFile=\(regularKnownHosts)",
             "-o", "GlobalKnownHostsFile=/dev/null",
-            "-o", "ProxyCommand=none",
-            "-o", "ProxyJump=none",
             "-o", "PermitLocalCommand=no",
             "-o", "RequestTTY=no",
             "-o", "ClearAllForwardings=yes",
             "-o", "LogLevel=ERROR",
-            "-p", "22",
             "jesse@linux-b.tailnet",
             Installer.remoteRestartDaemonCommand(installPath: "/home/jesse/.local/bin/clipfan")
         ])
@@ -717,7 +922,7 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertEqual(bootstraps.first?.1, true)
         XCTAssertEqual(commands.filter { $0.0 == "/usr/bin/ssh-keyscan" }.map { $0.1.last }, ["mac-a.tailnet", "linux-b.tailnet"])
         XCTAssertEqual(commands.filter { $0.0 == "/Users/jesse/.local/bin/clipfan" }.count, 1)
-        let restartCommand = try XCTUnwrap(commands.first { $0.0 == "/usr/bin/ssh" })
+        let restartCommand = try XCTUnwrap(commands.first { exe, args in exe == "/usr/bin/ssh" && args.first != "-G" })
         XCTAssertEqual(restartCommand.1.last, Installer.remoteRestartDaemonCommand(installPath: "/home/jesse/.local/bin/clipfan"))
         let knownHostsBody = try String(contentsOfFile: regularKnownHosts, encoding: .utf8)
         XCTAssertTrue(knownHostsBody.contains("mac-a.tailnet ssh-ed25519"))
@@ -758,20 +963,16 @@ final class InstallerFlagTests: XCTestCase {
 
         XCTAssertEqual(commands.filter { $0.0 == "/usr/bin/ssh-keyscan" }.map { $0.1.last }, ["mac-a.tailnet", "linux-b.tailnet"])
         XCTAssertEqual(commands.filter { $0.0 == "/Users/jesse/.local/bin/clipfan" }.count, 1)
-        let restartCommand = try XCTUnwrap(commands.first { $0.0 == "/usr/bin/ssh" })
+        let restartCommand = try XCTUnwrap(commands.first { exe, args in exe == "/usr/bin/ssh" && args.first != "-G" })
         XCTAssertEqual(restartCommand.1, [
-            "-F", "/dev/null",
             "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=yes",
             "-o", "UserKnownHostsFile=\(regularKnownHosts)",
             "-o", "GlobalKnownHostsFile=/dev/null",
-            "-o", "ProxyCommand=none",
-            "-o", "ProxyJump=none",
             "-o", "PermitLocalCommand=no",
             "-o", "RequestTTY=no",
             "-o", "ClearAllForwardings=yes",
             "-o", "LogLevel=ERROR",
-            "-p", "22",
             "jesse@linux-b.tailnet",
             Installer.remoteRestartDaemonCommand(installPath: "/home/jesse/.local/bin/clipfan")
         ])
@@ -805,7 +1006,7 @@ final class InstallerFlagTests: XCTestCase {
                     if exe == "/usr/bin/ssh-keyscan" {
                         return self.keyscanFixtureOutput(args)
                     }
-                    if exe == "/usr/bin/ssh" {
+                    if exe == "/usr/bin/ssh", args.first != "-G" {
                         throw RestartError.failed
                     }
                     return ""
@@ -821,7 +1022,7 @@ final class InstallerFlagTests: XCTestCase {
         }
 
         XCTAssertEqual(commands.filter { $0.0 == "/usr/bin/ssh-keyscan" }.count, 2)
-        XCTAssertEqual(commands.filter { $0.0 == "/usr/bin/ssh" }.count, 2)
+        XCTAssertEqual(commands.filter { exe, args in exe == "/usr/bin/ssh" && args.first != "-G" }.count, 2)
         XCTAssertEqual(localRestarts, 1)
     }
 
@@ -865,7 +1066,7 @@ final class InstallerFlagTests: XCTestCase {
         }
 
         XCTAssertEqual(commands.filter { $0.0 == "/usr/bin/ssh-keyscan" }.count, 2)
-        XCTAssertEqual(commands.filter { $0.0 == "/usr/bin/ssh" }.count, 2)
+        XCTAssertEqual(commands.filter { exe, args in exe == "/usr/bin/ssh" && args.first != "-G" }.count, 2)
         XCTAssertEqual(localRestarts, 1)
     }
 

@@ -69,6 +69,19 @@ func addPeerLooksLikeIPv4Address(_ host: String) -> Bool {
     }
 }
 
+func addPeerPreferredTailnetSSHHost(_ peer: TailscalePeer) -> String {
+    let dnsName = peer.dnsName.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    if !dnsName.isEmpty {
+        return dnsName
+    }
+    let ip = peer.ip.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !ip.isEmpty {
+        return ip
+    }
+    return peer.hostName.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
 func addPeerDirectMeshSpec(hostID: String,
                            sshHost: String,
                            user: String,
@@ -130,6 +143,7 @@ struct AddPeerSheet: View {
     @State private var withTmux = false
     @State private var remoteDrafts: [AddPeerRemoteHostDraft] = [AddPeerRemoteHostDraft()]
     @State private var localSSHHost: String = ""
+    @State private var localTailnetSSHHost: String = ""
     @State private var localSSHUser: String = NSUserName()
     @State private var localSSHPort: Int = 22
     @State private var directMeshRegularKnownHosts: String = "~/.ssh/known_hosts"
@@ -182,7 +196,7 @@ struct AddPeerSheet: View {
 
     private var selectedTailnetDrafts: [AddPeerRemoteHostDraft] {
         tailnet.filter { tailnetSelected.contains($0.id) }.map { peer in
-            let host = peer.dnsName.isEmpty ? peer.hostName : peer.dnsName.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            let host = addPeerPreferredTailnetSSHHost(peer)
             return AddPeerRemoteHostDraft(sshHost: host,
                                           hostID: addPeerDerivedHostID(from: peer.hostName),
                                           user: NSUserName(),
@@ -274,8 +288,8 @@ struct AddPeerSheet: View {
         .frame(minHeight: tailnetAvailable ? 660 : 520)
         .task {
             await daemon.refresh()
-            seedLocalSSHDefaults()
             await loadTailnet()
+            seedLocalSSHDefaults()
         }
     }
 
@@ -370,7 +384,7 @@ struct AddPeerSheet: View {
             TextField("Known hosts file", text: $directMeshRegularKnownHosts)
                 .textFieldStyle(.roundedBorder)
             Toggle("Trust SSH host key from ssh-keyscan", isOn: $trustDirectMeshKeyscan)
-            DisclosureGroup("Local host identity", isExpanded: $showingAdvancedSSH) {
+            DisclosureGroup("Advanced local SSH", isExpanded: $showingAdvancedSSH) {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         TextField("Host", text: $localSSHHost)
@@ -424,9 +438,12 @@ struct AddPeerSheet: View {
     // MARK: actions
 
     private func loadTailnet() async {
-        if let peers = try? await TailscaleClient.status(), !peers.isEmpty {
-            tailnet = peers
-            tailnetAvailable = true
+        if let snapshot = try? await TailscaleClient.statusSnapshot() {
+            tailnet = snapshot.peers
+            tailnetAvailable = !snapshot.peers.isEmpty
+            if let selfPeer = snapshot.selfPeer {
+                localTailnetSSHHost = addPeerPreferredTailnetSSHHost(selfPeer)
+            }
         } else {
             tailnetAvailable = false
         }
@@ -434,6 +451,10 @@ struct AddPeerSheet: View {
 
     private func seedLocalSSHDefaults() {
         guard localSSHHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if !localTailnetSSHHost.isEmpty {
+            localSSHHost = localTailnetSSHHost
+            return
+        }
         let origin = daemon.origin.trimmingCharacters(in: .whitespacesAndNewlines)
         if !origin.isEmpty, origin != "—" {
             localSSHHost = origin

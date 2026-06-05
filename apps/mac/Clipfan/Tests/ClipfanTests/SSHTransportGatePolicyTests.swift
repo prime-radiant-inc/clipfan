@@ -169,6 +169,72 @@ final class SSHTransportGatePolicyTests: XCTestCase {
         )
     }
 
+    func testAddPeerPreferredTailnetSSHHostUsesDNSThenIPThenHostName() {
+        XCTAssertEqual(addPeerPreferredTailnetSSHHost(TailscalePeer(
+            hostName: "m4",
+            dnsName: "m4.tailnet.example.",
+            ip: "100.64.0.1",
+            os: "darwin",
+            online: true,
+            user: "uid-1"
+        )), "m4.tailnet.example")
+        XCTAssertEqual(addPeerPreferredTailnetSSHHost(TailscalePeer(
+            hostName: "m4",
+            dnsName: "",
+            ip: "100.64.0.1",
+            os: "darwin",
+            online: true,
+            user: "uid-1"
+        )), "100.64.0.1")
+        XCTAssertEqual(addPeerPreferredTailnetSSHHost(TailscalePeer(
+            hostName: "m4",
+            dnsName: "",
+            ip: "",
+            os: "darwin",
+            online: true,
+            user: "uid-1"
+        )), "m4")
+    }
+
+    func testTailscaleStatusSnapshotParsesSelfAndPeers() throws {
+        let json = """
+        {
+          "Self": {
+            "HostName": "m4",
+            "DNSName": "m4.tailnet.example.",
+            "TailscaleIPs": ["100.64.0.10"],
+            "OS": "darwin",
+            "Online": true,
+            "UserID": 1001
+          },
+          "Peer": {
+            "peer-2": {
+              "HostName": "zed",
+              "DNSName": "zed.tailnet.example.",
+              "TailscaleIPs": ["100.64.0.12"],
+              "OS": "linux",
+              "Online": false,
+              "UserID": 1001
+            },
+            "peer-1": {
+              "HostName": "alpha",
+              "DNSName": "alpha.tailnet.example.",
+              "TailscaleIPs": ["100.64.0.11"],
+              "OS": "linux",
+              "Online": true,
+              "UserID": 1001
+            }
+          }
+        }
+        """
+
+        let snapshot = try TailscaleClient.parseStatusSnapshot(Data(json.utf8))
+
+        XCTAssertEqual(snapshot.selfPeer?.hostName, "m4")
+        XCTAssertEqual(snapshot.selfPeer.map(addPeerPreferredTailnetSSHHost), "m4.tailnet.example")
+        XCTAssertEqual(snapshot.peers.map(\.hostName), ["alpha", "zed"])
+    }
+
     func testPrivateDirectMeshRemoteSelectionUsesOnePeerAtATime() {
         let manualA = AddPeerRemoteHostDraft(
             sshHost: "linux-b.tailnet",

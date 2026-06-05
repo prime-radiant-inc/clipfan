@@ -33,6 +33,12 @@ type SSHKeyscanSpec struct {
 	TimeoutSeconds int
 }
 
+type SSHConfigSpec struct {
+	User string
+	Host string
+	Port int
+}
+
 type RegularSSHInstallAuthorizedKeySpec struct {
 	User           string
 	Host           string
@@ -135,6 +141,23 @@ func SSHKeyscanCommand(spec SSHKeyscanSpec) (SSHCommand, error) {
 	}}, nil
 }
 
+func RegularSSHConfigCommand(spec SSHConfigSpec) (SSHCommand, error) {
+	normalized, err := normalizeSSHConfigSpec(spec)
+	if err != nil {
+		return SSHCommand{}, err
+	}
+	args := []string{
+		"ssh",
+		"-G",
+		"-l", normalized.User,
+	}
+	if normalized.Port != 22 {
+		args = append(args, "-p", strconv.Itoa(normalized.Port))
+	}
+	args = append(args, normalized.Host)
+	return SSHCommand{Args: args}, nil
+}
+
 func RegularSSHInstallAuthorizedKeyCommand(spec RegularSSHInstallAuthorizedKeySpec) (SSHCommand, error) {
 	normalized, err := normalizeRegularSSHInstallAuthorizedKeySpec(spec)
 	if err != nil {
@@ -148,23 +171,20 @@ func RegularSSHInstallAuthorizedKeyCommand(spec RegularSSHInstallAuthorizedKeySp
 		"--gateway-path", normalized.GatewayPath,
 		"--public-key", normalized.PublicKey,
 	})
-	return SSHCommand{Args: []string{
+	args := []string{
 		"ssh",
-		"-F", "/dev/null",
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=" + normalized.KnownHostsPath,
 		"-o", "GlobalKnownHostsFile=/dev/null",
-		"-o", "ProxyCommand=none",
-		"-o", "ProxyJump=none",
 		"-o", "PermitLocalCommand=no",
 		"-o", "RequestTTY=no",
 		"-o", "ClearAllForwardings=yes",
 		"-o", "LogLevel=ERROR",
-		"-p", strconv.Itoa(normalized.Port),
-		normalized.User + "@" + normalized.Host,
-		remoteCommand,
-	}}, nil
+	}
+	args = appendRegularSSHPortArgs(args, normalized.Port)
+	args = append(args, normalized.User+"@"+normalized.Host, remoteCommand)
+	return SSHCommand{Args: args}, nil
 }
 
 func RegularSSHEnsureSyncKeyCommand(spec RegularSSHEnsureSyncKeySpec) (SSHCommand, error) {
@@ -285,23 +305,27 @@ type regularSSHRemoteSpec struct {
 }
 
 func regularSSHRemoteCommand(spec regularSSHRemoteSpec) SSHCommand {
-	return SSHCommand{Args: []string{
+	args := []string{
 		"ssh",
-		"-F", "/dev/null",
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=" + spec.KnownHostsPath,
 		"-o", "GlobalKnownHostsFile=/dev/null",
-		"-o", "ProxyCommand=none",
-		"-o", "ProxyJump=none",
 		"-o", "PermitLocalCommand=no",
 		"-o", "RequestTTY=no",
 		"-o", "ClearAllForwardings=yes",
 		"-o", "LogLevel=ERROR",
-		"-p", strconv.Itoa(spec.Port),
-		spec.User + "@" + spec.Host,
-		shellQuoteCommand(spec.RemoteArgs),
-	}}
+	}
+	args = appendRegularSSHPortArgs(args, spec.Port)
+	args = append(args, spec.User+"@"+spec.Host, shellQuoteCommand(spec.RemoteArgs))
+	return SSHCommand{Args: args}
+}
+
+func appendRegularSSHPortArgs(args []string, port int) []string {
+	if port == 22 {
+		return args
+	}
+	return append(args, "-p", strconv.Itoa(port))
 }
 
 func normalizePinnedSSHCommand(spec PinnedSSHCommand) (PinnedSSHCommand, error) {
@@ -338,6 +362,21 @@ func normalizeSSHKeyscanSpec(spec SSHKeyscanSpec) (SSHKeyscanSpec, error) {
 	}
 	if spec.TimeoutSeconds < 1 || spec.TimeoutSeconds > 60 {
 		return SSHKeyscanSpec{}, fmt.Errorf("%w: invalid timeout %d", ErrInvalidRegularSSHCommand, spec.TimeoutSeconds)
+	}
+	spec.Host = host
+	return spec, nil
+}
+
+func normalizeSSHConfigSpec(spec SSHConfigSpec) (SSHConfigSpec, error) {
+	if err := config.ValidateSSHUser(spec.User); err != nil {
+		return SSHConfigSpec{}, fmt.Errorf("%w: invalid user: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	host, err := config.CanonicalSSHHost(spec.Host)
+	if err != nil {
+		return SSHConfigSpec{}, fmt.Errorf("%w: invalid host: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	if spec.Port < 1 || spec.Port > 65535 {
+		return SSHConfigSpec{}, fmt.Errorf("%w: invalid port %d", ErrInvalidRegularSSHCommand, spec.Port)
 	}
 	spec.Host = host
 	return spec, nil

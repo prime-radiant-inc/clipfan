@@ -211,6 +211,56 @@ func TestSSHKeyscanCommandRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestRegularSSHConfigCommand(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		spec SSHConfigSpec
+		want []string
+	}{
+		{name: "default port", spec: SSHConfigSpec{User: "jesse", Host: "Example.COM.", Port: 22}, want: []string{"ssh", "-G", "-l", "jesse", "example.com"}},
+		{name: "non default port", spec: SSHConfigSpec{User: "jesse", Host: "Example.COM.", Port: 2200}, want: []string{"ssh", "-G", "-l", "jesse", "-p", "2200", "example.com"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd, err := RegularSSHConfigCommand(tc.spec)
+			if err != nil {
+				t.Fatalf("RegularSSHConfigCommand() error = %v", err)
+			}
+			assertSSHCommandArgs(t, cmd.Args, tc.want)
+			for _, arg := range cmd.Args {
+				if arg == "-F" || arg == "-o" || arg == "sh" || arg == "-c" {
+					t.Fatalf("unexpected shell/config override arg present in %#v", cmd.Args)
+				}
+			}
+		})
+	}
+}
+
+func TestRegularSSHConfigCommandRejectsInvalidInput(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		spec SSHConfigSpec
+	}{
+		{name: "invalid user", spec: SSHConfigSpec{User: "bad user", Host: "example.com", Port: 22}},
+		{name: "invalid host", spec: SSHConfigSpec{User: "jesse", Host: "example.com;sh", Port: 22}},
+		{name: "invalid port", spec: SSHConfigSpec{User: "jesse", Host: "example.com", Port: 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := RegularSSHConfigCommand(tc.spec)
+			if !errors.Is(err, ErrInvalidRegularSSHCommand) {
+				t.Fatalf("RegularSSHConfigCommand() error = %v, want ErrInvalidRegularSSHCommand", err)
+			}
+		})
+	}
+}
+
 func TestRegularSSHInstallAuthorizedKeyCommand(t *testing.T) {
 	t.Parallel()
 
@@ -231,13 +281,10 @@ func TestRegularSSHInstallAuthorizedKeyCommand(t *testing.T) {
 
 	want := []string{
 		"ssh",
-		"-F", "/dev/null",
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=/home/jesse/.config/clipfan/ssh/known_hosts",
 		"-o", "GlobalKnownHostsFile=/dev/null",
-		"-o", "ProxyCommand=none",
-		"-o", "ProxyJump=none",
 		"-o", "PermitLocalCommand=no",
 		"-o", "RequestTTY=no",
 		"-o", "ClearAllForwardings=yes",
@@ -311,13 +358,10 @@ func TestRegularSSHEnsureSyncKeyCommand(t *testing.T) {
 
 	want := []string{
 		"ssh",
-		"-F", "/dev/null",
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
 		"-o", "GlobalKnownHostsFile=/dev/null",
-		"-o", "ProxyCommand=none",
-		"-o", "ProxyJump=none",
 		"-o", "PermitLocalCommand=no",
 		"-o", "RequestTTY=no",
 		"-o", "ClearAllForwardings=yes",
@@ -351,18 +395,14 @@ func TestRegularSSHInstallKnownHostCommand(t *testing.T) {
 
 	want := []string{
 		"ssh",
-		"-F", "/dev/null",
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
 		"-o", "GlobalKnownHostsFile=/dev/null",
-		"-o", "ProxyCommand=none",
-		"-o", "ProxyJump=none",
 		"-o", "PermitLocalCommand=no",
 		"-o", "RequestTTY=no",
 		"-o", "ClearAllForwardings=yes",
 		"-o", "LogLevel=ERROR",
-		"-p", "22",
 		"jesse@connector.example",
 		"'/home/jesse/.local/bin/clipfan' 'ssh-install-known-host' '--known-hosts' '/home/jesse/.config/clipfan/ssh/known_hosts' '--host' 'acceptor.example' '--port' '2200' '--key-type' 'ssh-ed25519' '--public-key' '" + testEd25519Key + "'",
 	}
@@ -395,18 +435,14 @@ func TestRegularSSHRunProbeCommand(t *testing.T) {
 
 	want := []string{
 		"ssh",
-		"-F", "/dev/null",
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
 		"-o", "GlobalKnownHostsFile=/dev/null",
-		"-o", "ProxyCommand=none",
-		"-o", "ProxyJump=none",
 		"-o", "PermitLocalCommand=no",
 		"-o", "RequestTTY=no",
 		"-o", "ClearAllForwardings=yes",
 		"-o", "LogLevel=ERROR",
-		"-p", "22",
 		"jesse@connector.example",
 		"'/home/jesse/.local/bin/clipfan' 'ssh-run-probe' '--user' 'jesse' '--host' 'acceptor.example' '--port' '2200' '--private-key' '/home/jesse/.config/clipfan/ssh/sync_ed25519' '--known-hosts' '/home/jesse/.config/clipfan/ssh/known_hosts' '--expect-peer' 'linux-b' '--expect-key-id' 'key-123456'",
 	}
@@ -431,18 +467,14 @@ func TestRegularSSHApplyDirectConfigCommand(t *testing.T) {
 
 	want := []string{
 		"ssh",
-		"-F", "/dev/null",
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
 		"-o", "GlobalKnownHostsFile=/dev/null",
-		"-o", "ProxyCommand=none",
-		"-o", "ProxyJump=none",
 		"-o", "PermitLocalCommand=no",
 		"-o", "RequestTTY=no",
 		"-o", "ClearAllForwardings=yes",
 		"-o", "LogLevel=ERROR",
-		"-p", "22",
 		"jesse@connector.example",
 		"'/home/jesse/.local/bin/clipfan' 'ssh-apply-direct-config' '--payload-stdin'",
 	}
@@ -601,25 +633,37 @@ func assertRegularSSHCommandSafety(t *testing.T, args []string) {
 	hasStrictHostKeyChecking := false
 	hasBatchMode := false
 	hasKnownHosts := false
-	hasProxyCommandNone := false
-	hasProxyJumpNone := false
+	hasGlobalKnownHostsDisabled := false
+	hasPermitLocalCommandDisabled := false
+	hasRequestTTYDisabled := false
+	hasClearForwardings := false
 	for _, arg := range args {
 		switch {
-		case arg == "-i" || arg == "IdentitiesOnly=yes" || arg == "-c" || arg == "sh":
-			t.Fatalf("regular SSH helper command should not force sync identity or local shell: %#v", args)
+		case arg == "-F" || arg == "-i" || arg == "IdentitiesOnly=yes" || arg == "-c" || arg == "sh":
+			t.Fatalf("regular SSH helper command should not bypass user config, force sync identity, or run a local shell: %#v", args)
 		case arg == "StrictHostKeyChecking=yes":
 			hasStrictHostKeyChecking = true
 		case arg == "BatchMode=yes":
 			hasBatchMode = true
 		case strings.HasPrefix(arg, "UserKnownHostsFile="):
 			hasKnownHosts = true
-		case arg == "ProxyCommand=none":
-			hasProxyCommandNone = true
-		case arg == "ProxyJump=none":
-			hasProxyJumpNone = true
+		case arg == "GlobalKnownHostsFile=/dev/null":
+			hasGlobalKnownHostsDisabled = true
+		case arg == "PermitLocalCommand=no":
+			hasPermitLocalCommandDisabled = true
+		case arg == "RequestTTY=no":
+			hasRequestTTYDisabled = true
+		case arg == "ClearAllForwardings=yes":
+			hasClearForwardings = true
 		}
 	}
-	if !hasStrictHostKeyChecking || !hasBatchMode || !hasKnownHosts || !hasProxyCommandNone || !hasProxyJumpNone {
+	if !hasStrictHostKeyChecking ||
+		!hasBatchMode ||
+		!hasKnownHosts ||
+		!hasGlobalKnownHostsDisabled ||
+		!hasPermitLocalCommandDisabled ||
+		!hasRequestTTYDisabled ||
+		!hasClearForwardings {
 		t.Fatalf("regular SSH helper command missing safety options: %#v", args)
 	}
 }

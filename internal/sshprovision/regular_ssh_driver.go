@@ -38,12 +38,13 @@ func (d RegularSSHProvisionDriver) ConfirmHostKey(_ context.Context, host Direct
 }
 
 func (d RegularSSHProvisionDriver) UpsertKnownHostPin(ctx context.Context, connector DirectPairHost, target DirectPairHost, targetKnownHostsPath string, pin KnownHostPin) error {
+	adminConnector := d.adminHostFor(connector)
 	command, err := RegularSSHInstallKnownHostCommand(RegularSSHInstallKnownHostSpec{
-		User:                 connector.SSHUser,
-		Host:                 connector.SSHHost,
-		Port:                 connector.SSHPort,
+		User:                 adminConnector.SSHUser,
+		Host:                 adminConnector.SSHHost,
+		Port:                 adminConnector.SSHPort,
 		KnownHostsPath:       d.RegularKnownHostsPath,
-		InstallPath:          connector.InstallPath,
+		InstallPath:          adminConnector.InstallPath,
 		TargetKnownHostsPath: targetKnownHostsPath,
 		TargetHost:           target.SSHHost,
 		TargetPort:           target.SSHPort,
@@ -64,12 +65,13 @@ func (d RegularSSHProvisionDriver) UpsertKnownHostPin(ctx context.Context, conne
 }
 
 func (d RegularSSHProvisionDriver) EnsureSyncKey(ctx context.Context, connector DirectPairProvisionHost) (SyncKeyMaterial, error) {
+	adminConnector := adminHostForProvisionHost(connector)
 	command, err := RegularSSHEnsureSyncKeyCommand(RegularSSHEnsureSyncKeySpec{
-		User:           connector.Host.SSHUser,
-		Host:           connector.Host.SSHHost,
-		Port:           connector.Host.SSHPort,
+		User:           adminConnector.SSHUser,
+		Host:           adminConnector.SSHHost,
+		Port:           adminConnector.SSHPort,
 		KnownHostsPath: d.RegularKnownHostsPath,
-		InstallPath:    connector.Host.InstallPath,
+		InstallPath:    adminConnector.InstallPath,
 		HostID:         connector.Host.ID,
 		KeyPath:        connector.SyncKeyPath,
 	})
@@ -95,12 +97,13 @@ func (d RegularSSHProvisionDriver) EnsureSyncKey(ctx context.Context, connector 
 }
 
 func (d RegularSSHProvisionDriver) InstallAuthorizedKey(ctx context.Context, acceptor DirectPairHost, entry ManagedAuthorizedKey) error {
+	adminAcceptor := d.adminHostFor(acceptor)
 	command, err := RegularSSHInstallAuthorizedKeyCommand(RegularSSHInstallAuthorizedKeySpec{
-		User:           acceptor.SSHUser,
-		Host:           acceptor.SSHHost,
-		Port:           acceptor.SSHPort,
+		User:           adminAcceptor.SSHUser,
+		Host:           adminAcceptor.SSHHost,
+		Port:           adminAcceptor.SSHPort,
 		KnownHostsPath: d.RegularKnownHostsPath,
-		InstallPath:    acceptor.InstallPath,
+		InstallPath:    adminAcceptor.InstallPath,
 		GatewayPath:    entry.GatewayPath,
 		PeerID:         entry.PeerID,
 		KeyID:          entry.KeyID,
@@ -120,12 +123,13 @@ func (d RegularSSHProvisionDriver) InstallAuthorizedKey(ctx context.Context, acc
 }
 
 func (d RegularSSHProvisionDriver) RunProbe(ctx context.Context, probe PinnedSSHCommand, connector DirectPairProvisionHost, expectPeerID string, expectKeyID string) error {
+	adminConnector := adminHostForProvisionHost(connector)
 	command, err := RegularSSHRunProbeCommand(RegularSSHRunProbeSpec{
-		User:           connector.Host.SSHUser,
-		Host:           connector.Host.SSHHost,
-		Port:           connector.Host.SSHPort,
+		User:           adminConnector.SSHUser,
+		Host:           adminConnector.SSHHost,
+		Port:           adminConnector.SSHPort,
 		KnownHostsPath: d.RegularKnownHostsPath,
-		InstallPath:    connector.Host.InstallPath,
+		InstallPath:    adminConnector.InstallPath,
 		Probe:          probe,
 		ExpectPeerID:   expectPeerID,
 		ExpectKeyID:    expectKeyID,
@@ -186,12 +190,13 @@ func (d RegularSSHProvisionDriver) writeConfigPhaseOverRegularSSH(ctx context.Co
 	if err != nil {
 		return err
 	}
+	adminHost := adminHostForProvisionHost(host)
 	command, err := RegularSSHApplyDirectConfigCommand(RegularSSHApplyDirectConfigSpec{
-		User:           host.Host.SSHUser,
-		Host:           host.Host.SSHHost,
-		Port:           host.Host.SSHPort,
+		User:           adminHost.SSHUser,
+		Host:           adminHost.SSHHost,
+		Port:           adminHost.SSHPort,
 		KnownHostsPath: d.RegularKnownHostsPath,
-		InstallPath:    host.Host.InstallPath,
+		InstallPath:    adminHost.InstallPath,
 		PayloadBase64:  payload,
 	})
 	if err != nil {
@@ -205,6 +210,20 @@ func (d RegularSSHProvisionDriver) writeConfigPhaseOverRegularSSH(ctx context.Co
 		return fmt.Errorf("%w: config apply failed", ErrRemoteProvisionOutput)
 	}
 	return nil
+}
+
+func (d RegularSSHProvisionDriver) adminHostFor(host DirectPairHost) DirectPairHost {
+	if provisionHost, ok := d.ProvisionHosts[host.ID]; ok {
+		return adminHostForProvisionHost(provisionHost)
+	}
+	return host
+}
+
+func adminHostForProvisionHost(host DirectPairProvisionHost) DirectPairHost {
+	if host.AdminHost.ID != "" {
+		return host.AdminHost
+	}
+	return host.Host
 }
 
 type directConfigApplyPayload struct {

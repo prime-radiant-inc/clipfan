@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -85,6 +86,187 @@ func TestRunSSHProvisionDirectBuildsThreeHostMesh(t *testing.T) {
 		if got != testDirectProvisionSharedKey {
 			t.Fatalf("shared key payload %d = %q, want fleet key", i, got)
 		}
+	}
+}
+
+func TestRunSSHProvisionDirectResolvesSSHConfigHostNameForRuntimeTarget(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDirectProvisionRunner{sshConfigOutputs: map[string]string{
+		"jesse@mac-a":   "hostname 100.64.0.10\nport 22\n",
+		"jesse@linux-b": "hostname linux-b\nport 22\n",
+	}}
+	var stdout, stderr bytes.Buffer
+
+	err := runSSHProvisionDirect([]string{
+		"--trust-keyscan",
+		"--regular-known-hosts", "/Users/jesse/.ssh/known_hosts",
+		"--host", "id=mac-a,ssh=mac-a,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+		"--host", "id=linux-b,ssh=linux-b,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/Application Support/Clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519",
+	}, &stdout, &stderr, sshProvisionDirectOptions{
+		Runner:            runner,
+		ConfigV2WriteGate: func() bool { return true },
+		SharedKey:         func() (string, error) { return testDirectProvisionSharedKey, nil },
+	})
+	if err != nil {
+		t.Fatalf("runSSHProvisionDirect() error = %v stderr=%q", err, stderr.String())
+	}
+	wantKeyscans := []string{"keyscan:100.64.0.10:22", "keyscan:linux-b:22"}
+	if !reflect.DeepEqual(runner.keyscans, wantKeyscans) {
+		t.Fatalf("keyscans:\n got %#v\nwant %#v", runner.keyscans, wantKeyscans)
+	}
+	if !containsString(runner.regularTargets, "jesse@mac-a") {
+		t.Fatalf("regular targets = %#v, want admin alias jesse@mac-a", runner.regularTargets)
+	}
+	if !containsString(runner.configPeerEndpoints, "mac-a=100.64.0.10:22") {
+		t.Fatalf("config peer endpoints = %#v, want resolved runtime host", runner.configPeerEndpoints)
+	}
+}
+
+func TestRunSSHProvisionDirectUsesSSHConfigBeforeKeyscan(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDirectProvisionRunner{sshConfigOutputs: map[string]string{
+		"jesse@mac-a":   "hostname mac-a.\nport 22\n",
+		"jesse@linux-b": "hostname linux-b.\nport 22\n",
+	}}
+	var stdout, stderr bytes.Buffer
+
+	err := runSSHProvisionDirect([]string{
+		"--trust-keyscan",
+		"--regular-known-hosts", "/Users/jesse/.ssh/known_hosts",
+		"--host", "id=mac-a,ssh=mac-a,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+		"--host", "id=linux-b,ssh=linux-b,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/Application Support/Clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519",
+	}, &stdout, &stderr, sshProvisionDirectOptions{
+		Runner:            runner,
+		ConfigV2WriteGate: func() bool { return true },
+		SharedKey:         func() (string, error) { return testDirectProvisionSharedKey, nil },
+	})
+	if err != nil {
+		t.Fatalf("runSSHProvisionDirect() error = %v stderr=%q", err, stderr.String())
+	}
+
+	wantConfigLookups := []string{"config:jesse@mac-a:22", "config:jesse@linux-b:22"}
+	if !reflect.DeepEqual(runner.configLookups, wantConfigLookups) {
+		t.Fatalf("config lookups:\n got %#v\nwant %#v", runner.configLookups, wantConfigLookups)
+	}
+	wantKeyscans := []string{"keyscan:mac-a:22", "keyscan:linux-b:22"}
+	if !reflect.DeepEqual(runner.keyscans, wantKeyscans) {
+		t.Fatalf("keyscans:\n got %#v\nwant %#v", runner.keyscans, wantKeyscans)
+	}
+}
+
+func TestRunSSHProvisionDirectRejectsUnsupportedSSHConfigProxyBeforeKeyscan(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDirectProvisionRunner{sshConfigOutputs: map[string]string{
+		"jesse@mac-a": "hostname mac-a\nport 22\nproxyjump bastion\n",
+	}}
+	var stdout, stderr bytes.Buffer
+
+	err := runSSHProvisionDirect([]string{
+		"--trust-keyscan",
+		"--regular-known-hosts", "/Users/jesse/.ssh/known_hosts",
+		"--host", "id=mac-a,ssh=mac-a,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+		"--host", "id=linux-b,ssh=linux-b,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/Application Support/Clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519",
+	}, &stdout, &stderr, sshProvisionDirectOptions{
+		Runner:            runner,
+		ConfigV2WriteGate: func() bool { return true },
+		SharedKey:         func() (string, error) { return testDirectProvisionSharedKey, nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported_ssh_config_for_keyscan") {
+		t.Fatalf("runSSHProvisionDirect() error = %v, want unsupported_ssh_config_for_keyscan", err)
+	}
+	if len(runner.keyscans) != 0 {
+		t.Fatalf("keyscans = %#v, want none", runner.keyscans)
+	}
+}
+
+func TestRunSSHProvisionDirectAllowsDefaultSSHConfigHostKeyAlias(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDirectProvisionRunner{sshConfigOutputs: map[string]string{
+		"jesse@mac-a":   "hostname mac-a\nport 22\nhostkeyalias none\n",
+		"jesse@linux-b": "hostname linux-b\nport 22\n",
+	}}
+	var stdout, stderr bytes.Buffer
+
+	err := runSSHProvisionDirect([]string{
+		"--trust-keyscan",
+		"--regular-known-hosts", "/Users/jesse/.ssh/known_hosts",
+		"--host", "id=mac-a,ssh=mac-a,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+		"--host", "id=linux-b,ssh=linux-b,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/Application Support/Clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519",
+	}, &stdout, &stderr, sshProvisionDirectOptions{
+		Runner:            runner,
+		ConfigV2WriteGate: func() bool { return true },
+		SharedKey:         func() (string, error) { return testDirectProvisionSharedKey, nil },
+	})
+	if err != nil {
+		t.Fatalf("runSSHProvisionDirect() error = %v stderr=%q", err, stderr.String())
+	}
+	wantKeyscans := []string{"keyscan:mac-a:22", "keyscan:linux-b:22"}
+	if !reflect.DeepEqual(runner.keyscans, wantKeyscans) {
+		t.Fatalf("keyscans:\n got %#v\nwant %#v", runner.keyscans, wantKeyscans)
+	}
+}
+
+func TestRunSSHProvisionDirectRejectsSSHConfigHostKeyAliasBeforeKeyscan(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDirectProvisionRunner{sshConfigOutputs: map[string]string{
+		"jesse@mac-a": "hostname mac-a\nport 22\nhostkeyalias fleet-alias\n",
+	}}
+	var stdout, stderr bytes.Buffer
+
+	err := runSSHProvisionDirect([]string{
+		"--trust-keyscan",
+		"--regular-known-hosts", "/Users/jesse/.ssh/known_hosts",
+		"--host", "id=mac-a,ssh=mac-a,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+		"--host", "id=linux-b,ssh=linux-b,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/Application Support/Clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519",
+	}, &stdout, &stderr, sshProvisionDirectOptions{
+		Runner:            runner,
+		ConfigV2WriteGate: func() bool { return true },
+		SharedKey:         func() (string, error) { return testDirectProvisionSharedKey, nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported_ssh_config_for_keyscan") {
+		t.Fatalf("runSSHProvisionDirect() error = %v, want unsupported_ssh_config_for_keyscan", err)
+	}
+	if len(runner.keyscans) != 0 {
+		t.Fatalf("keyscans = %#v, want none", runner.keyscans)
+	}
+}
+
+func TestRunSSHProvisionDirectResolvesSSHConfigPortForRuntimeTarget(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDirectProvisionRunner{sshConfigOutputs: map[string]string{
+		"jesse@mac-a":   "hostname mac-a\nport 2222\n",
+		"jesse@linux-b": "hostname linux-b\nport 22\n",
+	}}
+	var stdout, stderr bytes.Buffer
+
+	err := runSSHProvisionDirect([]string{
+		"--trust-keyscan",
+		"--regular-known-hosts", "/Users/jesse/.ssh/known_hosts",
+		"--host", "id=mac-a,ssh=mac-a,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+		"--host", "id=linux-b,ssh=linux-b,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/Application Support/Clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519",
+	}, &stdout, &stderr, sshProvisionDirectOptions{
+		Runner:            runner,
+		ConfigV2WriteGate: func() bool { return true },
+		SharedKey:         func() (string, error) { return testDirectProvisionSharedKey, nil },
+	})
+	if err != nil {
+		t.Fatalf("runSSHProvisionDirect() error = %v stderr=%q", err, stderr.String())
+	}
+	wantKeyscans := []string{"keyscan:mac-a:2222", "keyscan:linux-b:22"}
+	if !reflect.DeepEqual(runner.keyscans, wantKeyscans) {
+		t.Fatalf("keyscans:\n got %#v\nwant %#v", runner.keyscans, wantKeyscans)
+	}
+	if !containsString(runner.regularTargets, "jesse@mac-a") {
+		t.Fatalf("regular targets = %#v, want admin alias jesse@mac-a", runner.regularTargets)
+	}
+	if !containsString(runner.configPeerEndpoints, "mac-a=mac-a:2222") {
+		t.Fatalf("config peer endpoints = %#v, want resolved runtime port", runner.configPeerEndpoints)
 	}
 }
 
@@ -403,13 +585,42 @@ func TestRunSSHApplyDirectConfigRejectsHostMismatchBeforeMutation(t *testing.T) 
 
 type fakeDirectProvisionRunner struct {
 	keyscans              []string
+	configLookups         []string
+	sshConfigOutputs      map[string]string
+	regularTargets        []string
 	configApplies         []string
 	configApplySharedKeys []string
+	configPeerEndpoints   []string
 }
 
 func (r *fakeDirectProvisionRunner) Run(_ context.Context, command sshprovision.SSHCommand) (sshprovision.CommandOutput, error) {
 	if len(command.Args) == 0 {
 		return sshprovision.CommandOutput{}, errors.New("empty command")
+	}
+	if command.Args[0] == "ssh" && len(command.Args) > 1 && command.Args[1] == "-G" {
+		host := command.Args[len(command.Args)-1]
+		port := "22"
+		user := ""
+		for i := range command.Args {
+			if command.Args[i] == "-p" && i+1 < len(command.Args) {
+				port = command.Args[i+1]
+			}
+			if command.Args[i] == "-l" && i+1 < len(command.Args) {
+				user = command.Args[i+1]
+			}
+		}
+		lookup := host
+		if user != "" {
+			lookup = user + "@" + host
+		}
+		r.configLookups = append(r.configLookups, "config:"+lookup+":"+port)
+		if r.sshConfigOutputs != nil && r.sshConfigOutputs[lookup] != "" {
+			return sshprovision.CommandOutput{Stdout: []byte(r.sshConfigOutputs[lookup])}, nil
+		}
+		if r.sshConfigOutputs != nil && r.sshConfigOutputs[host] != "" {
+			return sshprovision.CommandOutput{Stdout: []byte(r.sshConfigOutputs[host])}, nil
+		}
+		return sshprovision.CommandOutput{Stdout: []byte("hostname " + host + "\nport " + port + "\n")}, nil
 	}
 	if command.Args[0] == "ssh-keyscan" {
 		host := command.Args[len(command.Args)-1]
@@ -420,9 +631,16 @@ func (r *fakeDirectProvisionRunner) Run(_ context.Context, command sshprovision.
 			}
 		}
 		r.keyscans = append(r.keyscans, "keyscan:"+host+":"+port)
-		return sshprovision.CommandOutput{Stdout: []byte(host + " ssh-ed25519 " + testDirectProvisionPublicKey(host))}, nil
+		scanHost := host
+		if port != "" && port != "22" {
+			scanHost = "[" + host + "]:" + port
+		}
+		return sshprovision.CommandOutput{Stdout: []byte(scanHost + " ssh-ed25519 " + testDirectProvisionPublicKey(host))}, nil
 	}
 	remote := command.Args[len(command.Args)-1]
+	if len(command.Args) >= 2 {
+		r.regularTargets = append(r.regularTargets, command.Args[len(command.Args)-2])
+	}
 	switch {
 	case strings.Contains(remote, "ssh-install-known-host"):
 		return sshprovision.CommandOutput{Stdout: []byte(`{"status":"ok"}`)}, nil
@@ -454,6 +672,11 @@ func (r *fakeDirectProvisionRunner) Run(_ context.Context, command sshprovision.
 			Phase      string `json:"phase"`
 			Mutation   struct {
 				SharedKey string `json:"shared_key"`
+				Writes    []struct {
+					PeerID  string
+					SSHHost string
+					SSHPort int
+				} `json:"writes"`
 			} `json:"mutation"`
 		}
 		data, err := base64.StdEncoding.DecodeString(payload)
@@ -468,6 +691,9 @@ func (r *fakeDirectProvisionRunner) Run(_ context.Context, command sshprovision.
 		}
 		r.configApplies = append(r.configApplies, decoded.HostID+":"+decoded.Phase)
 		r.configApplySharedKeys = append(r.configApplySharedKeys, decoded.Mutation.SharedKey)
+		for _, write := range decoded.Mutation.Writes {
+			r.configPeerEndpoints = append(r.configPeerEndpoints, write.PeerID+"="+write.SSHHost+":"+fmt.Sprint(write.SSHPort))
+		}
 		return sshprovision.CommandOutput{Stdout: []byte(`{"status":"ok"}`)}, nil
 	default:
 		return sshprovision.CommandOutput{}, errors.New("unexpected command: " + strings.Join(command.Args, " "))
@@ -572,6 +798,15 @@ func testDirectProvisionKeyID(hostID string) string {
 	default:
 		return testDirectProvisionEd25519KeyID
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func encodeSSHApplyDirectConfigPayloadForTest(payload SSHApplyDirectConfigPayload) (string, error) {

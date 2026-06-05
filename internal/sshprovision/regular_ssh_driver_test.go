@@ -3,7 +3,6 @@ package sshprovision
 import (
 	"context"
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -193,9 +192,10 @@ func assertRemoteCommand(t *testing.T, command SSHCommand, target string, subcom
 			t.Fatalf("remote command = %q, want %q", remote, want)
 		}
 	}
-	if !reflect.DeepEqual(command.Args[:2], []string{"ssh", "-F"}) {
-		t.Fatalf("command does not start with ssh -F: %#v", command.Args)
+	if command.Args[0] != "ssh" {
+		t.Fatalf("command does not start with ssh: %#v", command.Args)
 	}
+	assertRegularSSHCommandSafety(t, command.Args)
 	if _, err := config.CanonicalSSHHost(strings.TrimPrefix(strings.Split(target, "@")[1], "[")); err != nil {
 		t.Fatalf("target host is not canonical: %q", target)
 	}
