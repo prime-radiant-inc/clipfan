@@ -82,7 +82,7 @@ func TestNewManagedAuthorizedKeyRejectsInvalidInput(t *testing.T) {
 	}
 }
 
-func TestUpsertManagedAuthorizedKeyLineAppendsAndPreservesUnmanagedLines(t *testing.T) {
+func TestUpsertManagedAuthorizedKeyLineInsertsBeforeUnmanagedKeys(t *testing.T) {
 	t.Parallel()
 
 	entry := mustManagedAuthorizedKey(t, ManagedAuthorizedKey{
@@ -102,7 +102,50 @@ func TestUpsertManagedAuthorizedKeyLineAppendsAndPreservesUnmanagedLines(t *test
 		t.Fatalf("UpsertManagedAuthorizedKeyLine() error = %v", err)
 	}
 
-	want := before + entry.Line() + "\n"
+	want := strings.Join([]string{
+		"# user key",
+		entry.Line(),
+		"ssh-ed25519 " + testOtherEd25519Key + " user@example",
+		"",
+	}, "\n")
+	if string(after) != want {
+		t.Fatalf("updated authorized_keys:\n got %q\nwant %q", string(after), want)
+	}
+}
+
+func TestUpsertManagedAuthorizedKeyLineMovesSamePeerBeforeUnmanagedKeys(t *testing.T) {
+	t.Parallel()
+
+	oldEntry := mustManagedAuthorizedKey(t, ManagedAuthorizedKey{
+		PeerID:      "linux-a",
+		KeyID:       "key-old123",
+		GatewayPath: "/home/jesse/.local/bin/clipfan",
+		PublicKey:   testEd25519Key,
+	})
+	newEntry := mustManagedAuthorizedKey(t, ManagedAuthorizedKey{
+		PeerID:      "linux-a",
+		KeyID:       "key-new123",
+		GatewayPath: "/home/jesse/.local/bin/clipfan",
+		PublicKey:   testEd25519Key,
+	})
+	before := strings.Join([]string{
+		"# user key",
+		"ssh-ed25519 " + testOtherEd25519Key + " user@example",
+		oldEntry.Line(),
+		"",
+	}, "\n")
+
+	after, err := UpsertManagedAuthorizedKeyLine([]byte(before), newEntry)
+	if err != nil {
+		t.Fatalf("UpsertManagedAuthorizedKeyLine() error = %v", err)
+	}
+
+	want := strings.Join([]string{
+		"# user key",
+		newEntry.Line(),
+		"ssh-ed25519 " + testOtherEd25519Key + " user@example",
+		"",
+	}, "\n")
 	if string(after) != want {
 		t.Fatalf("updated authorized_keys:\n got %q\nwant %q", string(after), want)
 	}
@@ -131,8 +174,8 @@ func TestUpsertManagedAuthorizedKeyLineRemovesUnmanagedSamePublicKey(t *testing.
 
 	want := strings.Join([]string{
 		"# user key",
-		"ssh-ed25519 " + testOtherEd25519Key + " other-user-key mentions ssh-ed25519 " + testEd25519Key,
 		entry.Line(),
+		"ssh-ed25519 " + testOtherEd25519Key + " other-user-key mentions ssh-ed25519 " + testEd25519Key,
 		"",
 	}, "\n")
 	if string(after) != want {
@@ -243,6 +286,26 @@ func TestUpsertManagedAuthorizedKeyLineIsIdempotent(t *testing.T) {
 		PublicKey:   testEd25519Key,
 	})
 	before := []byte(entry.Line() + "\n")
+
+	after, err := UpsertManagedAuthorizedKeyLine(before, entry)
+	if err != nil {
+		t.Fatalf("UpsertManagedAuthorizedKeyLine() error = %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("idempotent update changed body: got %q want %q", string(after), string(before))
+	}
+}
+
+func TestUpsertManagedAuthorizedKeyLineIsIdempotentWithoutTrailingNewline(t *testing.T) {
+	t.Parallel()
+
+	entry := mustManagedAuthorizedKey(t, ManagedAuthorizedKey{
+		PeerID:      "linux-a",
+		KeyID:       "key-123456",
+		GatewayPath: "/home/jesse/.local/bin/clipfan",
+		PublicKey:   testEd25519Key,
+	})
+	before := []byte(entry.Line())
 
 	after, err := UpsertManagedAuthorizedKeyLine(before, entry)
 	if err != nil {

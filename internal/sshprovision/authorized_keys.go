@@ -87,8 +87,8 @@ func UpsertManagedAuthorizedKeyLine(data []byte, entry ManagedAuthorizedKey) ([]
 	}
 
 	lines, trailingNewline := splitAuthorizedKeyLines(string(data))
+	headerLineCount := authorizedKeysHeaderLineCount(lines)
 	out := make([]string, 0, len(lines)+1)
-	replaced := false
 	for _, line := range lines {
 		metadata, managed, err := ParseManagedAuthorizedKeyMetadata(line)
 		if err != nil {
@@ -102,10 +102,6 @@ func UpsertManagedAuthorizedKeyLine(data []byte, entry ManagedAuthorizedKey) ([]
 			continue
 		}
 		if metadata.PeerID == entry.PeerID {
-			if !replaced {
-				out = append(out, entry.Line())
-				replaced = true
-			}
 			continue
 		}
 		if metadata.KeyID == entry.KeyID {
@@ -116,11 +112,32 @@ func UpsertManagedAuthorizedKeyLine(data []byte, entry ManagedAuthorizedKey) ([]
 		}
 		out = append(out, line)
 	}
-	if !replaced {
-		out = append(out, entry.Line())
-		trailingNewline = true
-	}
+	out = insertManagedAuthorizedKeyLine(out, headerLineCount, entry.Line())
 	return joinAuthorizedKeyLines(out, trailingNewline), nil
+}
+
+func authorizedKeysHeaderLineCount(lines []string) int {
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			return i
+		}
+	}
+	return len(lines)
+}
+
+func insertManagedAuthorizedKeyLine(lines []string, index int, line string) []string {
+	if index < 0 {
+		index = 0
+	}
+	if index > len(lines) {
+		index = len(lines)
+	}
+	out := make([]string, 0, len(lines)+1)
+	out = append(out, lines[:index]...)
+	out = append(out, line)
+	out = append(out, lines[index:]...)
+	return out
 }
 
 func authorizedKeyLineUsesPublicKey(line string, keyType string, publicKey string) bool {
