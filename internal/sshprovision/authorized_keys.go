@@ -95,6 +95,9 @@ func UpsertManagedAuthorizedKeyLine(data []byte, entry ManagedAuthorizedKey) ([]
 			return nil, err
 		}
 		if !managed {
+			if authorizedKeyLineUsesPublicKey(line, managedKeyType, entry.PublicKey) {
+				continue
+			}
 			out = append(out, line)
 			continue
 		}
@@ -108,6 +111,9 @@ func UpsertManagedAuthorizedKeyLine(data []byte, entry ManagedAuthorizedKey) ([]
 		if metadata.KeyID == entry.KeyID {
 			return nil, fmt.Errorf("%w: key id %s already belongs to peer %s", ErrAuthorizedKeyConflict, entry.KeyID, metadata.PeerID)
 		}
+		if authorizedKeyLineUsesPublicKey(line, managedKeyType, entry.PublicKey) {
+			return nil, fmt.Errorf("%w: public key already belongs to peer %s", ErrAuthorizedKeyConflict, metadata.PeerID)
+		}
 		out = append(out, line)
 	}
 	if !replaced {
@@ -115,6 +121,56 @@ func UpsertManagedAuthorizedKeyLine(data []byte, entry ManagedAuthorizedKey) ([]
 		trailingNewline = true
 	}
 	return joinAuthorizedKeyLines(out, trailingNewline), nil
+}
+
+func authorizedKeyLineUsesPublicKey(line string, keyType string, publicKey string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return false
+	}
+	first, rest, ok := readAuthorizedKeyField(line)
+	if !ok {
+		return false
+	}
+	if first == keyType {
+		candidateKey, _, ok := readAuthorizedKeyField(rest)
+		return ok && candidateKey == publicKey
+	}
+	candidateType, rest, ok := readAuthorizedKeyField(rest)
+	if !ok || candidateType != keyType {
+		return false
+	}
+	candidateKey, _, ok := readAuthorizedKeyField(rest)
+	return ok && candidateKey == publicKey
+}
+
+func readAuthorizedKeyField(line string) (string, string, bool) {
+	line = strings.TrimLeftFunc(line, isAuthorizedKeySpace)
+	if line == "" {
+		return "", "", false
+	}
+	inQuote := false
+	escaped := false
+	for i, ch := range line {
+		switch {
+		case escaped:
+			escaped = false
+		case inQuote && ch == '\\':
+			escaped = true
+		case ch == '"':
+			inQuote = !inQuote
+		case !inQuote && isAuthorizedKeySpace(ch):
+			return line[:i], strings.TrimLeftFunc(line[i:], isAuthorizedKeySpace), true
+		}
+	}
+	if inQuote {
+		return "", "", false
+	}
+	return line, "", true
+}
+
+func isAuthorizedKeySpace(ch rune) bool {
+	return ch == ' ' || ch == '\t'
 }
 
 func ManagedAuthorizedKeysPath(homeDir string) (string, error) {

@@ -41,6 +41,8 @@ func TestRunSSHRunProbeBuildsAndRunsPinnedProbe(t *testing.T) {
 		"-F", "/dev/null",
 		"-o", "BatchMode=yes",
 		"-o", "IdentitiesOnly=yes",
+		"-o", "IdentityFile=none",
+		"-o", "IdentityAgent=none",
 		"-o", "ConnectTimeout=5",
 		"-o", "ConnectionAttempts=1",
 		"-o", "StrictHostKeyChecking=yes",

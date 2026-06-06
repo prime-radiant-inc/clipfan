@@ -108,6 +108,38 @@ func TestUpsertManagedAuthorizedKeyLineAppendsAndPreservesUnmanagedLines(t *test
 	}
 }
 
+func TestUpsertManagedAuthorizedKeyLineRemovesUnmanagedSamePublicKey(t *testing.T) {
+	t.Parallel()
+
+	entry := mustManagedAuthorizedKey(t, ManagedAuthorizedKey{
+		PeerID:      "linux-a",
+		KeyID:       "key-123456",
+		GatewayPath: "/home/jesse/.local/bin/clipfan",
+		PublicKey:   testEd25519Key,
+	})
+	before := strings.Join([]string{
+		"# user key",
+		"ssh-ed25519 " + testEd25519Key + " old-clipfan-sync-key",
+		"ssh-ed25519 " + testOtherEd25519Key + " other-user-key mentions ssh-ed25519 " + testEd25519Key,
+		"",
+	}, "\n")
+
+	after, err := UpsertManagedAuthorizedKeyLine([]byte(before), entry)
+	if err != nil {
+		t.Fatalf("UpsertManagedAuthorizedKeyLine() error = %v", err)
+	}
+
+	want := strings.Join([]string{
+		"# user key",
+		"ssh-ed25519 " + testOtherEd25519Key + " other-user-key mentions ssh-ed25519 " + testEd25519Key,
+		entry.Line(),
+		"",
+	}, "\n")
+	if string(after) != want {
+		t.Fatalf("updated authorized_keys:\n got %q\nwant %q", string(after), want)
+	}
+}
+
 func TestUpsertManagedAuthorizedKeyLineReplacesSamePeerOnly(t *testing.T) {
 	t.Parallel()
 
@@ -139,6 +171,31 @@ func TestUpsertManagedAuthorizedKeyLineReplacesSamePeerOnly(t *testing.T) {
 	want := "# keep\n" + newEntry.Line() + "\n" + otherPeer.Line() + "\n"
 	if string(after) != want {
 		t.Fatalf("updated authorized_keys:\n got %q\nwant %q", string(after), want)
+	}
+}
+
+func TestUpsertManagedAuthorizedKeyLineRejectsManagedSamePublicKeyForOtherPeer(t *testing.T) {
+	t.Parallel()
+
+	existing := mustManagedAuthorizedKey(t, ManagedAuthorizedKey{
+		PeerID:      "mac-b",
+		KeyID:       "key-999999",
+		GatewayPath: "/Users/jesse/.local/bin/clipfan",
+		PublicKey:   testEd25519Key,
+	})
+	entry := mustManagedAuthorizedKey(t, ManagedAuthorizedKey{
+		PeerID:      "linux-a",
+		KeyID:       "key-123456",
+		GatewayPath: "/home/jesse/.local/bin/clipfan",
+		PublicKey:   testEd25519Key,
+	})
+
+	after, err := UpsertManagedAuthorizedKeyLine([]byte(existing.Line()+"\n"), entry)
+	if !errors.Is(err, ErrAuthorizedKeyConflict) {
+		t.Fatalf("UpsertManagedAuthorizedKeyLine() error = %v, want ErrAuthorizedKeyConflict", err)
+	}
+	if after != nil {
+		t.Fatalf("updated authorized_keys = %q, want nil on conflict", string(after))
 	}
 }
 
