@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.27] - 2026-06-05
+
+### Fixed
+
+- The macOS release now bundles a `v0.3.27` daemon payload so installed daemons are actually upgraded to the fleet-status and SSH config refresh fixes from `0.3.26`.
+
 ## [0.3.26] - 2026-06-05
 
 ### Fixed
