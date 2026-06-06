@@ -348,6 +348,22 @@ func (m *sshSyncManager) markPeerReceivedIfSessionCurrent(session *sshPeerSessio
 	return true
 }
 
+func (m *sshSyncManager) receiveContentIfSessionCurrent(session *sshPeerSession, content clipboard.Content, origin string, now time.Time) bool {
+	if session == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.sessions[session.peer.id] != session {
+		return false
+	}
+	if m.onReceive != nil {
+		m.onReceive(content, origin)
+	}
+	m.markPeerReceivedLocked(session.peer.id, now)
+	return true
+}
+
 func (m *sshSyncManager) markPeerReceivedLocked(peerID string, now time.Time) {
 	state := m.ensurePeerRuntimeLocked(peerID)
 	state.Active = true
@@ -357,15 +373,6 @@ func (m *sshSyncManager) markPeerReceivedLocked(peerID string, now time.Time) {
 	state.LastErrorTS = time.Time{}
 	state.Status = sshPeerRuntimeStatus(state)
 	m.peerRuntime[peerID] = state
-}
-
-func (m *sshSyncManager) sessionIsCurrent(session *sshPeerSession) bool {
-	if session == nil {
-		return false
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.sessions[session.peer.id] == session
 }
 
 func (m *sshSyncManager) markPeerError(peerID string, err error) {
@@ -739,15 +746,11 @@ func (m *sshSyncManager) readPeerEvents(ctx context.Context, session *sshPeerSes
 			clipID := ""
 			status := "no_state"
 			if result.NullReason == "" {
-				if !m.sessionIsCurrent(session) {
+				if !m.receiveContentIfSessionCurrent(session, result.Content, result.Origin, time.Now().UTC()) {
 					return context.Canceled
 				}
 				clipID = result.Content.ID
 				status = "applied"
-				if m.onReceive != nil {
-					m.onReceive(result.Content, result.Origin)
-				}
-				m.markPeerReceivedIfSessionCurrent(session, time.Now().UTC())
 			}
 			if err := write(ctx, func(ctx context.Context) error {
 				return stream.WriteAck(ctx, result.Seq, clipID, status, "")

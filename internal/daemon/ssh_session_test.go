@@ -613,6 +613,17 @@ func TestSSHSyncManagerStaleReplacedSessionAckDoesNotClearPendingState(t *testin
 	if manager.markPeerReceivedIfSessionCurrent(oldSession, fixedTime) {
 		t.Fatal("stale session marked peer received")
 	}
+	var staleReceiveCalled bool
+	manager.onReceive = func(clipboard.Content, string) {
+		staleReceiveCalled = true
+	}
+	if manager.receiveContentIfSessionCurrent(oldSession, content, "linux-b", fixedTime) {
+		t.Fatal("stale session applied received content")
+	}
+	manager.onReceive = nil
+	if staleReceiveCalled {
+		t.Fatal("stale session invoked receive callback")
+	}
 	if manager.markPeerErrorIfSessionCurrent(oldSession, io.ErrClosedPipe) {
 		t.Fatal("stale session marked peer errored")
 	}
