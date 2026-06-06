@@ -542,19 +542,20 @@ func (m *sshSyncManager) rememberPending(peerID string, state sshOutboundState) 
 	m.pending[peerID] = state
 }
 
-func (m *sshSyncManager) clearPendingIfSessionCurrent(session *sshPeerSession, state sshOutboundState) {
+func (m *sshSyncManager) clearPendingIfSessionCurrent(session *sshPeerSession, state sshOutboundState) bool {
 	if session == nil {
-		return
+		return false
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.sessions[session.peer.id] != session {
-		return
+		return false
 	}
 	if pending, ok := m.pending[session.peer.id]; ok && pending.content.ID == state.content.ID {
 		delete(m.pending, session.peer.id)
 		m.markPeerPendingLocked(session.peer.id, false)
 	}
+	return true
 }
 
 func (m *sshSyncManager) rememberPendingIfSessionCurrent(session *sshPeerSession, state sshOutboundState) {
@@ -584,8 +585,9 @@ func (m *sshSyncManager) handleSSHStreamAck(session *sshPeerSession, inflight ma
 	if !qualifyingSSHStreamAck(ack, state) {
 		return true
 	}
-	m.clearPendingIfSessionCurrent(session, state)
-	m.markPeerAcked(session.peer.id, time.Now().UTC())
+	if m.clearPendingIfSessionCurrent(session, state) {
+		m.markPeerAcked(session.peer.id, time.Now().UTC())
+	}
 	return true
 }
 

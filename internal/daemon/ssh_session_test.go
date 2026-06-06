@@ -609,11 +609,19 @@ func TestSSHSyncManagerStaleReplacedSessionAckDoesNotClearPendingState(t *testin
 	if got, ok := manager.pendingState("linux-b"); !ok || got.content.ID != "clip-same-id" {
 		t.Fatalf("pending after stale ack = (%#v,%v), want clip-same-id preserved", got, ok)
 	}
+	staleSnapshot := manager.Snapshot()["linux-b"]
+	if staleSnapshot.Active || !staleSnapshot.LastAckTS.IsZero() {
+		t.Fatalf("stale ack updated runtime snapshot = %#v, want no live ack", staleSnapshot)
+	}
 
 	inflight[2] = state
 	manager.handleSSHStreamAck(newSession, inflight, transport.SSHStreamAckResult{Seq: 2, ID: "clip-same-id", Status: "applied"})
 	if _, ok := manager.pendingState("linux-b"); ok {
 		t.Fatal("current session ack did not clear matching pending state")
+	}
+	currentSnapshot := manager.Snapshot()["linux-b"]
+	if !currentSnapshot.Active || currentSnapshot.LastAckTS.IsZero() {
+		t.Fatalf("current ack runtime snapshot = %#v, want live ack", currentSnapshot)
 	}
 }
 
