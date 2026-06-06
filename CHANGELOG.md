@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.29] - 2026-06-06
+
+### Changed
+
+- Fleet rows now show SSH transport state and endpoint diagnostics instead of legacy peer HTTP port details for private SSH mesh hosts.
+- Add Peer copy now better matches the automatic macOS/Linux detection and callback-address flow.
+
+### Fixed
+
+- SSH peer health now reflects persistent SSH runtime activity instead of stale peer HTTP push status.
+- Stale persistent SSH sessions can no longer overwrite current peer health after reconnects, including stale connect, pending, receive, ack, and error paths.
+
 ## [0.3.28] - 2026-06-06
 
 ### Fixed
