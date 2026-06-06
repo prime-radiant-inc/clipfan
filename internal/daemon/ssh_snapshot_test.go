@@ -35,6 +35,38 @@ func TestSnapshotIncludesConfiguredReadySSHPeersBeforeActivity(t *testing.T) {
 	}
 }
 
+func TestSnapshotIncludesConfiguredSSHPeerRuntimeState(t *testing.T) {
+	cfg := sshSyncManagerTestConfig()
+	cfg.Port = 7853
+	d := &Daemon{
+		cfg:        cfg,
+		disc:       discovery.NewStatic(nil, cfg.Port),
+		origin:     "m4",
+		peerStatus: map[string]*PeerState{},
+		sshSync: &fakeSSHSyncRuntime{runtime: map[string]SSHPeerRuntimeState{
+			"linux-b": {
+				PeerID:        "linux-b",
+				Active:        true,
+				Status:        "live",
+				LastConnectTS: fixedTime,
+				LastAckTS:     fixedTime,
+			},
+		}},
+	}
+
+	got := d.Snapshot(context.Background())
+	if len(got) != 1 {
+		t.Fatalf("snapshot len = %d, want configured peer: %#v", len(got), got)
+	}
+	peer := got[0]
+	if peer.Transport != config.TransportSSH || peer.SSHHost != "linux-b.example.com" || peer.SSHUser != "jesse" || peer.SSHPort != 22 {
+		t.Fatalf("ssh identity fields = %#v", peer)
+	}
+	if !peer.SSHActive || peer.SSHStatus != "live" || peer.SSHLastConnectTS != fixedTime || peer.SSHLastAckTS != fixedTime {
+		t.Fatalf("ssh runtime fields = %#v", peer)
+	}
+}
+
 func TestSnapshotMergesConfiguredSSHPeerWithActivity(t *testing.T) {
 	cfg := sshSyncManagerTestConfig()
 	cfg.Port = 7853

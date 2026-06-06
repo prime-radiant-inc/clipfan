@@ -434,6 +434,46 @@ func TestSSHSyncManagerPublishBeforeStartPreservesPendingState(t *testing.T) {
 	}
 }
 
+func TestSSHSyncManagerSnapshotTracksRuntimeTransitions(t *testing.T) {
+	cfg := sshSyncManagerTestConfig()
+	auth, err := transport.NewAuth(cfg.SharedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := newSSHSyncManager(cfg, auth, "m4", nil, newFakeSSHProcessStarter())
+	content := clipboard.New(clipboard.KindText, []byte("tracked"), fixedTime)
+	content.ID = "clip-tracked"
+
+	manager.Publish(context.Background(), content, "m4", "")
+	pending := manager.Snapshot()["linux-b"]
+	if !pending.Pending || pending.Status != "waiting" {
+		t.Fatalf("pending snapshot = %#v, want pending waiting", pending)
+	}
+
+	manager.markPeerConnected("linux-b", fixedTime)
+	syncing := manager.Snapshot()["linux-b"]
+	if !syncing.Active || !syncing.Pending || syncing.Status != "syncing" || syncing.LastConnectTS != fixedTime {
+		t.Fatalf("connected snapshot = %#v, want active syncing", syncing)
+	}
+
+	session := &sshPeerSession{peer: manager.peers[0]}
+	manager.mu.Lock()
+	manager.sessions["linux-b"] = session
+	manager.mu.Unlock()
+	manager.clearPendingIfSessionCurrent(session, sshOutboundState{content: content, origin: "m4"})
+	manager.markPeerAcked("linux-b", fixedTime.Add(time.Second))
+	live := manager.Snapshot()["linux-b"]
+	if !live.Active || live.Pending || live.Status != "live" || live.LastAckTS != fixedTime.Add(time.Second) {
+		t.Fatalf("acked snapshot = %#v, want live without pending", live)
+	}
+
+	manager.markPeerError("linux-b", io.ErrClosedPipe)
+	failed := manager.Snapshot()["linux-b"]
+	if failed.Active || failed.Status != "attention" || failed.LastError == "" || failed.LastErrorTS.IsZero() {
+		t.Fatalf("failed snapshot = %#v, want attention with error", failed)
+	}
+}
+
 func TestSSHSyncManagerHandshakeTimeoutReturnsToReconnectLoop(t *testing.T) {
 	cfg := sshSyncManagerTestConfig()
 	auth, err := transport.NewAuth(cfg.SharedKey)

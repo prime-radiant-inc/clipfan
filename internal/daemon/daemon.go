@@ -24,12 +24,35 @@ import (
 // PeerState is the daemon-tracked status of a single peer, exposed via
 // GET /v1/peers and consumed by the menubar app.
 type PeerState struct {
-	Hostname    string    `json:"hostname"`
-	Port        int       `json:"port"`
-	LastPushTS  time.Time `json:"last_push_ts,omitempty"`
-	LastPushOK  bool      `json:"last_push_ok"`
-	LastPushErr string    `json:"last_push_err,omitempty"`
-	LastRecvTS  time.Time `json:"last_recv_ts,omitempty"`
+	Hostname         string    `json:"hostname"`
+	Port             int       `json:"port"`
+	LastPushTS       time.Time `json:"last_push_ts,omitempty"`
+	LastPushOK       bool      `json:"last_push_ok"`
+	LastPushErr      string    `json:"last_push_err,omitempty"`
+	LastRecvTS       time.Time `json:"last_recv_ts,omitempty"`
+	Transport        string    `json:"transport,omitempty"`
+	SSHHost          string    `json:"ssh_host,omitempty"`
+	SSHPort          int       `json:"ssh_port,omitempty"`
+	SSHUser          string    `json:"ssh_user,omitempty"`
+	SSHActive        bool      `json:"ssh_active,omitempty"`
+	SSHPending       bool      `json:"ssh_pending,omitempty"`
+	SSHStatus        string    `json:"ssh_status,omitempty"`
+	SSHLastConnectTS time.Time `json:"ssh_last_connect_ts,omitempty"`
+	SSHLastAckTS     time.Time `json:"ssh_last_ack_ts,omitempty"`
+	SSHLastError     string    `json:"ssh_last_error,omitempty"`
+	SSHLastErrorTS   time.Time `json:"ssh_last_error_ts,omitempty"`
+}
+
+type SSHPeerRuntimeState struct {
+	PeerID        string
+	Active        bool
+	Pending       bool
+	Status        string
+	LastConnectTS time.Time
+	LastAckTS     time.Time
+	LastRecvTS    time.Time
+	LastError     string
+	LastErrorTS   time.Time
 }
 
 // pusher sends clipboard content to a peer host. *transport.Client satisfies
@@ -45,6 +68,7 @@ type SSHSyncRuntime interface {
 	Start(ctx context.Context)
 	Refresh(ctx context.Context, cfg *config.Config)
 	Publish(ctx context.Context, content clipboard.Content, origin string, skipOrigin string)
+	Snapshot() map[string]SSHPeerRuntimeState
 }
 
 type Daemon struct {
@@ -225,8 +249,13 @@ func (d *Daemon) Snapshot(ctx context.Context) []PeerState {
 		}
 	}
 
+	var sshRuntimeSnapshot map[string]SSHPeerRuntimeState
+	if runtime := d.currentSSHSyncRuntime(); runtime != nil {
+		sshRuntimeSnapshot = runtime.Snapshot()
+	}
+
 	d.peersMu.RLock()
-	d.addConfiguredSSHPeersToSnapshot(known)
+	d.addConfiguredSSHPeersToSnapshot(known, sshRuntimeSnapshot)
 	for h, s := range d.peerStatus {
 		// `clipfan copy` injects with origin=self; the recv path then
 		// records a peerStatus entry for our own short name. Filter it
@@ -287,7 +316,7 @@ func (d *Daemon) discoveredPeers(ctx context.Context) ([]discovery.Peer, error) 
 	return disc.Peers(ctx)
 }
 
-func (d *Daemon) addConfiguredSSHPeersToSnapshot(known map[string]*PeerState) {
+func (d *Daemon) addConfiguredSSHPeersToSnapshot(known map[string]*PeerState, runtime map[string]SSHPeerRuntimeState) {
 	if d == nil || d.cfg == nil || d.cfg.Transport != config.TransportSSH || d.cfg.SSH == nil {
 		return
 	}
@@ -302,7 +331,15 @@ func (d *Daemon) addConfiguredSSHPeersToSnapshot(known map[string]*PeerState) {
 		if hostsMatch(peer.ID, d.origin) {
 			continue
 		}
-		d.mergeSnapshotPeer(known, PeerState{Hostname: peer.ID, Port: port})
+		row := d.mergeSnapshotPeer(known, PeerState{Hostname: peer.ID, Port: port})
+		row.Transport = config.TransportSSH
+		row.SSHHost = peer.SSHHost
+		row.SSHPort = peer.SSHPort
+		row.SSHUser = peer.SSHUser
+		row.SSHStatus = "waiting"
+		if runtimeState, ok := runtime[peer.ID]; ok {
+			mergeSSHRuntimeState(row, runtimeState)
+		}
 	}
 }
 
@@ -323,6 +360,30 @@ func (d *Daemon) mergeSnapshotPeer(known map[string]*PeerState, candidate PeerSt
 		row.Port = candidate.Port
 	}
 	return row
+}
+
+func mergeSSHRuntimeState(row *PeerState, state SSHPeerRuntimeState) {
+	if row == nil {
+		return
+	}
+	row.SSHActive = state.Active
+	row.SSHPending = state.Pending
+	if state.Status != "" {
+		row.SSHStatus = state.Status
+	}
+	if !state.LastConnectTS.IsZero() {
+		row.SSHLastConnectTS = state.LastConnectTS
+	}
+	if !state.LastAckTS.IsZero() {
+		row.SSHLastAckTS = state.LastAckTS
+	}
+	if !state.LastRecvTS.IsZero() && row.LastRecvTS.IsZero() {
+		row.LastRecvTS = state.LastRecvTS
+	}
+	row.SSHLastError = state.LastError
+	if !state.LastErrorTS.IsZero() {
+		row.SSHLastErrorTS = state.LastErrorTS
+	}
 }
 
 func sshPeerVisibleInSnapshot(peer config.SSHPeer) bool {

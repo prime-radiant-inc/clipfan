@@ -336,7 +336,7 @@ struct AddPeerSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Add a peer").font(.title3).bold()
-            Text("Connect another host to this Mac over SSH")
+            Text("Connect another host to this Mac over SSH. Clipfan detects macOS or Linux during setup.")
                 .font(.callout).foregroundStyle(.secondary)
 
             if tailnetAvailable {
@@ -433,13 +433,13 @@ struct AddPeerSheet: View {
 
     private var manualSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Remote host", systemImage: "server.rack")
+            Label("Host to add", systemImage: "server.rack")
                 .font(.headline)
             ForEach($remoteDrafts) { $draft in
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         TextField("Host", text: $draft.sshHost, prompt: Text("linux-b.tailnet.ts.net"))
-                        TextField("Peer ID", text: $draft.hostID, prompt: Text(addPeerDerivedHostID(from: draft.sshHost)))
+                        TextField("Name", text: $draft.hostID, prompt: Text(addPeerDerivedHostID(from: draft.sshHost)))
                             .frame(width: 120)
                     }
                     HStack {
@@ -473,9 +473,9 @@ struct AddPeerSheet: View {
 
     private var directMeshOptionsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField("Known hosts file", text: $directMeshRegularKnownHosts)
+            TextField("SSH known hosts", text: $directMeshRegularKnownHosts)
                 .textFieldStyle(.roundedBorder)
-            DisclosureGroup("Advanced local SSH", isExpanded: $showingAdvancedSSH) {
+            DisclosureGroup("Advanced callback address", isExpanded: $showingAdvancedSSH) {
                 VStack(alignment: .leading, spacing: 8) {
                     TextField("Host override", text: $localSSHHostOverride, prompt: Text("Automatic"))
                     TextField("User", text: $localSSHUser)

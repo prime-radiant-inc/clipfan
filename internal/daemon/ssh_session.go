@@ -28,6 +28,7 @@ type sshSyncManager struct {
 	mu                sync.RWMutex
 	sessions          map[string]*sshPeerSession
 	pending           map[string]sshOutboundState
+	peerRuntime       map[string]SSHPeerRuntimeState
 	started           bool
 }
 
@@ -85,6 +86,7 @@ func newSSHSyncManager(cfg *config.Config, auth *transport.Auth, localID string,
 		ackTimeout:        30 * time.Second,
 		sessions:          map[string]*sshPeerSession{},
 		pending:           map[string]sshOutboundState{},
+		peerRuntime:       map[string]SSHPeerRuntimeState{},
 	}
 }
 
@@ -153,6 +155,7 @@ func (m *sshSyncManager) Refresh(ctx context.Context, cfg *config.Config) {
 		delete(m.sessions, peerID)
 		if !keep {
 			delete(m.pending, peerID)
+			delete(m.peerRuntime, peerID)
 		}
 	}
 	if m.started {
@@ -170,6 +173,7 @@ func (m *sshSyncManager) startPeerLocked(ctx context.Context, peer sshSyncPeer) 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	session := &sshPeerSession{peer: peer, send: make(chan sshOutboundState, 1), cancel: cancel}
 	m.sessions[peer.id] = session
+	m.markPeerConnectingLocked(peer.id)
 	go m.runPeer(sessionCtx, session)
 }
 
@@ -187,6 +191,7 @@ func (m *sshSyncManager) Publish(ctx context.Context, content clipboard.Content,
 		}
 		visited[peer.id] = struct{}{}
 		m.pending[peer.id] = state
+		m.markPeerPendingLocked(peer.id, true)
 		if session := m.sessions[peer.id]; session != nil {
 			enqueueLatestSSHState(session, state)
 		}
@@ -199,9 +204,139 @@ func (m *sshSyncManager) Publish(ctx context.Context, content clipboard.Content,
 			continue
 		}
 		m.pending[peerID] = state
+		m.markPeerPendingLocked(peerID, true)
 		enqueueLatestSSHState(session, state)
 	}
 	_ = ctx
+}
+
+func (m *sshSyncManager) Snapshot() map[string]SSHPeerRuntimeState {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := map[string]SSHPeerRuntimeState{}
+	for _, peer := range m.peers {
+		state := m.peerRuntime[peer.id]
+		state.PeerID = peer.id
+		state.Pending = state.Pending || m.pendingContainsLocked(peer.id)
+		state.Status = sshPeerRuntimeStatus(state)
+		out[peer.id] = state
+	}
+	return out
+}
+
+func (m *sshSyncManager) markPeerConnecting(peerID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.markPeerConnectingLocked(peerID)
+}
+
+func (m *sshSyncManager) markPeerConnectingLocked(peerID string) {
+	state := m.ensurePeerRuntimeLocked(peerID)
+	state.Active = false
+	state.Pending = m.pendingContainsLocked(peerID)
+	state.Status = "connecting"
+	m.peerRuntime[peerID] = state
+}
+
+func (m *sshSyncManager) markPeerConnected(peerID string, now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.ensurePeerRuntimeLocked(peerID)
+	state.Active = true
+	state.Pending = m.pendingContainsLocked(peerID)
+	state.LastConnectTS = now
+	state.LastError = ""
+	state.LastErrorTS = time.Time{}
+	state.Status = sshPeerRuntimeStatus(state)
+	m.peerRuntime[peerID] = state
+}
+
+func (m *sshSyncManager) markPeerPending(peerID string, pending bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.markPeerPendingLocked(peerID, pending)
+}
+
+func (m *sshSyncManager) markPeerPendingLocked(peerID string, pending bool) {
+	state := m.ensurePeerRuntimeLocked(peerID)
+	state.Pending = pending || m.pendingContainsLocked(peerID)
+	state.Status = sshPeerRuntimeStatus(state)
+	m.peerRuntime[peerID] = state
+}
+
+func (m *sshSyncManager) markPeerAcked(peerID string, now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.ensurePeerRuntimeLocked(peerID)
+	state.Active = true
+	state.Pending = m.pendingContainsLocked(peerID)
+	state.LastAckTS = now
+	state.LastError = ""
+	state.LastErrorTS = time.Time{}
+	state.Status = sshPeerRuntimeStatus(state)
+	m.peerRuntime[peerID] = state
+}
+
+func (m *sshSyncManager) markPeerReceived(peerID string, now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.ensurePeerRuntimeLocked(peerID)
+	state.Active = true
+	state.Pending = m.pendingContainsLocked(peerID)
+	state.LastRecvTS = now
+	state.LastError = ""
+	state.LastErrorTS = time.Time{}
+	state.Status = sshPeerRuntimeStatus(state)
+	m.peerRuntime[peerID] = state
+}
+
+func (m *sshSyncManager) markPeerError(peerID string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.ensurePeerRuntimeLocked(peerID)
+	state.Active = false
+	state.Pending = m.pendingContainsLocked(peerID)
+	if err != nil {
+		state.LastError = err.Error()
+		state.LastErrorTS = time.Now().UTC()
+	}
+	state.Status = "attention"
+	m.peerRuntime[peerID] = state
+}
+
+func (m *sshSyncManager) ensurePeerRuntimeLocked(peerID string) SSHPeerRuntimeState {
+	if m.peerRuntime == nil {
+		m.peerRuntime = map[string]SSHPeerRuntimeState{}
+	}
+	state := m.peerRuntime[peerID]
+	if state.PeerID == "" {
+		state.PeerID = peerID
+	}
+	return state
+}
+
+func (m *sshSyncManager) pendingContainsLocked(peerID string) bool {
+	if m.pending == nil {
+		return false
+	}
+	_, ok := m.pending[peerID]
+	return ok
+}
+
+func sshPeerRuntimeStatus(state SSHPeerRuntimeState) string {
+	if state.Active {
+		if state.Pending {
+			return "syncing"
+		}
+		return "live"
+	}
+	if state.Status == "connecting" {
+		return "connecting"
+	}
+	if state.LastError != "" {
+		return "attention"
+	}
+	return "waiting"
 }
 
 func enqueueLatestSSHState(session *sshPeerSession, state sshOutboundState) {
@@ -234,7 +369,9 @@ func drainQueuedDuplicateSSHState(session *sshPeerSession, state sshOutboundStat
 
 func (m *sshSyncManager) runPeer(ctx context.Context, session *sshPeerSession) {
 	for {
+		m.markPeerConnecting(session.peer.id)
 		if err := m.runPeerOnce(ctx, session); err != nil && ctx.Err() == nil {
+			m.markPeerError(session.peer.id, err)
 			slog.Debug("ssh sync stream ended", "peer", session.peer.id, "err", err)
 		}
 		if ctx.Err() != nil {
@@ -299,10 +436,11 @@ func (m *sshSyncManager) runPeerOnce(ctx context.Context, session *sshPeerSessio
 	if _, err := stream.ReadHello(handshakeCtx, time.Now()); err != nil {
 		return err
 	}
+	m.markPeerConnected(session.peer.id, time.Now().UTC())
 
 	readEvents := make(chan sshPeerReadEvent, 8)
 	go func() {
-		if err := m.readPeerEvents(attemptCtx, stream, write, readEvents); err != nil {
+		if err := m.readPeerEvents(attemptCtx, session.peer.id, stream, write, readEvents); err != nil {
 			readEvents <- sshPeerReadEvent{err: err}
 		}
 	}()
@@ -350,6 +488,7 @@ func (m *sshSyncManager) runPeerOnce(ctx context.Context, session *sshPeerSessio
 		seq++
 		currentSeq := seq
 		wasIdle := len(inflight) == 0
+		m.markPeerPending(session.peer.id, true)
 		if err := write(attemptCtx, func(ctx context.Context) error {
 			return stream.WriteState(ctx, currentSeq, state.content, state.origin)
 		}); err != nil {
@@ -414,6 +553,7 @@ func (m *sshSyncManager) clearPendingIfSessionCurrent(session *sshPeerSession, s
 	}
 	if pending, ok := m.pending[session.peer.id]; ok && pending.content.ID == state.content.ID {
 		delete(m.pending, session.peer.id)
+		m.markPeerPendingLocked(session.peer.id, false)
 	}
 }
 
@@ -445,6 +585,7 @@ func (m *sshSyncManager) handleSSHStreamAck(session *sshPeerSession, inflight ma
 		return true
 	}
 	m.clearPendingIfSessionCurrent(session, state)
+	m.markPeerAcked(session.peer.id, time.Now().UTC())
 	return true
 }
 
@@ -485,7 +626,7 @@ func (m *sshSyncManager) writeSSHFrame(ctx context.Context, cancelAttempt contex
 	}
 }
 
-func (m *sshSyncManager) readPeerEvents(ctx context.Context, stream *transport.SSHSyncStream, write func(context.Context, func(context.Context) error) error, events chan<- sshPeerReadEvent) error {
+func (m *sshSyncManager) readPeerEvents(ctx context.Context, peerID string, stream *transport.SSHSyncStream, write func(context.Context, func(context.Context) error) error, events chan<- sshPeerReadEvent) error {
 	for {
 		event, err := stream.ReadNextNow(ctx)
 		if err != nil {
@@ -502,6 +643,7 @@ func (m *sshSyncManager) readPeerEvents(ctx context.Context, stream *transport.S
 				if m.onReceive != nil {
 					m.onReceive(result.Content, result.Origin)
 				}
+				m.markPeerReceived(peerID, time.Now().UTC())
 			}
 			if err := write(ctx, func(ctx context.Context) error {
 				return stream.WriteAck(ctx, result.Seq, clipID, status, "")

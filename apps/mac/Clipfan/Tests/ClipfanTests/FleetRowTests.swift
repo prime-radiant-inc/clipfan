@@ -40,6 +40,40 @@ extension FleetRowTests {
         XCTAssertEqual(resp.revision_state, "versioned")
     }
 
+    func testDecodePeersResponseSSHRuntimeFields() throws {
+        let json = """
+        {
+          "origin":"m4",
+          "peers":[{
+            "hostname":"flower-garden",
+            "port":7853,
+            "transport":"ssh",
+            "ssh_host":"flower-garden.local",
+            "ssh_port":22,
+            "ssh_user":"jesse",
+            "ssh_active":true,
+            "ssh_pending":false,
+            "ssh_status":"live",
+            "ssh_last_connect_ts":"2026-06-06T12:00:00Z",
+            "ssh_last_ack_ts":"2026-06-06T12:01:00Z",
+            "last_push_ok":false
+          }]
+        }
+        """.data(using: .utf8)!
+
+        let resp = try JSONDecoder.clipfan.decode(PeersResponse.self, from: json)
+
+        XCTAssertEqual(resp.peers[0].transport, "ssh")
+        XCTAssertEqual(resp.peers[0].ssh_host, "flower-garden.local")
+        XCTAssertEqual(resp.peers[0].ssh_port, 22)
+        XCTAssertEqual(resp.peers[0].ssh_user, "jesse")
+        XCTAssertEqual(resp.peers[0].ssh_active, true)
+        XCTAssertEqual(resp.peers[0].ssh_pending, false)
+        XCTAssertEqual(resp.peers[0].ssh_status, "live")
+        XCTAssertNotNil(resp.peers[0].ssh_last_connect_ts)
+        XCTAssertNotNil(resp.peers[0].ssh_last_ack_ts)
+    }
+
     func testDecodePeersResponseSafeModeCompatibilityPayload() throws {
         let json = """
         {
@@ -158,6 +192,58 @@ extension FleetRowTests {
 
         XCTAssertEqual(rows[1].health, .attention)
         XCTAssertEqual(rows[1].subtitle, "port 7853 · update available")
+    }
+
+    func testSSHPeerRowsUseSSHRuntimeHealthAndHideHTTPPort() {
+        let peer = Peer(hostname: "flower-garden",
+                        port: 7853,
+                        last_push_ts: nil,
+                        last_push_ok: false,
+                        last_push_err: nil,
+                        last_recv_ts: nil,
+                        transport: "ssh",
+                        ssh_host: "flower-garden.local",
+                        ssh_port: 22,
+                        ssh_user: "jesse",
+                        ssh_active: true,
+                        ssh_pending: false,
+                        ssh_status: "live",
+                        ssh_last_connect_ts: Date(),
+                        ssh_last_ack_ts: Date())
+
+        let rows = fleetRows(origin: "m4",
+                             connected: true,
+                             peers: [peer],
+                             peerVersions: ["flower-garden": .needsUpdate("v0.3.1")],
+                             policy: legacyPeerHTTPProbePolicy())
+
+        XCTAssertEqual(rows[1].health, .healthy)
+        XCTAssertEqual(rows[1].subtitle, "SSH · live")
+        XCTAssertFalse(rows[1].subtitle.contains("7853"))
+        XCTAssertTrue(rows[1].diagnostic?.contains("jesse@flower-garden.local:22") == true)
+    }
+
+    func testSSHPeerRowsSurfaceAttentionAndLastError() {
+        let peer = Peer(hostname: "magic-kingdom",
+                        port: 7853,
+                        last_push_ts: nil,
+                        last_push_ok: false,
+                        last_push_err: nil,
+                        last_recv_ts: nil,
+                        transport: "ssh",
+                        ssh_host: "magic-kingdom",
+                        ssh_port: 22,
+                        ssh_user: "jesse",
+                        ssh_active: false,
+                        ssh_pending: true,
+                        ssh_status: "attention",
+                        ssh_last_error: "ssh stream ended")
+
+        let rows = fleetRows(origin: "m4", connected: true, peers: [peer])
+
+        XCTAssertEqual(rows[1].health, .attention)
+        XCTAssertEqual(rows[1].subtitle, "SSH · attention")
+        XCTAssertTrue(rows[1].diagnostic?.contains("ssh stream ended") == true)
     }
 
     private func legacyPeerHTTPProbePolicy() -> SSHTransportGatePolicy {

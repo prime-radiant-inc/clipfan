@@ -102,6 +102,7 @@ type fakeSSHSyncRuntime struct {
 	started   int
 	refreshed int
 	calls     []sshSyncPublishCall
+	runtime   map[string]SSHPeerRuntimeState
 }
 
 func (r *fakeSSHSyncRuntime) Start(context.Context) {
@@ -120,6 +121,16 @@ func (r *fakeSSHSyncRuntime) Publish(_ context.Context, content clipboard.Conten
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, sshSyncPublishCall{content: content, origin: origin, skipOrigin: skipOrigin})
+}
+
+func (r *fakeSSHSyncRuntime) Snapshot() map[string]SSHPeerRuntimeState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := map[string]SSHPeerRuntimeState{}
+	for peerID, state := range r.runtime {
+		out[peerID] = state
+	}
+	return out
 }
 
 func (r *fakeSSHSyncRuntime) waitForPublishes(t *testing.T, n int) []sshSyncPublishCall {

@@ -8,6 +8,57 @@ struct Peer: Codable, Identifiable, Hashable {
     let last_push_ok: Bool
     let last_push_err: String?
     let last_recv_ts: Date?
+    let transport: String?
+    let ssh_host: String?
+    let ssh_port: Int?
+    let ssh_user: String?
+    let ssh_active: Bool?
+    let ssh_pending: Bool?
+    let ssh_status: String?
+    let ssh_last_connect_ts: Date?
+    let ssh_last_ack_ts: Date?
+    let ssh_last_error: String?
+    let ssh_last_error_ts: Date?
+
+    init(hostname: String,
+         port: Int,
+         last_push_ts: Date?,
+         last_push_ok: Bool,
+         last_push_err: String?,
+         last_recv_ts: Date?,
+         transport: String? = nil,
+         ssh_host: String? = nil,
+         ssh_port: Int? = nil,
+         ssh_user: String? = nil,
+         ssh_active: Bool? = nil,
+         ssh_pending: Bool? = nil,
+         ssh_status: String? = nil,
+         ssh_last_connect_ts: Date? = nil,
+         ssh_last_ack_ts: Date? = nil,
+         ssh_last_error: String? = nil,
+         ssh_last_error_ts: Date? = nil) {
+        self.hostname = hostname
+        self.port = port
+        self.last_push_ts = last_push_ts
+        self.last_push_ok = last_push_ok
+        self.last_push_err = last_push_err
+        self.last_recv_ts = last_recv_ts
+        self.transport = transport
+        self.ssh_host = ssh_host
+        self.ssh_port = ssh_port
+        self.ssh_user = ssh_user
+        self.ssh_active = ssh_active
+        self.ssh_pending = ssh_pending
+        self.ssh_status = ssh_status
+        self.ssh_last_connect_ts = ssh_last_connect_ts
+        self.ssh_last_ack_ts = ssh_last_ack_ts
+        self.ssh_last_error = ssh_last_error
+        self.ssh_last_error_ts = ssh_last_error_ts
+    }
+
+    var isSSHTransport: Bool {
+        transport?.lowercased() == "ssh"
+    }
 }
 
 struct PeersResponse: Codable {

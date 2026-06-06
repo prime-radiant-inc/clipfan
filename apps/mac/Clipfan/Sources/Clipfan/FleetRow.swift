@@ -17,6 +17,9 @@ enum FleetHealth {
 /// Map a peer's push state to FleetHealth, mirroring Peer.healthColor exactly
 /// (avoids fragile SwiftUI Color equality checks).
 private func health(for p: Peer, versionStatus: PeerVersionStatus?) -> FleetHealth {
+    if p.isSSHTransport {
+        return sshHealth(for: p)
+    }
     switch versionStatus {
     case .current:
         return .healthy
@@ -31,6 +34,9 @@ private func health(for p: Peer, versionStatus: PeerVersionStatus?) -> FleetHeal
 }
 
 private func subtitle(for p: Peer, versionStatus: PeerVersionStatus?) -> String {
+    if p.isSSHTransport {
+        return sshSubtitle(for: p)
+    }
     switch versionStatus {
     case .current:
         return "port \(p.port) · current"
@@ -43,12 +49,77 @@ private func subtitle(for p: Peer, versionStatus: PeerVersionStatus?) -> String 
     }
 }
 
+private func sshHealth(for p: Peer) -> FleetHealth {
+    if p.ssh_active == true { return .healthy }
+    let status = p.ssh_status?.lowercased()
+    if status == "live" || status == "syncing" { return .healthy }
+    if status == "attention" || status == "connecting" { return .attention }
+    if let error = p.ssh_last_error, !error.isEmpty { return .attention }
+    return .down
+}
+
+private func sshSubtitle(for p: Peer) -> String {
+    switch p.ssh_status?.lowercased() {
+    case "syncing":
+        return "SSH · syncing"
+    case "live":
+        return "SSH · live"
+    case "connecting":
+        return "SSH · connecting"
+    case "attention":
+        return "SSH · attention"
+    default:
+        if p.ssh_active == true {
+            return p.ssh_pending == true ? "SSH · syncing" : "SSH · live"
+        }
+        return "SSH · waiting"
+    }
+}
+
+private func diagnostic(for p: Peer, versionStatus: PeerVersionStatus?) -> String? {
+    if p.isSSHTransport {
+        var parts = ["transport ssh", "status \(p.ssh_status ?? "waiting")"]
+        if let host = p.ssh_host, !host.isEmpty {
+            let port = p.ssh_port ?? 22
+            if let user = p.ssh_user, !user.isEmpty {
+                parts.append("endpoint \(user)@\(host):\(port)")
+            } else {
+                parts.append("endpoint \(host):\(port)")
+            }
+        }
+        if let connected = p.ssh_last_connect_ts {
+            parts.append("connected \(peerTimeAgo(connected))")
+        }
+        if let ack = p.ssh_last_ack_ts {
+            parts.append("last ack \(peerTimeAgo(ack))")
+        }
+        if let recv = p.last_recv_ts {
+            parts.append("last receive \(peerTimeAgo(recv))")
+        }
+        if let error = p.ssh_last_error, !error.isEmpty {
+            parts.append("last error \(error)")
+        }
+        return parts.joined(separator: "\n")
+    }
+    switch versionStatus {
+    case .current(let version):
+        return "peer HTTP current \(version)"
+    case .needsUpdate(let version):
+        return "peer HTTP update available from \(version)"
+    case .unknown:
+        return "peer HTTP version unknown"
+    case nil:
+        return nil
+    }
+}
+
 /// One row in the unified fleet list — either the local host (isSelf) or a peer.
 struct FleetRowModel: Identifiable {
     let id: String          // hostname
     let name: String
     let subtitle: String
     let health: FleetHealth
+    let diagnostic: String?
     let isSelf: Bool
     let pushTS: Date?
     let recvTS: Date?
@@ -69,6 +140,7 @@ func fleetRows(origin: String,
         name: origin,
         subtitle: safeModeActive ? "this Mac · listener repair required" : (connected ? "this Mac · running" : "this Mac · daemon not running"),
         health: safeModeActive ? .attention : (connected ? .healthy : .down),
+        diagnostic: nil,
         isSelf: true,
         pushTS: nil,
         recvTS: nil,
@@ -84,6 +156,7 @@ func fleetRows(origin: String,
             name: p.hostname,
             subtitle: subtitle(for: p, versionStatus: versionStatus),
             health: health(for: p, versionStatus: versionStatus),
+            diagnostic: diagnostic(for: p, versionStatus: versionStatus),
             isSelf: false,
             pushTS: p.last_push_ts,
             recvTS: p.last_recv_ts,
@@ -138,5 +211,6 @@ struct FleetRow: View {
                 .fixedSize(horizontal: true, vertical: false)
             }
         }
+        .help(model.diagnostic ?? model.subtitle)
     }
 }
