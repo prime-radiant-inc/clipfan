@@ -65,6 +65,91 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertFalse(command.contains("shared_key"))
     }
 
+    func testTrustedLocalProvisioningBinaryUsesBundledBinary() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-trusted-helper-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let bundled = try writeVersionFixture(dir.appendingPathComponent("bundled"), version: "v0.3.21")
+
+        let got = try Installer.trustedLocalProvisioningBinaryPath(
+            bundledBinary: bundled
+        )
+
+        XCTAssertEqual(got, bundled.path)
+    }
+
+    func testTrustedLocalProvisioningBinaryRejectsMissingBundledBinary() throws {
+        XCTAssertThrowsError(try Installer.trustedLocalProvisioningBinaryPath(bundledBinary: nil)) { error in
+            XCTAssertTrue(String(describing: error).contains("current_local_provisioning_binary_required"))
+        }
+    }
+
+    func testProvisionPrivateDirectMeshFailsClosedBeforeSSHWhenTrustedLocalProvisioningBinaryUnavailable() async throws {
+        var called = false
+
+        do {
+            try await Installer.provisionPrivateDirectMesh(
+                hostSpecs: [
+                    "id=mac-a,ssh=mac-a.tailnet,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+                    "id=linux-b,ssh=linux-b.tailnet,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/.config/clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519"
+                ],
+                regularKnownHosts: "/Users/jesse/.ssh/known_hosts",
+                trustKeyscan: true,
+                localProvisioningBinary: {
+                    throw InstallError.configIO("current_local_provisioning_binary_required")
+                },
+                runCommand: { _, _ in
+                    called = true
+                    return ""
+                },
+                onProgress: { _ in }
+            )
+            XCTFail("expected current local provisioning binary failure")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("current_local_provisioning_binary_required"))
+        }
+
+        XCTAssertFalse(called)
+    }
+
+    func testPrivateDirectMeshHostSpecReplacingPlatformDefaultsUsesDetectedDarwinPaths() throws {
+        let spec = try Installer.privateDirectMeshHostSpecReplacingPlatformDefaults(
+            "id=magic,ssh=magic-kingdom,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/.config/clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519",
+            goos: "darwin"
+        )
+
+        XCTAssertTrue(spec.contains("install=/Users/jesse/.local/bin/clipfan"))
+        XCTAssertTrue(spec.contains("config=/Users/jesse/.config/clipfan/config.json"))
+        XCTAssertTrue(spec.contains("known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts"))
+        XCTAssertTrue(spec.contains("sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519"))
+    }
+
+    func testPrivateDirectMeshHostSpecReplacingPlatformDefaultsUsesDetectedLinuxPaths() throws {
+        let spec = try Installer.privateDirectMeshHostSpecReplacingPlatformDefaults(
+            "id=linux-b,ssh=linux-b,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519,callback_host=manual",
+            goos: "linux"
+        )
+
+        XCTAssertTrue(spec.contains("install=/home/jesse/.local/bin/clipfan"))
+        XCTAssertTrue(spec.contains("config=/home/jesse/.config/clipfan/config.json"))
+        XCTAssertTrue(spec.contains("known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts"))
+        XCTAssertTrue(spec.contains("sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519"))
+        XCTAssertTrue(spec.contains("callback_host=manual"))
+    }
+
+    func testPrivateDirectMeshHostSpecReplacingPlatformDefaultsPreservesCustomPaths() throws {
+        let spec = try Installer.privateDirectMeshHostSpecReplacingPlatformDefaults(
+            "id=linux-b,ssh=linux-b,user=jesse,port=22,install=/opt/clipfan/bin/clipfan,config=/srv/clipfan/config.json,known_hosts=/srv/clipfan/known_hosts,sync_key=/srv/clipfan/sync_ed25519",
+            goos: "linux"
+        )
+
+        XCTAssertTrue(spec.contains("install=/opt/clipfan/bin/clipfan"))
+        XCTAssertTrue(spec.contains("config=/srv/clipfan/config.json"))
+        XCTAssertTrue(spec.contains("known_hosts=/srv/clipfan/known_hosts"))
+        XCTAssertTrue(spec.contains("sync_key=/srv/clipfan/sync_ed25519"))
+    }
+
     func testRegularSSHConnectionArgsUseStrictKnownHostsForSSHAndSCP() {
         let args = Installer.regularSSHConnectionArgs(
             port: 2200,
@@ -911,7 +996,7 @@ final class InstallerFlagTests: XCTestCase {
             ],
             regularKnownHosts: regularKnownHosts,
             trustKeyscan: true,
-            clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+            localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
             bootstrapInstall: false,
             runCommand: { exe, args in
                 commands.append((exe, args))
@@ -978,7 +1063,7 @@ final class InstallerFlagTests: XCTestCase {
             ],
             regularKnownHosts: regularKnownHosts,
             trustKeyscan: true,
-            clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+            localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
             bootstrapInstall: false,
             runCommand: { exe, args in
                 commands.append((exe, args))
@@ -1034,7 +1119,7 @@ final class InstallerFlagTests: XCTestCase {
             ],
             regularKnownHosts: regularKnownHosts,
             trustKeyscan: true,
-            clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+            localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
             bootstrapInstall: false,
             runCommand: { exe, args in
                 commands.append((exe, args))
@@ -1075,7 +1160,7 @@ final class InstallerFlagTests: XCTestCase {
                 ],
                 regularKnownHosts: regularKnownHosts,
                 trustKeyscan: true,
-                clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+                localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
                 bootstrapInstall: false,
                 runCommand: { exe, args in
                     commands.append((exe, args))
@@ -1113,7 +1198,7 @@ final class InstallerFlagTests: XCTestCase {
             ],
             regularKnownHosts: regularKnownHosts,
             trustKeyscan: true,
-            clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+            localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
             bootstrapInstall: false,
             runCommand: { exe, args in
                 commands.append((exe, args))
@@ -1147,7 +1232,7 @@ final class InstallerFlagTests: XCTestCase {
                 ],
                 regularKnownHosts: "/Users/jesse/.ssh/known_hosts",
                 trustKeyscan: true,
-                clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+                localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
                 bootstrapInstall: false,
                 runCommand: { _, _ in
                     called = true
@@ -1181,7 +1266,7 @@ final class InstallerFlagTests: XCTestCase {
             regularKnownHosts: regularKnownHosts,
             trustKeyscan: true,
             withTmux: true,
-            clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+            localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
             bootstrapRemoteHost: { hostID, withTmux in
                 bootstraps.append((hostID, withTmux))
             },
@@ -1227,7 +1312,7 @@ final class InstallerFlagTests: XCTestCase {
             ],
             regularKnownHosts: regularKnownHosts,
             trustKeyscan: true,
-            clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+            localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
             bootstrapInstall: false,
             runCommand: { exe, args in
                 commands.append((exe, args))
@@ -1281,7 +1366,7 @@ final class InstallerFlagTests: XCTestCase {
                 ],
                 regularKnownHosts: regularKnownHosts,
                 trustKeyscan: true,
-                clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+                localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
                 bootstrapInstall: false,
                 runCommand: { exe, args in
                     commands.append((exe, args))
@@ -1327,7 +1412,7 @@ final class InstallerFlagTests: XCTestCase {
                 ],
                 regularKnownHosts: regularKnownHosts,
                 trustKeyscan: true,
-                clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+                localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
                 bootstrapInstall: false,
                 runCommand: { exe, args in
                     commands.append((exe, args))
@@ -1374,7 +1459,7 @@ final class InstallerFlagTests: XCTestCase {
                 hostSpecs: ["id=a", "id=b"],
                 regularKnownHosts: "/Users/jesse/.ssh/known_hosts",
                 trustKeyscan: false,
-                clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+                localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
                 runCommand: { _, _ in
                     called = true
                     return ""
@@ -1400,7 +1485,7 @@ final class InstallerFlagTests: XCTestCase {
                 ],
                 regularKnownHosts: "/Users/jesse/.ssh/known_hosts",
                 trustKeyscan: true,
-                clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+                localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
                 runCommand: { _, _ in
                     called = true
                     return ""
@@ -1426,7 +1511,7 @@ final class InstallerFlagTests: XCTestCase {
                 ],
                 regularKnownHosts: "/Users/jesse/.ssh/known_hosts",
                 trustKeyscan: true,
-                clipfanBinary: "/Users/jesse/.local/bin/clipfan",
+                localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
                 runCommand: { _, _ in
                     called = true
                     return ""
@@ -2053,6 +2138,18 @@ final class InstallerFlagTests: XCTestCase {
         try body.write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755],
                                               ofItemAtPath: url.path)
+    }
+
+    private func writeVersionFixture(_ url: URL, version: String) throws -> URL {
+        try writeExecutableScript(url, """
+        #!/usr/bin/env bash
+        if [[ "$1" == "version" ]]; then
+          echo "\(version)"
+          exit 0
+        fi
+        exit 2
+        """)
+        return url
     }
 
     private func keyscanFixtureOutput(_ args: [String]) -> String {

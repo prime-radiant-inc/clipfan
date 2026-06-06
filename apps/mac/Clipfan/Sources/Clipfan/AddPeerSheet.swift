@@ -446,14 +446,6 @@ struct AddPeerSheet: View {
                         TextField("User", text: $draft.user)
                         TextField("SSH port", value: $draft.port, format: .number)
                             .frame(width: 80)
-                        Picker("OS", selection: $draft.platform) {
-                            ForEach(AddPeerHostPlatform.allCases) { platform in
-                                Text(platform.rawValue).tag(platform)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.segmented)
-                        .frame(width: 150)
                         if remoteDrafts.count > 1 {
                             Button {
                                 removeRemoteDraft(draft.id)
@@ -584,6 +576,7 @@ struct AddPeerSheet: View {
                     log = AddPeerOperationLog(host: "private-ssh-mesh")
                 }
                 do {
+                    try await ensureCurrentLocalHelperForPrivateMesh()
                     try await Installer.provisionPrivateDirectMesh(
                         hostSpecs: directSpecs,
                         regularKnownHosts: directMeshRegularKnownHosts,
@@ -656,6 +649,26 @@ struct AddPeerSheet: View {
                 installing = false
                 Task { try? await Task.sleep(nanoseconds: 1_000_000_000); dismiss() }
             }
+        }
+    }
+
+    private func ensureCurrentLocalHelperForPrivateMesh() async throws {
+        guard !Bootstrap.installedBinaryCurrent else { return }
+        await MainActor.run {
+            let update = InstallProgress(step: "Local", detail: "updating local clipfan helper")
+            progress = friendly(update, host: "private-ssh-mesh")
+            if var currentLog = log {
+                currentLog.record(update)
+                log = currentLog
+            }
+        }
+        guard let dist = Bootstrap.bundledPayload else {
+            throw InstallError.configIO("current_local_provisioning_binary_required")
+        }
+        let script = dist.appendingPathComponent("install.sh")
+        guard await Bootstrap.runInstaller(script: script, logTo: Bootstrap.installLog, mode: .upgradeExisting),
+              Bootstrap.installedBinaryCurrent else {
+            throw InstallError.configIO("current_local_provisioning_binary_required")
         }
     }
 

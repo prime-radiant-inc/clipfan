@@ -91,6 +91,7 @@ actor Installer {
     typealias CommandRunner = (String, [String]) async throws -> String
     typealias LocalHostIDReader = () async -> String?
     typealias LocalDaemonRestarter = () async throws -> Void
+    typealias LocalProvisioningBinaryResolver = () throws -> String
 
     private enum PrivateDirectMeshCallbackHostMode: String {
         case manual
@@ -115,6 +116,20 @@ actor Installer {
 
     static func localClipfanBinaryPath(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> String {
         homeDirectory.appendingPathComponent(".local/bin/clipfan").path
+    }
+
+    static func trustedLocalProvisioningBinaryPath(
+        bundledBinary: URL? = Bootstrap.bundledDaemonBinary,
+        fileManager: FileManager = .default
+    ) throws -> String {
+        if let bundledBinary,
+           fileManager.isExecutableFile(atPath: bundledBinary.path),
+           let bundledVersion = Bootstrap.binaryVersion(bundledBinary),
+           !bundledVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return bundledBinary.path
+        }
+
+        throw InstallError.configIO("current_local_provisioning_binary_required")
     }
 
     /// tmuxFlag maps the Add-Peer tmux checkbox to the install.sh flag. The GUI
@@ -497,7 +512,7 @@ actor Installer {
                                            regularKnownHosts: String,
                                            trustKeyscan: Bool,
                                            withTmux: Bool = false,
-                                           clipfanBinary: String = localClipfanBinaryPath(),
+                                           localProvisioningBinary: LocalProvisioningBinaryResolver = { try trustedLocalProvisioningBinaryPath() },
                                            bootstrapInstall: Bool = true,
                                            bootstrapRemoteHost: ((String, Bool) async throws -> Void)? = nil,
                                            runCommand: CommandRunner = run,
@@ -532,6 +547,7 @@ actor Installer {
         try validatePrivateDirectMeshExecutablePath(knownHosts, code: "invalid_regular_known_hosts_path")
         var hosts = try specs.map { try privateDirectMeshHost(from: $0) }
         var provisionSpecs = specs
+        let provisioningBinary = try localProvisioningBinary()
         let configuredLocalHostID = await readLocalHostID() ?? ""
         let remoteObservedLocalIndexes = hosts.indices.filter {
             hosts[$0].callbackHostMode == .remoteObserved
@@ -581,15 +597,18 @@ actor Installer {
         }
 
         if bootstrapInstall {
-            for host in hosts where host.id != localHostID {
+            for index in hosts.indices where hosts[index].id != localHostID {
+                let host = hosts[index]
                 if let bootstrapRemoteHost {
                     try await bootstrapRemoteHost(host.id, withTmux)
                 } else {
-                    try await installPrivateDirectMeshHost(host,
-                                                           regularKnownHosts: knownHosts,
-                                                           withTmux: withTmux,
-                                                           runCommand: runCommand,
-                                                           onProgress: onProgress)
+                    let installedHost = try await installPrivateDirectMeshHost(host,
+                                                                               regularKnownHosts: knownHosts,
+                                                                               withTmux: withTmux,
+                                                                               runCommand: runCommand,
+                                                                               onProgress: onProgress)
+                    hosts[index] = installedHost
+                    provisionSpecs[index] = privateDirectMeshHostSpec(installedHost)
                 }
             }
         }
@@ -599,7 +618,7 @@ actor Installer {
         for spec in provisionSpecs {
             args += ["--host", spec]
         }
-        _ = try await runCommand(clipfanBinary, args)
+        _ = try await runCommand(provisioningBinary, args)
 
         await MainActor.run { onProgress(.init(step: "Restart", detail: "restarting affected daemons")) }
         var firstRestartError: Error?
@@ -630,13 +649,14 @@ actor Installer {
                                                      regularKnownHosts: String,
                                                      withTmux: Bool,
                                                      runCommand: CommandRunner,
-                                                     onProgress: @MainActor @escaping (InstallProgress) -> Void) async throws {
+                                                     onProgress: @MainActor @escaping (InstallProgress) -> Void) async throws -> PrivateDirectMeshHost {
         let target = "\(host.user)@\(host.sshHost)"
         let invocation = regularSSHConnectionArgs(port: host.port, knownHosts: regularKnownHosts)
 
         await MainActor.run { onProgress(.init(step: "Probe", detail: "running uname on \(target)")) }
         let probe = try await runCommand("/usr/bin/ssh", invocation.sshArgs + [target, "uname -s; uname -m"])
         let platform = try remotePlatform(from: probe)
+        let installHost = privateDirectMeshHostWithPlatformDefaults(host, goos: platform.goos)
 
         let stage = FileManager.default.temporaryDirectory
             .appendingPathComponent("clipfan-private-direct-\(host.id)-\(UUID().uuidString)")
@@ -657,14 +677,15 @@ actor Installer {
                                                         scpArgs: invocation.scpArgs,
                                                         stage: stage,
                                                         stagedFiles: stagedFiles,
-                                                        configPath: host.configPath,
-                                                        installPath: host.installPath,
+                                                        configPath: installHost.configPath,
+                                                        installPath: installHost.installPath,
                                                         withTmux: withTmux,
                                                         runCommand: runCommand,
                                                         onInstall: {
                                                             onProgress(.init(step: "Install",
-                                                                             detail: "installing clipfan on \(target)"))
+                                                                               detail: "installing clipfan on \(target)"))
                                                         })
+        return installHost
     }
 
     static func trustPrivateDirectMeshBootstrapHostKey(sshHost: String,
@@ -931,7 +952,10 @@ actor Installer {
         let port: Int
         let installPath: String
         let configPath: String
+        let knownHostsPath: String
+        let syncKeyPath: String
         let callbackHostMode: PrivateDirectMeshCallbackHostMode
+        let callbackHostFieldPresent: Bool
     }
 
     private static func privateDirectMeshHost(from spec: String) throws -> PrivateDirectMeshHost {
@@ -962,7 +986,9 @@ actor Installer {
               let sshHost = fields["ssh"] ?? fields["host"], !sshHost.isEmpty,
               let user = fields["user"], !user.isEmpty,
               let installPath = fields["install"], !installPath.isEmpty,
-              let configPath = fields["config"], !configPath.isEmpty else {
+              let configPath = fields["config"], !configPath.isEmpty,
+              let knownHostsPath = fields["known_hosts"], !knownHostsPath.isEmpty,
+              let syncKeyPath = fields["sync_key"], !syncKeyPath.isEmpty else {
             throw InstallError.configIO("missing_private_direct_mesh_host_field")
         }
         try validatePrivateDirectMeshHostID(id)
@@ -976,6 +1002,9 @@ actor Installer {
             throw InstallError.configIO("unsupported_private_direct_mesh_gateway_path")
         }
         try validatePrivateDirectMeshSafeAbsolutePath(configPath, code: "invalid_private_direct_mesh_config_path")
+        try validatePrivateDirectMeshSafeAbsolutePath(knownHostsPath, code: "invalid_private_direct_mesh_known_hosts_path")
+        try validatePrivateDirectMeshSafeAbsolutePath(syncKeyPath, code: "invalid_private_direct_mesh_sync_key_path")
+        let callbackHostFieldPresent = fields["callback_host"] != nil || fields["callback"] != nil
         let callbackHostMode: PrivateDirectMeshCallbackHostMode
         switch fields["callback_host"] ?? fields["callback"] ?? "manual" {
         case PrivateDirectMeshCallbackHostMode.manual.rawValue:
@@ -991,7 +1020,80 @@ actor Installer {
                                      port: port,
                                      installPath: installPath,
                                      configPath: configPath,
-                                     callbackHostMode: callbackHostMode)
+                                     knownHostsPath: knownHostsPath,
+                                     syncKeyPath: syncKeyPath,
+                                     callbackHostMode: callbackHostMode,
+                                     callbackHostFieldPresent: callbackHostFieldPresent)
+    }
+
+    static func privateDirectMeshHostSpecReplacingPlatformDefaults(_ spec: String,
+                                                                   goos: String) throws -> String {
+        let host = try privateDirectMeshHost(from: spec)
+        return privateDirectMeshHostSpec(privateDirectMeshHostWithPlatformDefaults(host, goos: goos))
+    }
+
+    private static func privateDirectMeshHostWithPlatformDefaults(_ host: PrivateDirectMeshHost,
+                                                                  goos: String) -> PrivateDirectMeshHost {
+        let target = privateDirectMeshPathDefaults(user: host.user, goos: goos)
+        let generatedDefaults = [
+            privateDirectMeshPathDefaults(user: host.user, goos: "linux"),
+            privateDirectMeshPathDefaults(user: host.user, goos: "darwin")
+        ]
+
+        func replacingGeneratedDefault(_ current: String,
+                                        _ keyPath: KeyPath<PrivateDirectMeshPathDefaults, String>) -> String {
+            if generatedDefaults.contains(where: { $0[keyPath: keyPath] == current }) {
+                return target[keyPath: keyPath]
+            }
+            return current
+        }
+
+        return PrivateDirectMeshHost(
+            id: host.id,
+            sshHost: host.sshHost,
+            user: host.user,
+            port: host.port,
+            installPath: replacingGeneratedDefault(host.installPath, \.installPath),
+            configPath: replacingGeneratedDefault(host.configPath, \.configPath),
+            knownHostsPath: replacingGeneratedDefault(host.knownHostsPath, \.knownHostsPath),
+            syncKeyPath: replacingGeneratedDefault(host.syncKeyPath, \.syncKeyPath),
+            callbackHostMode: host.callbackHostMode,
+            callbackHostFieldPresent: host.callbackHostFieldPresent
+        )
+    }
+
+    private struct PrivateDirectMeshPathDefaults: Equatable {
+        let installPath: String
+        let configPath: String
+        let knownHostsPath: String
+        let syncKeyPath: String
+    }
+
+    private static func privateDirectMeshPathDefaults(user: String, goos: String) -> PrivateDirectMeshPathDefaults {
+        let home = goos == "darwin" ? "/Users/\(user)" : "/home/\(user)"
+        return PrivateDirectMeshPathDefaults(
+            installPath: "\(home)/.local/bin/clipfan",
+            configPath: "\(home)/.config/clipfan/config.json",
+            knownHostsPath: "\(home)/.config/clipfan/ssh/known_hosts",
+            syncKeyPath: "\(home)/.config/clipfan/ssh/sync_ed25519"
+        )
+    }
+
+    private static func privateDirectMeshHostSpec(_ host: PrivateDirectMeshHost) -> String {
+        var fields = [
+            "id=\(host.id)",
+            "ssh=\(host.sshHost)",
+            "user=\(host.user)",
+            "port=\(host.port)",
+            "install=\(host.installPath)",
+            "config=\(host.configPath)",
+            "known_hosts=\(host.knownHostsPath)",
+            "sync_key=\(host.syncKeyPath)"
+        ]
+        if host.callbackHostMode == .remoteObserved || host.callbackHostFieldPresent {
+            fields.append("callback_host=\(host.callbackHostMode.rawValue)")
+        }
+        return fields.joined(separator: ",")
     }
 
     static func privateDirectMeshObservedSSHClientHostCommand() -> String {
