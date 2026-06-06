@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.21] - 2026-06-05
+
+### Fixed
+
+- Private SSH mesh provisioning now installs managed Clipfan sync keys before user key entries so stale unrestricted authorized_keys lines cannot bypass the forced ssh-gateway command.
+
 ## [0.3.20] - 2026-06-05
 
 ### Fixed
