@@ -174,11 +174,15 @@ func (provisioner DirectPairProvisioner) Provision(ctx context.Context, input Di
 	for _, direction := range directions {
 		key := result.SyncKeys[direction.source.Host.ID]
 		probe := PinnedSSHCommand{
-			User:           direction.target.Host.SSHUser,
-			Host:           direction.target.Host.SSHHost,
-			Port:           direction.target.Host.SSHPort,
-			PrivateKeyPath: key.PrivateKeyPath,
-			KnownHostsPath: direction.source.KnownHostsPath,
+			User:            direction.target.Host.SSHUser,
+			Host:            direction.target.Host.SSHHost,
+			Port:            direction.target.Host.SSHPort,
+			PrivateKeyPath:  key.PrivateKeyPath,
+			KnownHostsPath:  direction.source.KnownHostsPath,
+			GatewayPath:     direction.target.Host.GatewayPath,
+			AuthorizedPeer:  direction.source.Host.ID,
+			AuthorizedKeyID: key.KeyID,
+			DirectGateway:   direction.target.Host.SSHServerMode == SSHServerModeTailscaleSSH,
 		}
 		if err := provisioner.Driver.RunProbe(ctx, probe, direction.source, direction.source.Host.ID, key.KeyID); err != nil {
 			return result, err

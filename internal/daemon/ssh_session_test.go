@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +29,20 @@ func TestSSHSyncPeersFromConfigSelectsReadyPersistentConnectors(t *testing.T) {
 	}
 	if peers[0].id != "linux-b" || peers[0].privateKeyPath != cfg.SSH.SyncKey || peers[0].knownHostsPath != cfg.SSH.KnownHosts {
 		t.Fatalf("peer = %#v", peers[0])
+	}
+}
+
+func TestSSHSyncPeersFromConfigMarksTailscaleSSHDirectGateway(t *testing.T) {
+	cfg := sshSyncManagerTestConfig()
+	cfg.SSH.Peers[0].GatewayPath = "/home/jesse/.local/bin/clipfan"
+	cfg.SSH.Peers[0].Proof.ConnectVerifiedBy = config.ProofVerifiedByTailscaleSSH
+
+	peers := sshSyncPeersFromConfig(cfg)
+	if len(peers) != 1 {
+		t.Fatalf("peers = %#v, want one", peers)
+	}
+	if !peers[0].directGateway || peers[0].gatewayPath != "/home/jesse/.local/bin/clipfan" || peers[0].connectKeyID != "key-connect-123" {
+		t.Fatalf("peer = %#v, want direct gateway with connect key id", peers[0])
 	}
 }
 
@@ -120,6 +135,25 @@ func TestSSHSyncManagerPublishesStateToStartedPeerStream(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for remote state")
 	}
+}
+
+func TestSSHSyncManagerStartsTailscaleSSHDirectGatewayStream(t *testing.T) {
+	cfg := sshSyncManagerTestConfig()
+	cfg.SSH.Peers[0].GatewayPath = "/home/jesse/.local/bin/clipfan"
+	cfg.SSH.Peers[0].Proof.ConnectVerifiedBy = config.ProofVerifiedByTailscaleSSH
+	auth, err := transport.NewAuth(cfg.SharedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := newFakeSSHProcessStarter()
+	manager := newSSHSyncManager(cfg, auth, "m4", nil, starter)
+	manager.reconnect = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.Start(ctx)
+	start := starter.waitForStart(t)
+	defer start.close()
+	assertDirectSyncStreamCommand(t, start.cmd)
 }
 
 func TestSSHSyncManagerInboundStateCallsReceive(t *testing.T) {
@@ -578,6 +612,27 @@ func assertSyncStreamCommand(t *testing.T, cmd sshprovision.SSHCommand) {
 	}
 	if got := cmd.Args[len(cmd.Args)-1]; got != sshprovision.SSHGatewaySyncStreamCommand {
 		t.Fatalf("last command arg = %q, want sync-stream; args=%#v", got, cmd.Args)
+	}
+}
+
+func assertDirectSyncStreamCommand(t *testing.T, cmd sshprovision.SSHCommand) {
+	t.Helper()
+	if len(cmd.Args) == 0 {
+		t.Fatal("empty command")
+	}
+	remote := cmd.Args[len(cmd.Args)-1]
+	for _, want := range []string{
+		"'ssh-gateway'",
+		"'--authorized-peer' 'm4'",
+		"'--authorized-key-id' 'key-connect-123'",
+		"'--direct-command' 'sync-stream'",
+	} {
+		if !strings.Contains(remote, want) {
+			t.Fatalf("remote command = %q, want %q; args=%#v", remote, want, cmd.Args)
+		}
+	}
+	if strings.TrimSpace(remote) == sshprovision.SSHGatewaySyncStreamCommand {
+		t.Fatalf("direct command used raw sync-stream: %#v", cmd.Args)
 	}
 }
 

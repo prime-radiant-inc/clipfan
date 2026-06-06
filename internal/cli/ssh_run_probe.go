@@ -29,6 +29,8 @@ func runSSHRunProbe(ctx context.Context, args []string, stdout io.Writer, stderr
 	knownHostsPath := fs.String("known-hosts", "", "known_hosts path")
 	expectPeer := fs.String("expect-peer", "", "expected gateway peer id")
 	expectKeyID := fs.String("expect-key-id", "", "expected gateway key id")
+	gatewayPath := fs.String("gateway-path", "", "gateway path for direct gateway probes")
+	directGateway := fs.Bool("direct-gateway", false, "run gateway directly instead of relying on forced command")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -45,11 +47,15 @@ func runSSHRunProbe(ctx context.Context, args []string, stdout io.Writer, stderr
 		return fmt.Errorf("invalid expected key id: %w", err)
 	}
 	command, err := sshprovision.PinnedSSHProbeCommand(sshprovision.PinnedSSHCommand{
-		User:           *user,
-		Host:           *host,
-		Port:           *port,
-		PrivateKeyPath: *privateKeyPath,
-		KnownHostsPath: *knownHostsPath,
+		User:            *user,
+		Host:            *host,
+		Port:            *port,
+		PrivateKeyPath:  *privateKeyPath,
+		KnownHostsPath:  *knownHostsPath,
+		GatewayPath:     *gatewayPath,
+		AuthorizedPeer:  *expectPeer,
+		AuthorizedKeyID: *expectKeyID,
+		DirectGateway:   *directGateway,
 	})
 	if err != nil {
 		return err

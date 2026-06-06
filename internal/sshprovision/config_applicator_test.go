@@ -85,6 +85,29 @@ func TestDirectPairConfigApplicatorEnsuresRevisionForPreV2Configs(t *testing.T) 
 	}
 }
 
+func TestDirectPairConfigApplicatorProofPatchesUseWriteVerifiedBy(t *testing.T) {
+	t.Parallel()
+
+	write := DirectPairConfigWrite{
+		Accept:            true,
+		Connect:           true,
+		GatewayPath:       "/home/jesse/.local/bin/clipfan",
+		TargetGatewayPath: "/Users/jesse/.local/bin/clipfan",
+		AcceptVerifiedBy:  config.ProofVerifiedByTailscaleSSH,
+		ConnectVerifiedBy: config.ProofVerifiedByRegularSSH,
+	}
+	key := SyncKeyMaterial{KeyID: "key-123456"}
+
+	accept := acceptProofPatch(write, key, "2026-06-02T12:34:56Z")
+	connect := connectProofPatch(write, key, "2026-06-02T12:34:56Z")
+	if accept == nil || accept.VerifiedBy != config.ProofVerifiedByTailscaleSSH {
+		t.Fatalf("accept proof = %#v, want tailscale_ssh", accept)
+	}
+	if connect == nil || connect.VerifiedBy != config.ProofVerifiedByRegularSSH {
+		t.Fatalf("connect proof = %#v, want regular_ssh", connect)
+	}
+}
+
 func TestDirectPairConfigApplicatorRejectsInvalidSharedKeyBeforeMutation(t *testing.T) {
 	t.Parallel()
 

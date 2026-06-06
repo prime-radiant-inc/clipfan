@@ -113,6 +113,48 @@ func TestDirectPairProvisionerFailsClosedWhenConfigV2WritesDisabled(t *testing.T
 	}
 }
 
+func TestDirectPairProvisionerUsesDirectGatewayProbeForTailscaleSSHTarget(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeDirectPairDriver()
+	fake.configWritesEnabled = true
+	input := validDirectPairProvisionInput()
+	input.Remote.Host.SSHServerMode = SSHServerModeTailscaleSSH
+	provisioner := DirectPairProvisioner{Driver: fake, configV2WriteGate: func() bool { return true }}
+
+	if _, err := provisioner.Provision(context.Background(), input); err != nil {
+		t.Fatalf("Provision() error = %v", err)
+	}
+
+	if len(fake.probes) != 2 {
+		t.Fatalf("probes = %#v, want two", fake.probes)
+	}
+	var tailscaleProbe PinnedSSHCommand
+	for _, probe := range fake.probes {
+		if probe.Host == "linux-b.tailnet" {
+			tailscaleProbe = probe
+		}
+	}
+	if !tailscaleProbe.DirectGateway {
+		t.Fatalf("tailscale target probe = %#v, want direct gateway", tailscaleProbe)
+	}
+	if tailscaleProbe.GatewayPath != "/home/jesse/.local/bin/clipfan" || tailscaleProbe.AuthorizedPeer != "mac-a" || tailscaleProbe.AuthorizedKeyID != "mac-key-123456" {
+		t.Fatalf("tailscale target probe identity = %#v", tailscaleProbe)
+	}
+	for _, write := range fake.configMutation.Writes {
+		switch write.TargetHostID + "->" + write.PeerID {
+		case "mac-a->linux-b":
+			if write.AcceptVerifiedBy != config.ProofVerifiedByRegularSSH || write.ConnectVerifiedBy != config.ProofVerifiedByTailscaleSSH {
+				t.Fatalf("mac-a write proof verifiers = %#v", write)
+			}
+		case "linux-b->mac-a":
+			if write.AcceptVerifiedBy != config.ProofVerifiedByTailscaleSSH || write.ConnectVerifiedBy != config.ProofVerifiedByRegularSSH {
+				t.Fatalf("linux-b write proof verifiers = %#v", write)
+			}
+		}
+	}
+}
+
 func TestDirectPairProvisionerStopsBeforeMutationOnHostKeyMismatch(t *testing.T) {
 	t.Parallel()
 
@@ -198,6 +240,7 @@ type fakeDirectPairDriver struct {
 	keys                 map[string]SyncKeyMaterial
 	configWritesEnabled  bool
 	configMutation       DirectPairConfigMutation
+	probes               []PinnedSSHCommand
 	ops                  []string
 }
 
@@ -250,6 +293,7 @@ func (f *fakeDirectPairDriver) InstallAuthorizedKey(_ context.Context, host Dire
 }
 
 func (f *fakeDirectPairDriver) RunProbe(_ context.Context, probe PinnedSSHCommand, host DirectPairProvisionHost, expectPeerID string, expectKeyID string) error {
+	f.probes = append(f.probes, probe)
 	f.ops = append(f.ops, "probe-from:"+host.Host.ID+":"+expectPeerID+":"+expectKeyID+":"+probe.User+"@"+probe.Host+":"+fmt.Sprintf("%d", probe.Port)+":"+probe.PrivateKeyPath+":"+probe.KnownHostsPath)
 	return nil
 }

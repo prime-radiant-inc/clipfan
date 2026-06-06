@@ -293,6 +293,57 @@ func TestSelectSSHProvisionDirectHostKeyLinePrefersEd25519OverRSA(t *testing.T) 
 	}
 }
 
+func TestRunSSHProvisionDirectDetectsTailscaleSSHTargetAndUsesDirectGateway(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDirectProvisionRunner{
+		keyscanStderrByHost: map[string]string{
+			"magic-kingdom": "# magic-kingdom:22 SSH-2.0-Tailscale\n",
+		},
+	}
+	var stdout, stderr bytes.Buffer
+
+	err := runSSHProvisionDirect([]string{
+		"--trust-keyscan",
+		"--regular-known-hosts", "/Users/jesse/.ssh/known_hosts",
+		"--host", "id=m4,ssh=100.114.54.38,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+		"--host", "id=magic-kingdom,ssh=magic-kingdom,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/.config/clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519",
+	}, &stdout, &stderr, sshProvisionDirectOptions{
+		Runner:            runner,
+		ConfigV2WriteGate: func() bool { return true },
+		SharedKey:         func() (string, error) { return testDirectProvisionSharedKey, nil },
+	})
+	if err != nil {
+		t.Fatalf("runSSHProvisionDirect() error = %v stderr=%q", err, stderr.String())
+	}
+	if !containsSubstring(runner.probeCommands, "'--host' 'magic-kingdom'") ||
+		!containsSubstring(runner.probeCommands, "'--direct-gateway'") ||
+		!containsSubstring(runner.probeCommands, "'--gateway-path' '/home/jesse/.local/bin/clipfan'") {
+		t.Fatalf("probe commands = %#v, want direct gateway probe to magic-kingdom", runner.probeCommands)
+	}
+	if !containsString(runner.configProofModes, "m4->magic-kingdom:accept=regular_ssh:connect=tailscale_ssh") {
+		t.Fatalf("config proof modes = %#v, want m4 connect via tailscale_ssh", runner.configProofModes)
+	}
+	if !containsString(runner.configProofModes, "magic-kingdom->m4:accept=tailscale_ssh:connect=regular_ssh") {
+		t.Fatalf("config proof modes = %#v, want magic-kingdom accept via tailscale_ssh", runner.configProofModes)
+	}
+}
+
+func TestSSHProvisionDirectServerModeFromKeyscanReadsStdoutAndStderr(t *testing.T) {
+	t.Parallel()
+
+	mode := sshProvisionDirectServerModeFromKeyscan(
+		"magic-kingdom ssh-ed25519 "+testDirectProvisionEd25519Key+"\n",
+		"# magic-kingdom:22 SSH-2.0-Tailscale\n",
+	)
+	if mode != sshprovision.SSHServerModeTailscaleSSH {
+		t.Fatalf("server mode = %q, want tailscale_ssh", mode)
+	}
+	if got := sshProvisionDirectServerModeFromKeyscan("# linux-b:22 SSH-2.0-OpenSSH_9.6\n"); got != sshprovision.SSHServerModeOpenSSH {
+		t.Fatalf("server mode = %q, want openssh default", got)
+	}
+}
+
 func TestRunSSHProvisionDirectFailsClosedWhenConfigV2WritesDisabled(t *testing.T) {
 	t.Parallel()
 
@@ -610,10 +661,13 @@ type fakeDirectProvisionRunner struct {
 	keyscans              []string
 	configLookups         []string
 	sshConfigOutputs      map[string]string
+	keyscanStderrByHost   map[string]string
 	regularTargets        []string
+	probeCommands         []string
 	configApplies         []string
 	configApplySharedKeys []string
 	configPeerEndpoints   []string
+	configProofModes      []string
 }
 
 func (r *fakeDirectProvisionRunner) Run(_ context.Context, command sshprovision.SSHCommand) (sshprovision.CommandOutput, error) {
@@ -658,7 +712,10 @@ func (r *fakeDirectProvisionRunner) Run(_ context.Context, command sshprovision.
 		if port != "" && port != "22" {
 			scanHost = "[" + host + "]:" + port
 		}
-		return sshprovision.CommandOutput{Stdout: []byte(scanHost + " ssh-ed25519 " + testDirectProvisionPublicKey(host))}, nil
+		return sshprovision.CommandOutput{
+			Stdout: []byte(scanHost + " ssh-ed25519 " + testDirectProvisionPublicKey(host)),
+			Stderr: []byte(r.keyscanStderrByHost[host]),
+		}, nil
 	}
 	remote := command.Args[len(command.Args)-1]
 	if len(command.Args) >= 2 {
@@ -676,6 +733,7 @@ func (r *fakeDirectProvisionRunner) Run(_ context.Context, command sshprovision.
 		peerID, keyID := remoteQuotedArgValue(remote, "--peer"), remoteQuotedArgValue(remote, "--key-id")
 		return sshprovision.CommandOutput{Stdout: []byte(`{"status":"ok","changed":true,"peer_id":"` + peerID + `","key_id":"` + keyID + `"}`)}, nil
 	case strings.Contains(remote, "ssh-run-probe"):
+		r.probeCommands = append(r.probeCommands, remote)
 		peerID, keyID := remoteQuotedArgValue(remote, "--expect-peer"), remoteQuotedArgValue(remote, "--expect-key-id")
 		return sshprovision.CommandOutput{Stdout: []byte(`{"status":"ok","peer_id":"` + peerID + `","key_id":"` + keyID + `"}`)}, nil
 	case strings.Contains(remote, "ssh-apply-direct-config"):
@@ -696,9 +754,12 @@ func (r *fakeDirectProvisionRunner) Run(_ context.Context, command sshprovision.
 			Mutation   struct {
 				SharedKey string `json:"shared_key"`
 				Writes    []struct {
-					PeerID  string
-					SSHHost string
-					SSHPort int
+					TargetHostID      string
+					PeerID            string
+					SSHHost           string
+					SSHPort           int
+					AcceptVerifiedBy  string
+					ConnectVerifiedBy string
 				} `json:"writes"`
 			} `json:"mutation"`
 		}
@@ -716,6 +777,7 @@ func (r *fakeDirectProvisionRunner) Run(_ context.Context, command sshprovision.
 		r.configApplySharedKeys = append(r.configApplySharedKeys, decoded.Mutation.SharedKey)
 		for _, write := range decoded.Mutation.Writes {
 			r.configPeerEndpoints = append(r.configPeerEndpoints, write.PeerID+"="+write.SSHHost+":"+fmt.Sprint(write.SSHPort))
+			r.configProofModes = append(r.configProofModes, write.TargetHostID+"->"+write.PeerID+":accept="+write.AcceptVerifiedBy+":connect="+write.ConnectVerifiedBy)
 		}
 		return sshprovision.CommandOutput{Stdout: []byte(`{"status":"ok"}`)}, nil
 	default:
@@ -826,6 +888,15 @@ func testDirectProvisionKeyID(hostID string) string {
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsSubstring(values []string, want string) bool {
+	for _, value := range values {
+		if strings.Contains(value, want) {
 			return true
 		}
 	}

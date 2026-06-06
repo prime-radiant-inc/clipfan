@@ -65,6 +65,60 @@ func TestRunSSHGatewayAllowsProbeCommand(t *testing.T) {
 	assertPathMissing(t, filepath.Join(stateRoot, "clipfan"))
 }
 
+func TestRunSSHGatewayAllowsDirectProbeCommandWithoutForcedOriginalCommand(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	err := runSSHGateway(
+		[]string{"--authorized-peer", "linux-a", "--authorized-key-id", "key-123456", "--direct-command", sshprovision.SSHGatewayProbeCommand},
+		strings.NewReader(""),
+		&stdout,
+		&stderr,
+		func(string) string { return "" },
+	)
+	if err != nil {
+		t.Fatalf("runSSHGateway() error = %v", err)
+	}
+	var payload struct {
+		Status string `json:"status"`
+		PeerID string `json:"peer_id"`
+		KeyID  string `json:"key_id"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if payload.Status != "ok" || payload.PeerID != "linux-a" || payload.KeyID != "key-123456" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunSSHGatewayForcedOriginalCommandTakesPrecedenceOverDirectCommand(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	err := runSSHGateway(
+		[]string{"--authorized-peer", "linux-a", "--authorized-key-id", "key-123456", "--direct-command", sshprovision.SSHGatewayProbeCommand},
+		strings.NewReader(""),
+		&stdout,
+		&stderr,
+		func(key string) string {
+			if key == "SSH_ORIGINAL_COMMAND" {
+				return "sh"
+			}
+			return ""
+		},
+	)
+	if !errors.Is(err, ErrSSHGatewayCommandRejected) {
+		t.Fatalf("runSSHGateway() error = %v, want ErrSSHGatewayCommandRejected", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+}
+
 func TestRunSSHGatewayAllowsInjectedPrivateSyncStreamCommand(t *testing.T) {
 	t.Parallel()
 

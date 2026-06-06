@@ -212,12 +212,13 @@ func parseSSHProvisionDirectHost(spec string) (sshprovision.DirectPairProvisionH
 	}
 	host := sshprovision.DirectPairProvisionHost{
 		Host: sshprovision.DirectPairHost{
-			ID:          fields["id"],
-			SSHHost:     firstNonEmpty(fields["ssh"], fields["host"]),
-			SSHUser:     fields["user"],
-			SSHPort:     port,
-			InstallPath: fields["install"],
-			GatewayPath: gatewayPath,
+			ID:            fields["id"],
+			SSHHost:       firstNonEmpty(fields["ssh"], fields["host"]),
+			SSHUser:       fields["user"],
+			SSHPort:       port,
+			InstallPath:   fields["install"],
+			GatewayPath:   gatewayPath,
+			SSHServerMode: sshprovision.SSHServerMode(firstNonEmpty(fields["server_mode"], fields["ssh_server_mode"], fields["server"])),
 		},
 		KnownHostsPath: firstNonEmpty(fields["known_hosts"], fields["knownhosts"]),
 		SyncKeyPath:    firstNonEmpty(fields["sync_key"], fields["synckey"]),
@@ -286,9 +287,10 @@ func scanSSHProvisionDirectHostKeys(ctx context.Context, runner sshprovision.Com
 		if err != nil {
 			return nil, nil, err
 		}
-		if output.StdoutTruncated {
+		if output.StdoutTruncated || output.StderrTruncated {
 			return nil, nil, fmt.Errorf("ssh_keyscan_output_truncated: %s", host.Host.ID)
 		}
+		host.Host.SSHServerMode = sshProvisionDirectServerModeFromKeyscan(string(output.Stdout), string(output.Stderr))
 		line, err := selectSSHProvisionDirectHostKeyLine(host.Host, keyscanTarget, string(output.Stdout))
 		if err != nil {
 			return nil, nil, err
@@ -297,6 +299,19 @@ func scanSSHProvisionDirectHostKeys(ctx context.Context, runner sshprovision.Com
 		resolvedHosts = append(resolvedHosts, host)
 	}
 	return resolvedHosts, out, nil
+}
+
+func sshProvisionDirectServerModeFromKeyscan(outputs ...string) sshprovision.SSHServerMode {
+	for _, output := range outputs {
+		scanner := bufio.NewScanner(strings.NewReader(output))
+		for scanner.Scan() {
+			line := strings.ToLower(strings.TrimSpace(scanner.Text()))
+			if strings.Contains(line, "ssh-2.0-tailscale") {
+				return sshprovision.SSHServerModeTailscaleSSH
+			}
+		}
+	}
+	return sshprovision.SSHServerModeOpenSSH
 }
 
 type sshProvisionDirectKeyscanTarget struct {

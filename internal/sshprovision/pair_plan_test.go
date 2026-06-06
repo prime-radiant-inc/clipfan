@@ -63,9 +63,12 @@ func TestDirectPairPlanOrdersFailClosedStepsBeforeConfigWrites(t *testing.T) {
 func TestDirectPairPlanBuildsConfigWriteIntents(t *testing.T) {
 	t.Parallel()
 
+	local := planHost("mac-a", "mac-a.tailnet", "jesse", 22)
+	remote := planHost("linux-b", "linux-b.tailnet", "jesse", 2200)
+	remote.SSHServerMode = SSHServerModeTailscaleSSH
 	plan, err := BuildDirectPairPlan(DirectPairPlanInput{
-		Local:  planHost("mac-a", "mac-a.tailnet", "jesse", 22),
-		Remote: planHost("linux-b", "linux-b.tailnet", "jesse", 2200),
+		Local:  local,
+		Remote: remote,
 	})
 	if err != nil {
 		t.Fatalf("BuildDirectPairPlan() error = %v", err)
@@ -90,6 +93,9 @@ func TestDirectPairPlanBuildsConfigWriteIntents(t *testing.T) {
 	if connector.MigrationState != "loopback_unprovisioned" {
 		t.Fatalf("connector MigrationState = %q", connector.MigrationState)
 	}
+	if connector.AcceptVerifiedBy != "tailscale_ssh" || connector.ConnectVerifiedBy != "regular_ssh" {
+		t.Fatalf("connector proof verifiers = accept %q connect %q", connector.AcceptVerifiedBy, connector.ConnectVerifiedBy)
+	}
 
 	acceptor := plan.ConfigWrites[1]
 	if acceptor.TargetHostID != "mac-a" || acceptor.PeerID != "linux-b" {
@@ -109,6 +115,9 @@ func TestDirectPairPlanBuildsConfigWriteIntents(t *testing.T) {
 	}
 	if acceptor.MigrationState != "loopback_unprovisioned" {
 		t.Fatalf("acceptor MigrationState = %q", acceptor.MigrationState)
+	}
+	if acceptor.AcceptVerifiedBy != "regular_ssh" || acceptor.ConnectVerifiedBy != "tailscale_ssh" {
+		t.Fatalf("acceptor proof verifiers = accept %q connect %q", acceptor.AcceptVerifiedBy, acceptor.ConnectVerifiedBy)
 	}
 }
 
@@ -145,6 +154,7 @@ func TestDirectPairPlanRejectsInvalidInput(t *testing.T) {
 		{name: "missing host", input: DirectPairPlanInput{Local: planHost("mac-a", "", "jesse", 22), Remote: planHost("linux-b", "linux-b.tailnet", "jesse", 22)}},
 		{name: "invalid user", input: DirectPairPlanInput{Local: planHost("mac-a", "mac-a.tailnet", "-bad", 22), Remote: planHost("linux-b", "linux-b.tailnet", "jesse", 22)}},
 		{name: "invalid port", input: DirectPairPlanInput{Local: planHost("mac-a", "mac-a.tailnet", "jesse", 0), Remote: planHost("linux-b", "linux-b.tailnet", "jesse", 22)}},
+		{name: "invalid server mode", input: DirectPairPlanInput{Local: planHostWithServerMode("mac-a", "mac-a.tailnet", "jesse", 22, "future"), Remote: planHost("linux-b", "linux-b.tailnet", "jesse", 22)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -154,6 +164,12 @@ func TestDirectPairPlanRejectsInvalidInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+func planHostWithServerMode(id, host, user string, port int, mode SSHServerMode) DirectPairHost {
+	planHost := planHost(id, host, user, port)
+	planHost.SSHServerMode = mode
+	return planHost
 }
 
 func planHost(id, host, user string, port int) DirectPairHost {

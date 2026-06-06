@@ -38,7 +38,7 @@ func TestValidateSSHConfigAcceptsSchemaAndDirectionalProofs(t *testing.T) {
 					ConnectKeyID:       "b5b5b5b5b5b5b5b5",
 					ConnectGatewayPath: "/home/jesse/.local/bin/clipfan",
 					ConnectVerifiedAt:  "2026-06-01T12:35:10Z",
-					ConnectVerifiedBy:  ProofVerifiedByRegularSSH,
+					ConnectVerifiedBy:  ProofVerifiedByTailscaleSSH,
 				},
 			}},
 		},

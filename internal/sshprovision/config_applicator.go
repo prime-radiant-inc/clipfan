@@ -363,11 +363,15 @@ func acceptProofPatch(write DirectPairConfigWrite, key SyncKeyMaterial, verified
 	if gatewayPath == "" {
 		gatewayPath = write.GatewayPath
 	}
+	verifiedBy := write.AcceptVerifiedBy
+	if verifiedBy == "" {
+		verifiedBy = config.ProofVerifiedByRegularSSH
+	}
 	return &config.SSHPeerDirectionalProofPatch{
 		KeyID:       key.KeyID,
 		GatewayPath: gatewayPath,
 		VerifiedAt:  verifiedAt,
-		VerifiedBy:  config.ProofVerifiedByRegularSSH,
+		VerifiedBy:  verifiedBy,
 	}
 }
 
@@ -375,11 +379,15 @@ func connectProofPatch(write DirectPairConfigWrite, key SyncKeyMaterial, verifie
 	if !write.Connect {
 		return nil
 	}
+	verifiedBy := write.ConnectVerifiedBy
+	if verifiedBy == "" {
+		verifiedBy = config.ProofVerifiedByRegularSSH
+	}
 	return &config.SSHPeerDirectionalProofPatch{
 		KeyID:       key.KeyID,
 		GatewayPath: write.GatewayPath,
 		VerifiedAt:  verifiedAt,
-		VerifiedBy:  config.ProofVerifiedByRegularSSH,
+		VerifiedBy:  verifiedBy,
 	}
 }
 

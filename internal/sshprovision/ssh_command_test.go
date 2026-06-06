@@ -101,6 +101,72 @@ func TestPinnedSSHSyncStreamCommand(t *testing.T) {
 	}
 }
 
+func TestPinnedSSHDirectGatewayProbeCommand(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := PinnedSSHProbeCommand(PinnedSSHCommand{
+		User:            "jesse",
+		Host:            "Magic-Kingdom.",
+		Port:            22,
+		KnownHostsPath:  "/home/jesse/.config/clipfan/ssh/known_hosts",
+		GatewayPath:     "/home/jesse/.local/bin/clipfan",
+		AuthorizedPeer:  "m4",
+		AuthorizedKeyID: "key-123456",
+		DirectGateway:   true,
+	})
+	if err != nil {
+		t.Fatalf("PinnedSSHProbeCommand() error = %v", err)
+	}
+
+	want := []string{
+		"ssh",
+		"-F", "/dev/null",
+		"-o", "BatchMode=yes",
+		"-o", "IdentitiesOnly=yes",
+		"-o", "IdentityFile=none",
+		"-o", "IdentityAgent=none",
+		"-o", "ConnectTimeout=5",
+		"-o", "ConnectionAttempts=1",
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UserKnownHostsFile=/home/jesse/.config/clipfan/ssh/known_hosts",
+		"-o", "GlobalKnownHostsFile=/dev/null",
+		"-o", "ProxyCommand=none",
+		"-o", "ProxyJump=none",
+		"-o", "PermitLocalCommand=no",
+		"-o", "RequestTTY=no",
+		"-o", "ClearAllForwardings=yes",
+		"-o", "LogLevel=ERROR",
+		"-p", "22",
+		"jesse@magic-kingdom",
+		"'/home/jesse/.local/bin/clipfan' 'ssh-gateway' '--authorized-peer' 'm4' '--authorized-key-id' 'key-123456' '--direct-command' 'probe-authorized-key'",
+	}
+	assertSSHCommandArgs(t, cmd.Args, want)
+}
+
+func TestPinnedSSHDirectGatewaySyncStreamCommand(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := PinnedSSHSyncStreamCommand(PinnedSSHCommand{
+		User:            "jesse",
+		Host:            "magic-kingdom",
+		Port:            22,
+		KnownHostsPath:  "/home/jesse/.config/clipfan/ssh/known_hosts",
+		GatewayPath:     "/home/jesse/.local/bin/clipfan",
+		AuthorizedPeer:  "m4",
+		AuthorizedKeyID: "key-123456",
+		DirectGateway:   true,
+	})
+	if err != nil {
+		t.Fatalf("PinnedSSHSyncStreamCommand() error = %v", err)
+	}
+	got := cmd.Args[len(cmd.Args)-1]
+	if !strings.Contains(got, "'ssh-gateway'") ||
+		!strings.Contains(got, "'--direct-command' 'sync-stream'") ||
+		strings.TrimSpace(got) == SSHGatewaySyncStreamCommand {
+		t.Fatalf("direct command = %q", got)
+	}
+}
+
 func TestPinnedSSHProbeCommandRejectsInvalidInput(t *testing.T) {
 	t.Parallel()
 
@@ -453,6 +519,49 @@ func TestRegularSSHRunProbeCommand(t *testing.T) {
 		"-o", "LogLevel=ERROR",
 		"jesse@connector.example",
 		"'/home/jesse/.local/bin/clipfan' 'ssh-run-probe' '--user' 'jesse' '--host' 'acceptor.example' '--port' '2200' '--private-key' '/home/jesse/.config/clipfan/ssh/sync_ed25519' '--known-hosts' '/home/jesse/.config/clipfan/ssh/known_hosts' '--expect-peer' 'linux-b' '--expect-key-id' 'key-123456'",
+	}
+	assertSSHCommandArgs(t, cmd.Args, want)
+	assertRegularSSHCommandSafety(t, cmd.Args)
+}
+
+func TestRegularSSHRunProbeCommandDirectGateway(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := RegularSSHRunProbeCommand(RegularSSHRunProbeSpec{
+		User:           "jesse",
+		Host:           "Connector.EXAMPLE.",
+		Port:           22,
+		KnownHostsPath: "/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		InstallPath:    "/home/jesse/.local/bin/clipfan",
+		Probe: PinnedSSHCommand{
+			User:            "jesse",
+			Host:            "Acceptor.EXAMPLE.",
+			Port:            2200,
+			KnownHostsPath:  "/home/jesse/.config/clipfan/ssh/known_hosts",
+			GatewayPath:     "/home/jesse/.local/bin/clipfan",
+			AuthorizedPeer:  "linux-b",
+			AuthorizedKeyID: "key-123456",
+			DirectGateway:   true,
+		},
+		ExpectPeerID: "linux-b",
+		ExpectKeyID:  "key-123456",
+	})
+	if err != nil {
+		t.Fatalf("RegularSSHRunProbeCommand() error = %v", err)
+	}
+
+	want := []string{
+		"ssh",
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UserKnownHostsFile=/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		"-o", "GlobalKnownHostsFile=/dev/null",
+		"-o", "PermitLocalCommand=no",
+		"-o", "RequestTTY=no",
+		"-o", "ClearAllForwardings=yes",
+		"-o", "LogLevel=ERROR",
+		"jesse@connector.example",
+		"'/home/jesse/.local/bin/clipfan' 'ssh-run-probe' '--user' 'jesse' '--host' 'acceptor.example' '--port' '2200' '--gateway-path' '/home/jesse/.local/bin/clipfan' '--direct-gateway' '--known-hosts' '/home/jesse/.config/clipfan/ssh/known_hosts' '--expect-peer' 'linux-b' '--expect-key-id' 'key-123456'",
 	}
 	assertSSHCommandArgs(t, cmd.Args, want)
 	assertRegularSSHCommandSafety(t, cmd.Args)

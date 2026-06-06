@@ -15,11 +15,15 @@ var ErrInvalidPinnedSSHCommand = errors.New("invalid_pinned_ssh_command")
 var ErrInvalidRegularSSHCommand = errors.New("invalid_regular_ssh_command")
 
 type PinnedSSHCommand struct {
-	User           string
-	Host           string
-	Port           int
-	PrivateKeyPath string
-	KnownHostsPath string
+	User            string
+	Host            string
+	Port            int
+	PrivateKeyPath  string
+	KnownHostsPath  string
+	GatewayPath     string
+	AuthorizedPeer  string
+	AuthorizedKeyID string
+	DirectGateway   bool
 }
 
 type SSHCommand struct {
@@ -107,6 +111,9 @@ func pinnedSSHGatewayCommand(spec PinnedSSHCommand, remoteCommand string) (SSHCo
 	if err != nil {
 		return SSHCommand{}, err
 	}
+	if normalized.DirectGateway {
+		return directSSHGatewayCommand(normalized, remoteCommand)
+	}
 	return SSHCommand{Args: []string{
 		"ssh",
 		"-F", "/dev/null",
@@ -130,6 +137,43 @@ func pinnedSSHGatewayCommand(spec PinnedSSHCommand, remoteCommand string) (SSHCo
 		normalized.User + "@" + normalized.Host,
 		remoteCommand,
 	}}, nil
+}
+
+func directSSHGatewayCommand(normalized PinnedSSHCommand, remoteCommand string) (SSHCommand, error) {
+	switch remoteCommand {
+	case SSHGatewayProbeCommand, SSHGatewaySyncStreamCommand:
+	default:
+		return SSHCommand{}, fmt.Errorf("%w: invalid gateway command", ErrInvalidPinnedSSHCommand)
+	}
+	args := []string{
+		"ssh",
+		"-F", "/dev/null",
+		"-o", "BatchMode=yes",
+		"-o", "IdentitiesOnly=yes",
+		"-o", "IdentityFile=none",
+		"-o", "IdentityAgent=none",
+		"-o", "ConnectTimeout=5",
+		"-o", "ConnectionAttempts=1",
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UserKnownHostsFile=" + normalized.KnownHostsPath,
+		"-o", "GlobalKnownHostsFile=/dev/null",
+		"-o", "ProxyCommand=none",
+		"-o", "ProxyJump=none",
+		"-o", "PermitLocalCommand=no",
+		"-o", "RequestTTY=no",
+		"-o", "ClearAllForwardings=yes",
+		"-o", "LogLevel=ERROR",
+		"-p", strconv.Itoa(normalized.Port),
+		normalized.User + "@" + normalized.Host,
+		shellQuoteCommand([]string{
+			normalized.GatewayPath,
+			"ssh-gateway",
+			"--authorized-peer", normalized.AuthorizedPeer,
+			"--authorized-key-id", normalized.AuthorizedKeyID,
+			"--direct-command", remoteCommand,
+		}),
+	}
+	return SSHCommand{Args: args}, nil
 }
 
 func SSHKeyscanCommand(spec SSHKeyscanSpec) (SSHCommand, error) {
@@ -237,22 +281,34 @@ func RegularSSHRunProbeCommand(spec RegularSSHRunProbeSpec) (SSHCommand, error) 
 	if err != nil {
 		return SSHCommand{}, err
 	}
+	remoteArgs := []string{
+		normalized.InstallPath,
+		"ssh-run-probe",
+		"--user", normalized.Probe.User,
+		"--host", normalized.Probe.Host,
+		"--port", strconv.Itoa(normalized.Probe.Port),
+	}
+	if normalized.Probe.DirectGateway {
+		remoteArgs = append(remoteArgs,
+			"--gateway-path", normalized.Probe.GatewayPath,
+			"--direct-gateway",
+		)
+	} else {
+		remoteArgs = append(remoteArgs,
+			"--private-key", normalized.Probe.PrivateKeyPath,
+		)
+	}
+	remoteArgs = append(remoteArgs,
+		"--known-hosts", normalized.Probe.KnownHostsPath,
+		"--expect-peer", normalized.ExpectPeerID,
+		"--expect-key-id", normalized.ExpectKeyID,
+	)
 	return regularSSHRemoteCommand(regularSSHRemoteSpec{
 		User:           normalized.User,
 		Host:           normalized.Host,
 		Port:           normalized.Port,
 		KnownHostsPath: normalized.KnownHostsPath,
-		RemoteArgs: []string{
-			normalized.InstallPath,
-			"ssh-run-probe",
-			"--user", normalized.Probe.User,
-			"--host", normalized.Probe.Host,
-			"--port", strconv.Itoa(normalized.Probe.Port),
-			"--private-key", normalized.Probe.PrivateKeyPath,
-			"--known-hosts", normalized.Probe.KnownHostsPath,
-			"--expect-peer", normalized.ExpectPeerID,
-			"--expect-key-id", normalized.ExpectKeyID,
-		},
+		RemoteArgs:     remoteArgs,
 	}), nil
 }
 
@@ -343,11 +399,21 @@ func normalizePinnedSSHCommand(spec PinnedSSHCommand) (PinnedSSHCommand, error) 
 	if spec.Port < 1 || spec.Port > 65535 {
 		return PinnedSSHCommand{}, fmt.Errorf("%w: invalid port %d", ErrInvalidPinnedSSHCommand, spec.Port)
 	}
-	if err := config.ValidateSSHExecutablePath(spec.PrivateKeyPath); err != nil {
-		return PinnedSSHCommand{}, fmt.Errorf("%w: invalid private key path: %v", ErrInvalidPinnedSSHCommand, err)
-	}
 	if err := config.ValidateSSHExecutablePath(spec.KnownHostsPath); err != nil {
 		return PinnedSSHCommand{}, fmt.Errorf("%w: invalid known hosts path: %v", ErrInvalidPinnedSSHCommand, err)
+	}
+	if spec.DirectGateway {
+		if err := config.ValidateSSHExecutablePath(spec.GatewayPath); err != nil {
+			return PinnedSSHCommand{}, fmt.Errorf("%w: invalid gateway path: %v", ErrInvalidPinnedSSHCommand, err)
+		}
+		if err := config.ValidateHostID(spec.AuthorizedPeer); err != nil {
+			return PinnedSSHCommand{}, fmt.Errorf("%w: invalid authorized peer: %v", ErrInvalidPinnedSSHCommand, err)
+		}
+		if err := ValidateManagedAuthorizedKeyID(spec.AuthorizedKeyID); err != nil {
+			return PinnedSSHCommand{}, fmt.Errorf("%w: invalid authorized key id: %v", ErrInvalidPinnedSSHCommand, err)
+		}
+	} else if err := config.ValidateSSHExecutablePath(spec.PrivateKeyPath); err != nil {
+		return PinnedSSHCommand{}, fmt.Errorf("%w: invalid private key path: %v", ErrInvalidPinnedSSHCommand, err)
 	}
 	spec.Host = host
 	return spec, nil

@@ -8,12 +8,13 @@ import (
 )
 
 type DirectPairHost struct {
-	ID          string
-	SSHHost     string
-	SSHUser     string
-	SSHPort     int
-	InstallPath string
-	GatewayPath string
+	ID            string
+	SSHHost       string
+	SSHUser       string
+	SSHPort       int
+	InstallPath   string
+	GatewayPath   string
+	SSHServerMode SSHServerMode
 }
 
 type DirectPairPlanInput struct {
@@ -68,6 +69,8 @@ type DirectPairConfigWrite struct {
 	Persistent        bool
 	OnDemand          bool
 	MigrationState    string
+	AcceptVerifiedBy  string
+	ConnectVerifiedBy string
 }
 
 func BuildDirectPairPlan(input DirectPairPlanInput) (DirectPairPlan, error) {
@@ -162,7 +165,12 @@ func normalizeDirectPairHost(host DirectPairHost) (DirectPairHost, error) {
 	if err := config.ValidateSSHExecutablePath(host.GatewayPath); err != nil {
 		return DirectPairHost{}, fmt.Errorf("invalid gateway path: %w", err)
 	}
+	mode, err := NormalizeSSHServerMode(string(host.SSHServerMode))
+	if err != nil {
+		return DirectPairHost{}, err
+	}
 	host.SSHHost = sshHost
+	host.SSHServerMode = mode
 	return host, nil
 }
 
@@ -181,5 +189,7 @@ func reciprocalPeerConfigWrite(target DirectPairHost, peer DirectPairHost) Direc
 		Connect:           true,
 		Persistent:        true,
 		MigrationState:    string(config.MigrationStateLoopbackUnprovisioned),
+		AcceptVerifiedBy:  ProofVerifiedByForSSHServerMode(target.SSHServerMode),
+		ConnectVerifiedBy: ProofVerifiedByForSSHServerMode(peer.SSHServerMode),
 	}
 }

@@ -24,8 +24,9 @@ const (
 	DirectionAccept  = "accept"
 	DirectionConnect = "connect"
 
-	ProofVerifiedByLocalFile  = "local_file"
-	ProofVerifiedByRegularSSH = "regular_ssh"
+	ProofVerifiedByLocalFile    = "local_file"
+	ProofVerifiedByRegularSSH   = "regular_ssh"
+	ProofVerifiedByTailscaleSSH = "tailscale_ssh"
 )
 
 type MigrationState string
@@ -246,7 +247,7 @@ func validateProofFields(keyID, gatewayPath, verifiedAt, verifiedBy string) erro
 		return fmt.Errorf("invalid_proof_verified_at: %w", err)
 	}
 	switch verifiedBy {
-	case ProofVerifiedByLocalFile, ProofVerifiedByRegularSSH:
+	case ProofVerifiedByLocalFile, ProofVerifiedByRegularSSH, ProofVerifiedByTailscaleSSH:
 		return nil
 	default:
 		return fmt.Errorf("invalid_proof_verified_by: %s", verifiedBy)

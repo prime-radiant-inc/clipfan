@@ -49,6 +49,7 @@ func runSSHGatewayWithHandlers(args []string, stdin io.Reader, stdout io.Writer,
 	fs.SetOutput(stderr)
 	peerID := fs.String("authorized-peer", "", "authorized peer id")
 	keyID := fs.String("authorized-key-id", "", "authorized key id")
+	directCommand := fs.String("direct-command", "", "direct gateway command")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -63,7 +64,11 @@ func runSSHGatewayWithHandlers(args []string, stdin io.Reader, stdout io.Writer,
 	}
 	identity := SSHGatewayIdentity{PeerID: *peerID, KeyID: *keyID}
 
-	switch getenv("SSH_ORIGINAL_COMMAND") {
+	command := getenv("SSH_ORIGINAL_COMMAND")
+	if command == "" {
+		command = *directCommand
+	}
+	switch command {
 	case sshprovision.SSHGatewayProbeCommand:
 		if handlers.Probe == nil {
 			return ErrSSHGatewayCommandRejected

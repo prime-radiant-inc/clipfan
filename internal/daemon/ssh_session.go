@@ -38,6 +38,9 @@ type sshSyncPeer struct {
 	port           int
 	privateKeyPath string
 	knownHostsPath string
+	gatewayPath    string
+	connectKeyID   string
+	directGateway  bool
 }
 
 type sshPeerSession struct {
@@ -97,6 +100,10 @@ func sshSyncPeersFromConfig(cfg *config.Config) []sshSyncPeer {
 		if limit > 0 && len(out) >= limit {
 			break
 		}
+		gatewayPath := peer.GatewayPath
+		if gatewayPath == "" {
+			gatewayPath = peer.Proof.ConnectGatewayPath
+		}
 		out = append(out, sshSyncPeer{
 			id:             peer.ID,
 			user:           peer.SSHUser,
@@ -104,6 +111,9 @@ func sshSyncPeersFromConfig(cfg *config.Config) []sshSyncPeer {
 			port:           peer.SSHPort,
 			privateKeyPath: cfg.SSH.SyncKey,
 			knownHostsPath: cfg.SSH.KnownHosts,
+			gatewayPath:    gatewayPath,
+			connectKeyID:   peer.Proof.ConnectKeyID,
+			directGateway:  peer.Proof.ConnectVerifiedBy == config.ProofVerifiedByTailscaleSSH,
 		})
 	}
 	return out
@@ -204,11 +214,15 @@ func (m *sshSyncManager) runPeer(ctx context.Context, session *sshPeerSession) {
 func (m *sshSyncManager) runPeerOnce(ctx context.Context, session *sshPeerSession) error {
 	attemptCtx, cancelAttempt := context.WithCancel(ctx)
 	cmd, err := sshprovision.PinnedSSHSyncStreamCommand(sshprovision.PinnedSSHCommand{
-		User:           session.peer.user,
-		Host:           session.peer.host,
-		Port:           session.peer.port,
-		PrivateKeyPath: session.peer.privateKeyPath,
-		KnownHostsPath: session.peer.knownHostsPath,
+		User:            session.peer.user,
+		Host:            session.peer.host,
+		Port:            session.peer.port,
+		PrivateKeyPath:  session.peer.privateKeyPath,
+		KnownHostsPath:  session.peer.knownHostsPath,
+		GatewayPath:     session.peer.gatewayPath,
+		AuthorizedPeer:  m.localID,
+		AuthorizedKeyID: session.peer.connectKeyID,
+		DirectGateway:   session.peer.directGateway,
 	})
 	if err != nil {
 		cancelAttempt()
