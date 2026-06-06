@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -42,16 +43,118 @@ func TestDirectPairConfigApplicatorAppliesRevisionOrderedConfigMutations(t *test
 	wantCalls := []string{
 		"read:/configs/linux-b.json",
 		"read:/configs/mac-a.json",
+		"peer-read:/configs/linux-b.json:mac-a",
+		"peer-read:/configs/mac-a.json:linux-b",
 		"local:/configs/linux-b.json:rev=7:transport=ssh:shared_key_set=true:sync=/home/jesse/.config/clipfan/ssh/sync_ed25519:known=/home/jesse/.config/clipfan/ssh/known_hosts",
 		"local:/configs/mac-a.json:rev=7:transport=ssh:shared_key_set=true:sync=/Users/jesse/.config/clipfan/ssh/sync_ed25519:known=/Users/jesse/.config/clipfan/ssh/known_hosts",
-		"upsert:/configs/linux-b.json:mac-a:rev=8:enabled=true:accept=true:connect=true:persistent=true:on_demand=false:shared_key_nil=true",
-		"upsert:/configs/mac-a.json:linux-b:rev=8:enabled=true:accept=true:connect=true:persistent=true:on_demand=false:shared_key_nil=true",
+		"upsert:/configs/linux-b.json:mac-a:rev=8:enabled=true:accept=true:connect=true:persistent=true:on_demand=false:migration_state=loopback_unprovisioned:shared_key_nil=true",
+		"upsert:/configs/mac-a.json:linux-b:rev=8:enabled=true:accept=true:connect=true:persistent=true:on_demand=false:migration_state=loopback_unprovisioned:shared_key_nil=true",
 		"proof:/configs/linux-b.json:mac-a:rev=9:accept=true:connect=true:accept_key=mac-key-123456:connect_key=linux-key-123456:verified=regular_ssh",
 		"proof:/configs/mac-a.json:linux-b:rev=9:accept=true:connect=true:accept_key=linux-key-123456:connect_key=mac-key-123456:verified=regular_ssh",
 		"transition:/configs/linux-b.json:mac-a:rev=10:loopback_unprovisioned->ssh_material_staged:material_staged:log-1",
 		"transition:/configs/mac-a.json:linux-b:rev=10:loopback_unprovisioned->ssh_material_staged:material_staged:log-1",
 		"transition:/configs/linux-b.json:mac-a:rev=11:ssh_material_staged->ssh_keys_ready:ssh_material_verified:log-1",
 		"transition:/configs/mac-a.json:linux-b:rev=11:ssh_material_staged->ssh_keys_ready:ssh_material_verified:log-1",
+	}
+	if !reflect.DeepEqual(ops.calls, wantCalls) {
+		t.Fatalf("calls:\n got %#v\nwant %#v", ops.calls, wantCalls)
+	}
+}
+
+func TestDirectPairConfigApplicatorReappliesReadyPeersWithoutStateReset(t *testing.T) {
+	t.Parallel()
+
+	ops := newFakeDirectPairConfigOps()
+	ops.peerStates[peerStateKey("/configs/linux-b.json", "mac-a")] = config.MigrationStateSSHKeysReady
+	ops.peerStates[peerStateKey("/configs/mac-a.json", "linux-b")] = config.MigrationStateSSHKeysReady
+	applicator := DirectPairConfigApplicator{
+		ConfigPathByHostID: map[string]string{
+			"linux-b": "/configs/linux-b.json",
+			"mac-a":   "/configs/mac-a.json",
+		},
+		Ops:   ops,
+		Now:   func() time.Time { return time.Date(2026, 6, 2, 12, 34, 56, 0, time.UTC) },
+		LogID: func(DirectPairConfigMutation) string { return "log-1" },
+	}
+
+	err := applicator.Apply(context.Background(), validDirectPairConfigMutation(t))
+	if err != nil {
+		t.Fatalf("Apply error = %v", err)
+	}
+
+	wantCalls := []string{
+		"read:/configs/linux-b.json",
+		"read:/configs/mac-a.json",
+		"peer-read:/configs/linux-b.json:mac-a",
+		"peer-read:/configs/mac-a.json:linux-b",
+		"local:/configs/linux-b.json:rev=7:transport=ssh:shared_key_set=true:sync=/home/jesse/.config/clipfan/ssh/sync_ed25519:known=/home/jesse/.config/clipfan/ssh/known_hosts",
+		"local:/configs/mac-a.json:rev=7:transport=ssh:shared_key_set=true:sync=/Users/jesse/.config/clipfan/ssh/sync_ed25519:known=/Users/jesse/.config/clipfan/ssh/known_hosts",
+		"upsert:/configs/linux-b.json:mac-a:rev=8:enabled=true:accept=true:connect=true:persistent=true:on_demand=false:migration_state=<nil>:shared_key_nil=true",
+		"upsert:/configs/mac-a.json:linux-b:rev=8:enabled=true:accept=true:connect=true:persistent=true:on_demand=false:migration_state=<nil>:shared_key_nil=true",
+		"proof:/configs/linux-b.json:mac-a:rev=9:accept=true:connect=true:accept_key=mac-key-123456:connect_key=linux-key-123456:verified=regular_ssh",
+		"proof:/configs/mac-a.json:linux-b:rev=9:accept=true:connect=true:accept_key=linux-key-123456:connect_key=mac-key-123456:verified=regular_ssh",
+	}
+	if !reflect.DeepEqual(ops.calls, wantCalls) {
+		t.Fatalf("calls:\n got %#v\nwant %#v", ops.calls, wantCalls)
+	}
+}
+
+func TestDirectPairConfigApplicatorReappliesStagedPeersWithoutLoopbackTransition(t *testing.T) {
+	t.Parallel()
+
+	ops := newFakeDirectPairConfigOps()
+	ops.peerStates[peerStateKey("/configs/linux-b.json", "mac-a")] = config.MigrationStateSSHMaterialStaged
+	ops.peerStates[peerStateKey("/configs/mac-a.json", "linux-b")] = config.MigrationStateSSHMaterialStaged
+	applicator := DirectPairConfigApplicator{
+		ConfigPathByHostID: map[string]string{
+			"linux-b": "/configs/linux-b.json",
+			"mac-a":   "/configs/mac-a.json",
+		},
+		Ops:   ops,
+		Now:   func() time.Time { return time.Date(2026, 6, 2, 12, 34, 56, 0, time.UTC) },
+		LogID: func(DirectPairConfigMutation) string { return "log-1" },
+	}
+
+	err := applicator.Apply(context.Background(), validDirectPairConfigMutation(t))
+	if err != nil {
+		t.Fatalf("Apply error = %v", err)
+	}
+
+	for _, call := range ops.calls {
+		if strings.Contains(call, "loopback_unprovisioned->ssh_material_staged") {
+			t.Fatalf("calls include create-time transition for existing staged peer: %#v", ops.calls)
+		}
+	}
+	wantSuffix := []string{
+		"transition:/configs/linux-b.json:mac-a:rev=10:ssh_material_staged->ssh_keys_ready:ssh_material_verified:log-1",
+		"transition:/configs/mac-a.json:linux-b:rev=10:ssh_material_staged->ssh_keys_ready:ssh_material_verified:log-1",
+	}
+	if got := ops.calls[len(ops.calls)-2:]; !reflect.DeepEqual(got, wantSuffix) {
+		t.Fatalf("last calls:\n got %#v\nwant %#v", got, wantSuffix)
+	}
+}
+
+func TestDirectPairConfigApplicatorRejectsUnsupportedExistingStateBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	ops := newFakeDirectPairConfigOps()
+	ops.peerStates[peerStateKey("/configs/linux-b.json", "mac-a")] = config.MigrationStateSharedKeyWrittenUnverified
+	applicator := DirectPairConfigApplicator{
+		ConfigPathByHostID: map[string]string{
+			"linux-b": "/configs/linux-b.json",
+		},
+		TargetHostIDs: []string{"linux-b"},
+		Phase:         DirectPairConfigApplyStage,
+		Ops:           ops,
+	}
+
+	err := applicator.Apply(context.Background(), validDirectPairConfigMutation(t))
+	if err == nil || err.Error() != "ssh_peer_stage_state_not_supported: mac-a: shared_key_written_unverified" {
+		t.Fatalf("Apply error = %v, want unsupported state", err)
+	}
+	wantCalls := []string{
+		"read:/configs/linux-b.json",
+		"peer-read:/configs/linux-b.json:mac-a",
 	}
 	if !reflect.DeepEqual(ops.calls, wantCalls) {
 		t.Fatalf("calls:\n got %#v\nwant %#v", ops.calls, wantCalls)
@@ -223,6 +326,7 @@ func TestDirectPairConfigApplicatorDefaultOpsFailClosedWithGeneratedGate(t *test
 type fakeDirectPairConfigOps struct {
 	revisions      map[string]uint64
 	revisionStates map[string]config.RevisionState
+	peerStates     map[string]config.MigrationState
 	calls          []string
 }
 
@@ -233,6 +337,7 @@ func newFakeDirectPairConfigOps() *fakeDirectPairConfigOps {
 			"/configs/mac-a.json":   7,
 		},
 		revisionStates: map[string]config.RevisionState{},
+		peerStates:     map[string]config.MigrationState{},
 	}
 }
 
@@ -253,8 +358,33 @@ func (f *fakeDirectPairConfigOps) UpdateSSHLocalMaterial(path string, req config
 	return f.bump(path), nil
 }
 
+func (f *fakeDirectPairConfigOps) ReadSSHPeer(path string, peerID string) (config.SSHPeerConfigReadResult, error) {
+	f.calls = append(f.calls, "peer-read:"+path+":"+peerID)
+	state, ok := f.peerStates[peerStateKey(path, peerID)]
+	if !ok {
+		return config.SSHPeerConfigReadResult{}, fmt.Errorf("ssh_peer_not_found: %s", peerID)
+	}
+	status := f.status(path)
+	return config.SSHPeerConfigReadResult{
+		Peer:           map[string]any{"id": peerID, "migration_state": string(state)},
+		ConfigVersion:  status.ConfigVersion,
+		ConfigRevision: status.ConfigRevision,
+		RevisionState:  status.RevisionState,
+	}, nil
+}
+
 func (f *fakeDirectPairConfigOps) UpsertSSHPeer(path string, peerID string, req config.SSHPeerUpsertRequest) (config.SSHPeerConfigReadResult, error) {
-	f.calls = append(f.calls, "upsert:"+path+":"+peerID+":rev="+revString(req.ExpectedConfigRevision)+":enabled="+boolValue(req.Peer.Enabled)+":accept="+boolValue(req.Peer.Accept)+":connect="+boolValue(req.Peer.Connect)+":persistent="+boolValue(req.Peer.Persistent)+":on_demand="+boolValue(req.Peer.OnDemand)+":shared_key_nil="+boolString(req.Peer.SharedKey == nil))
+	f.calls = append(f.calls, "upsert:"+path+":"+peerID+":rev="+revString(req.ExpectedConfigRevision)+":enabled="+boolValue(req.Peer.Enabled)+":accept="+boolValue(req.Peer.Accept)+":connect="+boolValue(req.Peer.Connect)+":persistent="+boolValue(req.Peer.Persistent)+":on_demand="+boolValue(req.Peer.OnDemand)+":migration_state="+migrationStateValue(req.Peer.MigrationState)+":shared_key_nil="+boolString(req.Peer.SharedKey == nil))
+	key := peerStateKey(path, peerID)
+	state, exists := f.peerStates[key]
+	if !exists {
+		if req.Peer.MigrationState == nil {
+			return config.SSHPeerConfigReadResult{}, fmt.Errorf("ssh_peer_create_requires_loopback_unprovisioned")
+		}
+		f.peerStates[key] = *req.Peer.MigrationState
+	} else if req.Peer.MigrationState != nil && *req.Peer.MigrationState != state {
+		return config.SSHPeerConfigReadResult{}, fmt.Errorf("ssh_peer_migration_state_change_not_allowed")
+	}
 	status := f.bump(path)
 	return config.SSHPeerConfigReadResult{ConfigVersion: status.ConfigVersion, ConfigRevision: status.ConfigRevision, RevisionState: status.RevisionState}, nil
 }
@@ -278,6 +408,11 @@ func (f *fakeDirectPairConfigOps) PatchSSHPeerProof(path string, peerID string, 
 
 func (f *fakeDirectPairConfigOps) TransitionSSHPeer(path string, peerID string, req config.SSHPeerTransitionRequest) (config.SSHPeerConfigReadResult, error) {
 	f.calls = append(f.calls, "transition:"+path+":"+peerID+":rev="+revString(req.ExpectedConfigRevision)+":"+string(req.FromState)+"->"+string(req.ToState)+":"+req.Reason+":"+req.LogID)
+	key := peerStateKey(path, peerID)
+	if got := f.peerStates[key]; got != req.FromState {
+		return config.SSHPeerConfigReadResult{}, fmt.Errorf("ssh_peer_transition_state_mismatch: got %s want %s", got, req.FromState)
+	}
+	f.peerStates[key] = req.ToState
 	status := f.bump(path)
 	return config.SSHPeerConfigReadResult{ConfigVersion: status.ConfigVersion, ConfigRevision: status.ConfigRevision, RevisionState: status.RevisionState}, nil
 }
@@ -391,4 +526,15 @@ func boolValue(value *bool) string {
 		return "<nil>"
 	}
 	return boolString(*value)
+}
+
+func migrationStateValue(value *config.MigrationState) string {
+	if value == nil {
+		return "<nil>"
+	}
+	return string(*value)
+}
+
+func peerStateKey(path string, peerID string) string {
+	return path + "\x00" + peerID
 }

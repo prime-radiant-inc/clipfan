@@ -492,6 +492,7 @@ func TestRunSSHApplyDirectConfigAppliesTargetHostOnly(t *testing.T) {
 	configPath := payload.ConfigPath
 	wantCalls := []string{
 		"read:" + configPath,
+		"peer-read:" + configPath + ":mac-a",
 		"local:" + configPath,
 		"upsert:" + configPath + ":mac-a",
 		"proof:" + configPath + ":mac-a",
@@ -509,8 +510,9 @@ func TestRunSSHApplyDirectConfigAppliesTargetHostOnly(t *testing.T) {
 	if err := runSSHApplyDirectConfigWithStdin([]string{"--payload-stdin"}, strings.NewReader(encoded), &stdout, &bytes.Buffer{}, ops); err != nil {
 		t.Fatalf("ready runSSHApplyDirectConfig() error = %v", err)
 	}
-	if got := ops.calls[len(ops.calls)-2:]; !reflect.DeepEqual(got, []string{
+	if got := ops.calls[len(ops.calls)-3:]; !reflect.DeepEqual(got, []string{
 		"read:" + configPath,
+		"peer-read:" + configPath + ":mac-a",
 		"transition:" + configPath + ":mac-a:ssh_material_staged->ssh_keys_ready",
 	}) {
 		t.Fatalf("ready calls:\n got %#v", got)
@@ -580,6 +582,7 @@ func TestRunSSHApplyDirectConfigReadsPayloadFromStdin(t *testing.T) {
 	}
 	wantCalls := []string{
 		"read:" + configPath,
+		"peer-read:" + configPath + ":mac-a",
 		"local:" + configPath,
 		"upsert:" + configPath + ":mac-a",
 		"proof:" + configPath + ":mac-a",
@@ -815,12 +818,16 @@ func (r *fakeDirectProvisionRunner) Run(_ context.Context, command sshprovision.
 
 type fakeDirectProvisionConfigOps struct {
 	revisions          map[string]uint64
+	peerStates         map[string]config.MigrationState
 	calls              []string
 	transitionsToReady []string
 }
 
 func newFakeDirectProvisionConfigOps() *fakeDirectProvisionConfigOps {
-	return &fakeDirectProvisionConfigOps{revisions: map[string]uint64{}}
+	return &fakeDirectProvisionConfigOps{
+		revisions:  map[string]uint64{},
+		peerStates: map[string]config.MigrationState{},
+	}
 }
 
 func (f *fakeDirectProvisionConfigOps) ReadConfigRevision(path string) (config.ConfigRevisionStatus, error) {
@@ -842,8 +849,27 @@ func (f *fakeDirectProvisionConfigOps) UpdateSSHLocalMaterial(path string, req c
 	return f.bump(path), nil
 }
 
+func (f *fakeDirectProvisionConfigOps) ReadSSHPeer(path string, peerID string) (config.SSHPeerConfigReadResult, error) {
+	f.calls = append(f.calls, "peer-read:"+path+":"+peerID)
+	state, ok := f.peerStates[directProvisionPeerStateKey(path, peerID)]
+	if !ok {
+		return config.SSHPeerConfigReadResult{}, fmt.Errorf("ssh_peer_not_found: %s", peerID)
+	}
+	status := f.status(path)
+	return config.SSHPeerConfigReadResult{
+		Peer:           map[string]any{"id": peerID, "migration_state": string(state)},
+		ConfigVersion:  status.ConfigVersion,
+		ConfigRevision: status.ConfigRevision,
+		RevisionState:  status.RevisionState,
+	}, nil
+}
+
 func (f *fakeDirectProvisionConfigOps) UpsertSSHPeer(path string, peerID string, req config.SSHPeerUpsertRequest) (config.SSHPeerConfigReadResult, error) {
 	f.calls = append(f.calls, "upsert:"+path+":"+peerID)
+	key := directProvisionPeerStateKey(path, peerID)
+	if _, ok := f.peerStates[key]; !ok && req.Peer.MigrationState != nil {
+		f.peerStates[key] = *req.Peer.MigrationState
+	}
 	status := f.bump(path)
 	return config.SSHPeerConfigReadResult{ConfigVersion: status.ConfigVersion, ConfigRevision: status.ConfigRevision, RevisionState: status.RevisionState}, nil
 }
@@ -856,6 +882,7 @@ func (f *fakeDirectProvisionConfigOps) PatchSSHPeerProof(path string, peerID str
 
 func (f *fakeDirectProvisionConfigOps) TransitionSSHPeer(path string, peerID string, req config.SSHPeerTransitionRequest) (config.SSHPeerConfigReadResult, error) {
 	f.calls = append(f.calls, "transition:"+path+":"+peerID+":"+string(req.FromState)+"->"+string(req.ToState))
+	f.peerStates[directProvisionPeerStateKey(path, peerID)] = req.ToState
 	if req.ToState == config.MigrationStateSSHKeysReady {
 		f.transitionsToReady = append(f.transitionsToReady, path+":"+peerID)
 	}
@@ -875,6 +902,10 @@ func (f *fakeDirectProvisionConfigOps) bump(path string) config.ConfigRevisionSt
 	}
 	f.revisions[path]++
 	return f.status(path)
+}
+
+func directProvisionPeerStateKey(path string, peerID string) string {
+	return path + "\x00" + peerID
 }
 
 func remoteQuotedArgValue(command string, flag string) string {

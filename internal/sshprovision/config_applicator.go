@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/prime-radiant-inc/clipfan/internal/config"
@@ -16,6 +17,7 @@ type DirectPairConfigOps interface {
 	ReadConfigRevision(path string) (config.ConfigRevisionStatus, error)
 	EnsureConfigV2Revision(path string, observed config.ConfigRevisionStatus) (config.ConfigRevisionStatus, error)
 	UpdateSSHLocalMaterial(path string, req config.SSHLocalMaterialUpdateRequest) (config.ConfigRevisionStatus, error)
+	ReadSSHPeer(path string, peerID string) (config.SSHPeerConfigReadResult, error)
 	UpsertSSHPeer(path string, peerID string, req config.SSHPeerUpsertRequest) (config.SSHPeerConfigReadResult, error)
 	PatchSSHPeerProof(path string, peerID string, req config.SSHPeerProofPatchRequest) (config.SSHPeerConfigReadResult, error)
 	TransitionSSHPeer(path string, peerID string, req config.SSHPeerTransitionRequest) (config.SSHPeerConfigReadResult, error)
@@ -57,8 +59,17 @@ func (a DirectPairConfigApplicator) Apply(ctx context.Context, mutation DirectPa
 	}
 	timestamp := a.now().UTC().Format(time.RFC3339)
 	logID := a.logID(mutation)
+	peerStates := map[directPairPeerKey]directPairPeerApplyState{}
 
 	if phase.appliesStage() {
+		peerStates, err = a.readPeerApplyStates(ctx, paths, mutation.Writes, ops)
+		if err != nil {
+			return err
+		}
+		if err := validateStagePeerApplyStates(paths, mutation.Writes, peerStates); err != nil {
+			return err
+		}
+
 		for _, hostID := range sortedMapKeys(paths) {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -99,15 +110,26 @@ func (a DirectPairConfigApplicator) Apply(ctx context.Context, mutation DirectPa
 				continue
 			}
 			current := revisions[write.TargetHostID]
+			key := directPairPeerKey{targetHostID: write.TargetHostID, peerID: write.PeerID}
+			fields := sshPeerUpsertFields(write)
+			state := peerStates[key]
+			if state.exists {
+				fields.MigrationState = nil
+			}
 			result, err := ops.UpsertSSHPeer(paths[write.TargetHostID], write.PeerID, config.SSHPeerUpsertRequest{
 				ExpectedConfigRevision: &current,
-				Peer:                   sshPeerUpsertFields(write),
+				Peer:                   fields,
 			})
 			if err != nil {
 				return err
 			}
 			if err := setRevision(revisions, write.TargetHostID, result.ConfigRevision); err != nil {
 				return err
+			}
+			if !state.exists {
+				state.exists = true
+				state.migrationState = config.MigrationState(write.MigrationState)
+				peerStates[key] = state
 			}
 		}
 
@@ -147,24 +169,21 @@ func (a DirectPairConfigApplicator) Apply(ctx context.Context, mutation DirectPa
 			if !shouldApplyConfigWrite(paths, write.TargetHostID) {
 				continue
 			}
-			current := revisions[write.TargetHostID]
-			result, err := ops.TransitionSSHPeer(paths[write.TargetHostID], write.PeerID, config.SSHPeerTransitionRequest{
-				ExpectedConfigRevision: &current,
-				FromState:              config.MigrationStateLoopbackUnprovisioned,
-				ToState:                config.MigrationStateSSHMaterialStaged,
-				Reason:                 "material_staged",
-				LogID:                  logID,
-			})
+			nextState, err := a.stageSSHPeerIfNeeded(paths, revisions, ops, write, peerStates[directPairPeerKey{targetHostID: write.TargetHostID, peerID: write.PeerID}], logID)
 			if err != nil {
 				return err
 			}
-			if err := setRevision(revisions, write.TargetHostID, result.ConfigRevision); err != nil {
-				return err
-			}
+			peerStates[directPairPeerKey{targetHostID: write.TargetHostID, peerID: write.PeerID}] = nextState
 		}
 	}
 
 	if phase.appliesReady() {
+		if !phase.appliesStage() {
+			peerStates, err = a.readPeerApplyStates(ctx, paths, mutation.Writes, ops)
+			if err != nil {
+				return err
+			}
+		}
 		for _, write := range mutation.Writes {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -172,20 +191,11 @@ func (a DirectPairConfigApplicator) Apply(ctx context.Context, mutation DirectPa
 			if !shouldApplyConfigWrite(paths, write.TargetHostID) {
 				continue
 			}
-			current := revisions[write.TargetHostID]
-			result, err := ops.TransitionSSHPeer(paths[write.TargetHostID], write.PeerID, config.SSHPeerTransitionRequest{
-				ExpectedConfigRevision: &current,
-				FromState:              config.MigrationStateSSHMaterialStaged,
-				ToState:                config.MigrationStateSSHKeysReady,
-				Reason:                 "ssh_material_verified",
-				LogID:                  logID,
-			})
+			nextState, err := a.readySSHPeerIfNeeded(paths, revisions, ops, write, peerStates[directPairPeerKey{targetHostID: write.TargetHostID, peerID: write.PeerID}], logID)
 			if err != nil {
 				return err
 			}
-			if err := setRevision(revisions, write.TargetHostID, result.ConfigRevision); err != nil {
-				return err
-			}
+			peerStates[directPairPeerKey{targetHostID: write.TargetHostID, peerID: write.PeerID}] = nextState
 		}
 	}
 	return nil
@@ -270,6 +280,139 @@ func (a DirectPairConfigApplicator) readRevisions(paths map[string]string, ops D
 	return revisions, nil
 }
 
+type directPairPeerKey struct {
+	targetHostID string
+	peerID       string
+}
+
+type directPairPeerApplyState struct {
+	exists         bool
+	migrationState config.MigrationState
+}
+
+func (a DirectPairConfigApplicator) readPeerApplyStates(ctx context.Context, paths map[string]string, writes []DirectPairConfigWrite, ops DirectPairConfigOps) (map[directPairPeerKey]directPairPeerApplyState, error) {
+	states := map[directPairPeerKey]directPairPeerApplyState{}
+	for _, write := range writes {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !shouldApplyConfigWrite(paths, write.TargetHostID) {
+			continue
+		}
+		key := directPairPeerKey{targetHostID: write.TargetHostID, peerID: write.PeerID}
+		if _, ok := states[key]; ok {
+			continue
+		}
+		result, err := ops.ReadSSHPeer(paths[write.TargetHostID], write.PeerID)
+		if err != nil {
+			if isSSHPeerNotFoundError(err) {
+				states[key] = directPairPeerApplyState{}
+				continue
+			}
+			return nil, err
+		}
+		state, err := migrationStateFromSSHPeerReadResult(result)
+		if err != nil {
+			return nil, err
+		}
+		states[key] = directPairPeerApplyState{exists: true, migrationState: state}
+	}
+	return states, nil
+}
+
+func validateStagePeerApplyStates(paths map[string]string, writes []DirectPairConfigWrite, states map[directPairPeerKey]directPairPeerApplyState) error {
+	for _, write := range writes {
+		if !shouldApplyConfigWrite(paths, write.TargetHostID) {
+			continue
+		}
+		state := states[directPairPeerKey{targetHostID: write.TargetHostID, peerID: write.PeerID}]
+		if !state.exists {
+			continue
+		}
+		if !supportedStagePeerApplyState(state.migrationState) {
+			return fmt.Errorf("ssh_peer_stage_state_not_supported: %s: %s", write.PeerID, state.migrationState)
+		}
+	}
+	return nil
+}
+
+func supportedStagePeerApplyState(state config.MigrationState) bool {
+	switch state {
+	case config.MigrationStateLoopbackUnprovisioned,
+		config.MigrationStateProvisionFailed,
+		config.MigrationStateSSHMaterialStaged,
+		config.MigrationStateSSHKeysReady:
+		return true
+	default:
+		return false
+	}
+}
+
+func (a DirectPairConfigApplicator) stageSSHPeerIfNeeded(paths map[string]string, revisions map[string]uint64, ops DirectPairConfigOps, write DirectPairConfigWrite, state directPairPeerApplyState, logID string) (directPairPeerApplyState, error) {
+	if !state.exists {
+		return state, fmt.Errorf("ssh_peer_stage_state_missing: %s", write.PeerID)
+	}
+	switch state.migrationState {
+	case config.MigrationStateLoopbackUnprovisioned:
+		return a.transitionSSHPeer(paths, revisions, ops, write, state, config.MigrationStateSSHMaterialStaged, "material_staged", logID)
+	case config.MigrationStateProvisionFailed:
+		return a.transitionSSHPeer(paths, revisions, ops, write, state, config.MigrationStateSSHMaterialStaged, "retry_progress", logID)
+	case config.MigrationStateSSHMaterialStaged, config.MigrationStateSSHKeysReady:
+		return state, nil
+	default:
+		return state, fmt.Errorf("ssh_peer_stage_state_not_supported: %s: %s", write.PeerID, state.migrationState)
+	}
+}
+
+func (a DirectPairConfigApplicator) readySSHPeerIfNeeded(paths map[string]string, revisions map[string]uint64, ops DirectPairConfigOps, write DirectPairConfigWrite, state directPairPeerApplyState, logID string) (directPairPeerApplyState, error) {
+	if !state.exists {
+		return state, fmt.Errorf("ssh_peer_ready_state_missing: %s", write.PeerID)
+	}
+	switch state.migrationState {
+	case config.MigrationStateSSHMaterialStaged:
+		return a.transitionSSHPeer(paths, revisions, ops, write, state, config.MigrationStateSSHKeysReady, "ssh_material_verified", logID)
+	case config.MigrationStateSSHKeysReady:
+		return state, nil
+	default:
+		return state, fmt.Errorf("ssh_peer_ready_state_not_supported: %s: %s", write.PeerID, state.migrationState)
+	}
+}
+
+func (a DirectPairConfigApplicator) transitionSSHPeer(paths map[string]string, revisions map[string]uint64, ops DirectPairConfigOps, write DirectPairConfigWrite, state directPairPeerApplyState, toState config.MigrationState, reason string, logID string) (directPairPeerApplyState, error) {
+	current := revisions[write.TargetHostID]
+	result, err := ops.TransitionSSHPeer(paths[write.TargetHostID], write.PeerID, config.SSHPeerTransitionRequest{
+		ExpectedConfigRevision: &current,
+		FromState:              state.migrationState,
+		ToState:                toState,
+		Reason:                 reason,
+		LogID:                  logID,
+	})
+	if err != nil {
+		return state, err
+	}
+	if err := setRevision(revisions, write.TargetHostID, result.ConfigRevision); err != nil {
+		return state, err
+	}
+	state.migrationState = toState
+	return state, nil
+}
+
+func migrationStateFromSSHPeerReadResult(result config.SSHPeerConfigReadResult) (config.MigrationState, error) {
+	value, ok := result.Peer["migration_state"]
+	if !ok || value == nil {
+		return "", nil
+	}
+	state, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid_ssh_peer_migration_state")
+	}
+	return config.MigrationState(state), nil
+}
+
+func isSSHPeerNotFoundError(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "ssh_peer_not_found:")
+}
+
 func (a DirectPairConfigApplicator) ops() DirectPairConfigOps {
 	if a.Ops != nil {
 		return a.Ops
@@ -320,6 +463,10 @@ func (defaultDirectPairConfigOps) EnsureConfigV2Revision(path string, observed c
 
 func (defaultDirectPairConfigOps) UpdateSSHLocalMaterial(path string, req config.SSHLocalMaterialUpdateRequest) (config.ConfigRevisionStatus, error) {
 	return config.UpdateSSHLocalMaterial(path, req)
+}
+
+func (defaultDirectPairConfigOps) ReadSSHPeer(path string, peerID string) (config.SSHPeerConfigReadResult, error) {
+	return config.ReadSSHPeer(path, peerID)
 }
 
 func (defaultDirectPairConfigOps) UpsertSSHPeer(path string, peerID string, req config.SSHPeerUpsertRequest) (config.SSHPeerConfigReadResult, error) {
