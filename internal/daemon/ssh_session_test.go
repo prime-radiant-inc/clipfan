@@ -604,6 +604,16 @@ func TestSSHSyncManagerStaleReplacedSessionAckDoesNotClearPendingState(t *testin
 	if newSession == nil || newSession == oldSession {
 		t.Fatalf("replacement session = %#v, old = %#v; want distinct replacement", newSession, oldSession)
 	}
+	if manager.markPeerConnectedIfSessionCurrent(oldSession, fixedTime) {
+		t.Fatal("stale session marked peer connected")
+	}
+	if manager.markPeerReceivedIfSessionCurrent(oldSession, fixedTime) {
+		t.Fatal("stale session marked peer received")
+	}
+	staleTransitionSnapshot := manager.Snapshot()["linux-b"]
+	if staleTransitionSnapshot.Active || !staleTransitionSnapshot.LastConnectTS.IsZero() || !staleTransitionSnapshot.LastRecvTS.IsZero() {
+		t.Fatalf("stale session updated runtime snapshot = %#v, want no connect/receive", staleTransitionSnapshot)
+	}
 	inflight := map[uint64]sshOutboundState{1: state}
 	manager.handleSSHStreamAck(oldSession, inflight, transport.SSHStreamAckResult{Seq: 1, ID: "clip-same-id", Status: "applied"})
 	if got, ok := manager.pendingState("linux-b"); !ok || got.content.ID != "clip-same-id" {
