@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.25] - 2026-06-05
+
+### Fixed
+
+- Add Peer now parses the remote-observed callback host correctly when the remote login shell is `zsh`, avoiding `invalid_remote_observed_callback_host` during private SSH mesh setup.
+
 ## [0.3.24] - 2026-06-05
 
 ### Fixed
