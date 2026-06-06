@@ -44,8 +44,9 @@ type sshSyncPeer struct {
 }
 
 type sshPeerSession struct {
-	peer sshSyncPeer
-	send chan sshOutboundState
+	peer   sshSyncPeer
+	send   chan sshOutboundState
+	cancel context.CancelFunc
 }
 
 type sshOutboundState struct {
@@ -127,11 +128,49 @@ func (m *sshSyncManager) Start(ctx context.Context) {
 	}
 	m.started = true
 	for _, peer := range m.peers {
-		session := &sshPeerSession{peer: peer, send: make(chan sshOutboundState, 1)}
-		m.sessions[peer.id] = session
-		go m.runPeer(ctx, session)
+		m.startPeerLocked(ctx, peer)
 	}
 	m.mu.Unlock()
+}
+
+func (m *sshSyncManager) Refresh(ctx context.Context, cfg *config.Config) {
+	nextPeers := sshSyncPeersFromConfig(cfg)
+	nextByID := map[string]sshSyncPeer{}
+	for _, peer := range nextPeers {
+		nextByID[peer.id] = peer
+	}
+
+	m.mu.Lock()
+	m.peers = nextPeers
+	for peerID, session := range m.sessions {
+		next, keep := nextByID[peerID]
+		if keep && session.peer == next {
+			continue
+		}
+		if session.cancel != nil {
+			session.cancel()
+		}
+		delete(m.sessions, peerID)
+		if !keep {
+			delete(m.pending, peerID)
+		}
+	}
+	if m.started {
+		for _, peer := range nextPeers {
+			if _, ok := m.sessions[peer.id]; ok {
+				continue
+			}
+			m.startPeerLocked(ctx, peer)
+		}
+	}
+	m.mu.Unlock()
+}
+
+func (m *sshSyncManager) startPeerLocked(ctx context.Context, peer sshSyncPeer) {
+	sessionCtx, cancel := context.WithCancel(ctx)
+	session := &sshPeerSession{peer: peer, send: make(chan sshOutboundState, 1), cancel: cancel}
+	m.sessions[peer.id] = session
+	go m.runPeer(sessionCtx, session)
 }
 
 func (m *sshSyncManager) Publish(ctx context.Context, content clipboard.Content, origin string, skipOrigin string) {
@@ -314,7 +353,7 @@ func (m *sshSyncManager) runPeerOnce(ctx context.Context, session *sshPeerSessio
 		if err := write(attemptCtx, func(ctx context.Context) error {
 			return stream.WriteState(ctx, currentSeq, state.content, state.origin)
 		}); err != nil {
-			m.rememberPendingIfCurrent(session.peer.id, state)
+			m.rememberPendingIfSessionCurrent(session, state)
 			return err
 		}
 		inflight[currentSeq] = state
@@ -335,7 +374,7 @@ func (m *sshSyncManager) runPeerOnce(ctx context.Context, session *sshPeerSessio
 			if event.err != nil {
 				return event.err
 			}
-			removed := m.handleSSHStreamAck(session.peer.id, inflight, event.ack)
+			removed := m.handleSSHStreamAck(session, inflight, event.ack)
 			resetAckTimerAfterAck(removed)
 		case state := <-session.send:
 			if err := sendState(state); err != nil {
@@ -364,26 +403,39 @@ func (m *sshSyncManager) rememberPending(peerID string, state sshOutboundState) 
 	m.pending[peerID] = state
 }
 
-func (m *sshSyncManager) clearPending(peerID string, state sshOutboundState) {
+func (m *sshSyncManager) clearPendingIfSessionCurrent(session *sshPeerSession, state sshOutboundState) {
+	if session == nil {
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if pending, ok := m.pending[peerID]; ok && pending.content.ID == state.content.ID {
-		delete(m.pending, peerID)
+	if m.sessions[session.peer.id] != session {
+		return
+	}
+	if pending, ok := m.pending[session.peer.id]; ok && pending.content.ID == state.content.ID {
+		delete(m.pending, session.peer.id)
 	}
 }
 
-func (m *sshSyncManager) rememberPendingIfCurrent(peerID string, state sshOutboundState) {
+func (m *sshSyncManager) rememberPendingIfSessionCurrent(session *sshPeerSession, state sshOutboundState) {
+	if session == nil {
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.sessions[session.peer.id] != session {
+		return
+	}
 	if m.pending == nil {
 		m.pending = map[string]sshOutboundState{}
 	}
+	peerID := session.peer.id
 	if pending, ok := m.pending[peerID]; !ok || pending.content.ID == state.content.ID {
 		m.pending[peerID] = state
 	}
 }
 
-func (m *sshSyncManager) handleSSHStreamAck(peerID string, inflight map[uint64]sshOutboundState, ack transport.SSHStreamAckResult) bool {
+func (m *sshSyncManager) handleSSHStreamAck(session *sshPeerSession, inflight map[uint64]sshOutboundState, ack transport.SSHStreamAckResult) bool {
 	state, ok := inflight[ack.Seq]
 	if !ok {
 		return false
@@ -392,7 +444,7 @@ func (m *sshSyncManager) handleSSHStreamAck(peerID string, inflight map[uint64]s
 	if !qualifyingSSHStreamAck(ack, state) {
 		return true
 	}
-	m.clearPending(peerID, state)
+	m.clearPendingIfSessionCurrent(session, state)
 	return true
 }
 

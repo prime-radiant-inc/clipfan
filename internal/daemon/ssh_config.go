@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/prime-radiant-inc/clipfan/internal/config"
+	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
 	"github.com/prime-radiant-inc/clipfan/internal/transport"
 )
 
@@ -26,6 +27,9 @@ func (d *Daemon) sshPeerConfigPutHandler(peerID string, body []byte) (any, *tran
 	if err != nil {
 		return nil, sshPeerConfigHandlerError(err)
 	}
+	if handlerErr := d.reloadConfigAfterSSHPeerMutation(); handlerErr != nil {
+		return nil, handlerErr
+	}
 	return status, nil
 }
 
@@ -37,6 +41,9 @@ func (d *Daemon) sshPeerConfigProofPatchHandler(peerID string, body []byte) (any
 	status, err := config.PatchSSHPeerProof(d.configPath, peerID, req)
 	if err != nil {
 		return nil, sshPeerConfigHandlerError(err)
+	}
+	if handlerErr := d.reloadConfigAfterSSHPeerMutation(); handlerErr != nil {
+		return nil, handlerErr
 	}
 	return status, nil
 }
@@ -50,6 +57,9 @@ func (d *Daemon) sshPeerConfigTransitionHandler(peerID string, body []byte) (any
 	if err != nil {
 		return nil, sshPeerConfigHandlerError(err)
 	}
+	if handlerErr := d.reloadConfigAfterSSHPeerMutation(); handlerErr != nil {
+		return nil, handlerErr
+	}
 	return status, nil
 }
 
@@ -61,6 +71,9 @@ func (d *Daemon) sshPeerConfigDisableHandler(peerID string, body []byte) (any, *
 	status, err := config.DisableSSHPeer(d.configPath, peerID, req)
 	if err != nil {
 		return nil, sshPeerConfigHandlerError(err)
+	}
+	if handlerErr := d.reloadConfigAfterSSHPeerMutation(); handlerErr != nil {
+		return nil, handlerErr
 	}
 	return status, nil
 }
@@ -74,6 +87,9 @@ func (d *Daemon) sshPeerConfigDeleteHandler(peerID string, body []byte) (any, *t
 	if err != nil {
 		return nil, sshPeerConfigHandlerError(err)
 	}
+	if handlerErr := d.reloadConfigAfterSSHPeerMutation(); handlerErr != nil {
+		return nil, handlerErr
+	}
 	return status, nil
 }
 
@@ -86,7 +102,69 @@ func (d *Daemon) hostRemoveHandler(hostID string, body []byte) (any, *transport.
 	if err != nil {
 		return nil, sshPeerConfigHandlerError(err)
 	}
+	if handlerErr := d.reloadConfigAfterSSHPeerMutation(); handlerErr != nil {
+		return nil, handlerErr
+	}
 	return status, nil
+}
+
+func (d *Daemon) reloadConfigAfterSSHPeerMutation() *transport.HandlerError {
+	if d == nil || d.configPath == "" {
+		return nil
+	}
+	cfg, err := config.LoadFromPath(d.configPath)
+	if err != nil {
+		return sshPeerConfigHandlerError(err)
+	}
+	disc := discovererFromConfig(*cfg)
+	d.peersMu.Lock()
+	d.prunePeerStatusForConfigReloadLocked(cfg)
+	d.cfg = cfg
+	d.peersMu.Unlock()
+	d.discMu.Lock()
+	d.disc = disc
+	d.discMu.Unlock()
+	d.refreshSSHSyncAfterConfigReload(cfg)
+	return nil
+}
+
+func (d *Daemon) prunePeerStatusForConfigReloadLocked(next *config.Config) {
+	if d == nil || d.peerStatus == nil {
+		return
+	}
+	previousConfigured := configuredSnapshotHostnames(d.cfg)
+	if len(previousConfigured) == 0 {
+		return
+	}
+	nextConfigured := configuredSnapshotHostnames(next)
+	for host := range d.peerStatus {
+		if !configuredHostnamesMatch(host, previousConfigured) {
+			continue
+		}
+		if configuredHostnamesMatch(host, nextConfigured) {
+			continue
+		}
+		delete(d.peerStatus, host)
+	}
+}
+
+func (d *Daemon) refreshSSHSyncAfterConfigReload(cfg *config.Config) {
+	if d == nil || cfg == nil || d.listenerPlan.SafeMode || cfg.Transport != config.TransportSSH || !releaseflags.SSHPersistentCurrentEnabled {
+		return
+	}
+	ctx := d.currentRunContext()
+	d.sshSyncMu.Lock()
+	defer d.sshSyncMu.Unlock()
+	if d.sshSync == nil {
+		manager := newSSHSyncManager(cfg, d.auth, d.origin, d.onReceive, nil)
+		if len(manager.peers) == 0 {
+			return
+		}
+		d.sshSync = manager
+		manager.Start(ctx)
+		return
+	}
+	d.sshSync.Refresh(ctx, cfg)
 }
 
 func sshPeerConfigHandlerError(err error) *transport.HandlerError {

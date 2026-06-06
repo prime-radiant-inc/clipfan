@@ -156,6 +156,39 @@ func TestSSHSyncManagerStartsTailscaleSSHDirectGatewayStream(t *testing.T) {
 	assertDirectSyncStreamCommand(t, start.cmd)
 }
 
+func TestSSHSyncManagerRefreshAddsAndRemovesStartedPeerSessions(t *testing.T) {
+	cfg := sshSyncManagerTestConfig()
+	auth, err := transport.NewAuth(cfg.SharedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := newFakeSSHProcessStarter()
+	manager := newSSHSyncManager(cfg, auth, "m4", nil, starter)
+	manager.reconnect = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.Start(ctx)
+	first := starter.waitForStart(t)
+	defer first.close()
+
+	nextCfg := sshSyncManagerTestConfig()
+	nextCfg.SSH.Peers = []config.SSHPeer{readySSHPeerForTest("linux-c")}
+	manager.Refresh(ctx, nextCfg)
+	second := starter.waitForStart(t)
+	defer second.close()
+
+	manager.mu.RLock()
+	_, oldPresent := manager.sessions["linux-b"]
+	_, newPresent := manager.sessions["linux-c"]
+	manager.mu.RUnlock()
+	if oldPresent || !newPresent {
+		t.Fatalf("sessions old=%v new=%v, want old removed and new started", oldPresent, newPresent)
+	}
+	if len(second.cmd.Args) == 0 || !strings.Contains(strings.Join(second.cmd.Args, " "), "linux-c.example.com") {
+		t.Fatalf("second command = %#v, want linux-c target", second.cmd.Args)
+	}
+}
+
 func TestSSHSyncManagerInboundStateCallsReceive(t *testing.T) {
 	cfg := sshSyncManagerTestConfig()
 	auth, err := transport.NewAuth(cfg.SharedKey)
@@ -235,6 +268,7 @@ func TestSSHSyncManagerReplaysPendingStateAfterHandshake(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	session := &sshPeerSession{peer: manager.peers[0], send: make(chan sshOutboundState, 1)}
+	manager.sessions[session.peer.id] = session
 	errCh := make(chan error, 1)
 	go func() { errCh <- manager.runPeerOnce(ctx, session) }()
 	start := starter.waitForStart(t)
@@ -302,6 +336,7 @@ func TestSSHSyncManagerAckTimeoutCancelsAttemptAndKeepsPendingState(t *testing.T
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	session := &sshPeerSession{peer: manager.peers[0], send: make(chan sshOutboundState, 1)}
+	manager.sessions[session.peer.id] = session
 	errCh := make(chan error, 1)
 	go func() { errCh <- manager.runPeerOnce(ctx, session) }()
 	start := starter.waitForStart(t)
@@ -433,30 +468,34 @@ func TestSSHSyncManagerHandshakeTimeoutReturnsToReconnectLoop(t *testing.T) {
 }
 
 func TestSSHSyncManagerPreservesPendingStateUntilSuccessfulWrite(t *testing.T) {
-	manager := &sshSyncManager{pending: map[string]sshOutboundState{}}
+	manager := &sshSyncManager{pending: map[string]sshOutboundState{}, sessions: map[string]*sshPeerSession{}}
+	session := &sshPeerSession{peer: sshSyncPeer{id: "linux-b"}}
+	manager.sessions["linux-b"] = session
 	oldState := sshOutboundState{content: clipboard.Content{ID: "old"}}
 	newState := sshOutboundState{content: clipboard.Content{ID: "new"}}
 
 	manager.rememberPending("linux-b", oldState)
-	manager.clearPending("linux-b", newState)
+	manager.clearPendingIfSessionCurrent(session, newState)
 	if got := manager.pending["linux-b"].content.ID; got != "old" {
 		t.Fatalf("pending after mismatched clear = %q, want old", got)
 	}
 
-	manager.clearPending("linux-b", oldState)
+	manager.clearPendingIfSessionCurrent(session, oldState)
 	if _, ok := manager.pending["linux-b"]; ok {
 		t.Fatal("pending state was not cleared after matching successful write")
 	}
 }
 
 func TestSSHSyncManagerAckClearsOnlyMatchingInflightState(t *testing.T) {
-	manager := &sshSyncManager{pending: map[string]sshOutboundState{}}
+	manager := &sshSyncManager{pending: map[string]sshOutboundState{}, sessions: map[string]*sshPeerSession{}}
+	session := &sshPeerSession{peer: sshSyncPeer{id: "linux-b"}}
+	manager.sessions["linux-b"] = session
 	oldState := sshOutboundState{content: clipboard.Content{ID: "old"}}
 	newState := sshOutboundState{content: clipboard.Content{ID: "new"}}
 	inflight := map[uint64]sshOutboundState{1: oldState}
 	manager.rememberPending("linux-b", newState)
 
-	manager.handleSSHStreamAck("linux-b", inflight, transport.SSHStreamAckResult{Seq: 1, ID: "old", Status: "applied"})
+	manager.handleSSHStreamAck(session, inflight, transport.SSHStreamAckResult{Seq: 1, ID: "old", Status: "applied"})
 	if got := manager.pending["linux-b"].content.ID; got != "new" {
 		t.Fatalf("old ack cleared newer pending state = %q, want new", got)
 	}
@@ -465,22 +504,76 @@ func TestSSHSyncManagerAckClearsOnlyMatchingInflightState(t *testing.T) {
 	}
 
 	inflight[2] = newState
-	manager.handleSSHStreamAck("linux-b", inflight, transport.SSHStreamAckResult{Seq: 2, ID: "new", Status: "applied"})
+	manager.handleSSHStreamAck(session, inflight, transport.SSHStreamAckResult{Seq: 2, ID: "new", Status: "applied"})
 	if _, ok := manager.pending["linux-b"]; ok {
 		t.Fatal("matching ack did not clear pending state")
 	}
 }
 
 func TestSSHSyncManagerNonQualifyingAckDoesNotClearPendingState(t *testing.T) {
-	manager := &sshSyncManager{pending: map[string]sshOutboundState{}}
+	manager := &sshSyncManager{pending: map[string]sshOutboundState{}, sessions: map[string]*sshPeerSession{}}
+	session := &sshPeerSession{peer: sshSyncPeer{id: "linux-b"}}
+	manager.sessions["linux-b"] = session
 	state := sshOutboundState{content: clipboard.Content{ID: "clip"}}
 	inflight := map[uint64]sshOutboundState{1: state}
 	manager.rememberPending("linux-b", state)
 
-	manager.handleSSHStreamAck("linux-b", inflight, transport.SSHStreamAckResult{Seq: 1, ID: "clip", Status: "ignored_older"})
+	manager.handleSSHStreamAck(session, inflight, transport.SSHStreamAckResult{Seq: 1, ID: "clip", Status: "ignored_older"})
 
 	if got := manager.pending["linux-b"].content.ID; got != "clip" {
 		t.Fatalf("non-qualifying ack cleared pending state = %q, want clip", got)
+	}
+}
+
+func TestSSHSyncManagerStaleReplacedSessionAckDoesNotClearPendingState(t *testing.T) {
+	cfg := sshSyncManagerTestConfig()
+	auth, err := transport.NewAuth(cfg.SharedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := newFakeSSHProcessStarter()
+	manager := newSSHSyncManager(cfg, auth, "m4", nil, starter)
+	manager.reconnect = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.Start(ctx)
+	first := starter.waitForStart(t)
+	defer first.close()
+
+	manager.mu.RLock()
+	oldSession := manager.sessions["linux-b"]
+	manager.mu.RUnlock()
+	if oldSession == nil {
+		t.Fatal("old session missing before refresh")
+	}
+
+	content := clipboard.New(clipboard.KindText, []byte("queued"), fixedTime)
+	content.ID = "clip-same-id"
+	state := sshOutboundState{content: content, origin: "m4"}
+	manager.rememberPending("linux-b", state)
+
+	nextCfg := sshSyncManagerTestConfig()
+	nextCfg.SSH.Peers[0].SSHHost = "linux-b-new.example.com"
+	manager.Refresh(ctx, nextCfg)
+	second := starter.waitForStart(t)
+	defer second.close()
+
+	manager.mu.RLock()
+	newSession := manager.sessions["linux-b"]
+	manager.mu.RUnlock()
+	if newSession == nil || newSession == oldSession {
+		t.Fatalf("replacement session = %#v, old = %#v; want distinct replacement", newSession, oldSession)
+	}
+	inflight := map[uint64]sshOutboundState{1: state}
+	manager.handleSSHStreamAck(oldSession, inflight, transport.SSHStreamAckResult{Seq: 1, ID: "clip-same-id", Status: "applied"})
+	if got, ok := manager.pendingState("linux-b"); !ok || got.content.ID != "clip-same-id" {
+		t.Fatalf("pending after stale ack = (%#v,%v), want clip-same-id preserved", got, ok)
+	}
+
+	inflight[2] = state
+	manager.handleSSHStreamAck(newSession, inflight, transport.SSHStreamAckResult{Seq: 2, ID: "clip-same-id", Status: "applied"})
+	if _, ok := manager.pendingState("linux-b"); ok {
+		t.Fatal("current session ack did not clear matching pending state")
 	}
 }
 
@@ -508,15 +601,24 @@ func TestSSHSyncManagerWriteFrameTimeoutCancelsAttempt(t *testing.T) {
 }
 
 func TestSSHSyncManagerFailedOldWriteDoesNotOverwriteNewerPendingState(t *testing.T) {
-	manager := &sshSyncManager{pending: map[string]sshOutboundState{}}
+	manager := &sshSyncManager{pending: map[string]sshOutboundState{}, sessions: map[string]*sshPeerSession{}}
+	session := &sshPeerSession{peer: sshSyncPeer{id: "linux-b"}}
+	manager.sessions["linux-b"] = session
 	oldState := sshOutboundState{content: clipboard.Content{ID: "old"}}
 	newState := sshOutboundState{content: clipboard.Content{ID: "new"}}
 
 	manager.rememberPending("linux-b", newState)
-	manager.rememberPendingIfCurrent("linux-b", oldState)
+	manager.rememberPendingIfSessionCurrent(session, oldState)
 
 	if got := manager.pending["linux-b"].content.ID; got != "new" {
 		t.Fatalf("pending after failed old write = %q, want new", got)
+	}
+
+	manager.sessions["linux-b"] = &sshPeerSession{peer: sshSyncPeer{id: "linux-b"}}
+	delete(manager.pending, "linux-b")
+	manager.rememberPendingIfSessionCurrent(session, oldState)
+	if _, ok := manager.pending["linux-b"]; ok {
+		t.Fatal("stale replaced session write reinserted pending state")
 	}
 }
 

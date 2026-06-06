@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
+	"github.com/prime-radiant-inc/clipfan/internal/config"
 )
 
 func TestSSHTransportPollOncePublishesToSSHRuntimeNotHTTP(t *testing.T) {
@@ -97,15 +98,22 @@ type sshSyncPublishCall struct {
 }
 
 type fakeSSHSyncRuntime struct {
-	mu      sync.Mutex
-	started int
-	calls   []sshSyncPublishCall
+	mu        sync.Mutex
+	started   int
+	refreshed int
+	calls     []sshSyncPublishCall
 }
 
 func (r *fakeSSHSyncRuntime) Start(context.Context) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.started++
+}
+
+func (r *fakeSSHSyncRuntime) Refresh(context.Context, *config.Config) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refreshed++
 }
 
 func (r *fakeSSHSyncRuntime) Publish(_ context.Context, content clipboard.Content, origin string, skipOrigin string) {

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"net/http"
 	"os"
@@ -162,6 +163,121 @@ func TestSSHPeerConfigDeleteFailsClosedWhenConfigV2WritesDisabled(t *testing.T) 
 	}
 }
 
+func TestSSHPeerConfigTransitionRefreshesSnapshotConfig(t *testing.T) {
+	if !releaseflags.ConfigV2WriteEnabled {
+		t.Skip("requires generated ConfigV2WriteEnabled=true")
+	}
+	sharedKey := config.NewSharedKey()
+	configPath := writeSSHPeerReadyTransitionDaemonConfig(t, sharedKey)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := NewWithOptions(cfg, Options{ListenerBoundaryEnabled: boolPtr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.configPath = configPath
+	sshRuntime := &fakeSSHSyncRuntime{}
+	d.sshSync = sshRuntime
+
+	if got := d.Snapshot(context.Background()); len(got) != 0 {
+		t.Fatalf("initial snapshot = %#v, want staged peer hidden", got)
+	}
+
+	body := []byte(`{"expected_config_revision":7,"from_state":"ssh_material_staged","to_state":"ssh_keys_ready","reason":"ssh_material_verified","log_id":"peer-log-1780257600"}`)
+	if _, handlerErr := d.sshPeerConfigTransitionHandler("fsck", body); handlerErr != nil {
+		t.Fatalf("transition handler error = %#v", handlerErr)
+	}
+
+	got := d.Snapshot(context.Background())
+	if len(got) != 1 || got[0].Hostname != "fsck" {
+		t.Fatalf("snapshot after transition = %#v, want ready fsck peer", got)
+	}
+	sshRuntime.mu.Lock()
+	refreshed := sshRuntime.refreshed
+	sshRuntime.mu.Unlock()
+	if refreshed != 1 {
+		t.Fatalf("ssh runtime refresh count = %d, want 1", refreshed)
+	}
+}
+
+func TestHostRemoveRefreshesDiscoverySnapshotConfig(t *testing.T) {
+	if !releaseflags.ConfigV2WriteEnabled {
+		t.Skip("requires generated ConfigV2WriteEnabled=true")
+	}
+	sharedKey := config.NewSharedKey()
+	configPath := writeStaticPeerRemoveDaemonConfig(t, sharedKey)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := NewWithOptions(cfg, Options{ListenerBoundaryEnabled: boolPtr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.configPath = configPath
+	d.peerStatus["magic-kingdom"] = &PeerState{
+		Hostname:   "magic-kingdom",
+		Port:       7853,
+		LastPushOK: true,
+		LastRecvTS: fixedTime,
+	}
+
+	if got := d.Snapshot(context.Background()); len(got) != 1 || got[0].Hostname != "magic-kingdom" {
+		t.Fatalf("initial snapshot = %#v, want magic-kingdom static peer", got)
+	}
+
+	body := []byte(`{"expected_revision_state":"versioned","expected_config_revision":7,"reason":"user_deleted","log_id":"peer-log-1780257600"}`)
+	if _, handlerErr := d.hostRemoveHandler("magic-kingdom", body); handlerErr != nil {
+		t.Fatalf("host remove handler error = %#v", handlerErr)
+	}
+
+	if got := d.Snapshot(context.Background()); len(got) != 0 {
+		t.Fatalf("snapshot after remove = %#v, want removed host hidden", got)
+	}
+}
+
+func TestSSHPeerConfigTransitionAwayFromReadyPrunesActivity(t *testing.T) {
+	if !releaseflags.ConfigV2WriteEnabled {
+		t.Skip("requires generated ConfigV2WriteEnabled=true")
+	}
+	sharedKey := config.NewSharedKey()
+	configPath := writeSSHPeerReadyTransitionDaemonConfig(t, sharedKey)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := NewWithOptions(cfg, Options{ListenerBoundaryEnabled: boolPtr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.configPath = configPath
+	d.sshSync = &fakeSSHSyncRuntime{}
+
+	readyBody := []byte(`{"expected_config_revision":7,"from_state":"ssh_material_staged","to_state":"ssh_keys_ready","reason":"ssh_material_verified","log_id":"peer-log-1780257600"}`)
+	if _, handlerErr := d.sshPeerConfigTransitionHandler("fsck", readyBody); handlerErr != nil {
+		t.Fatalf("ready transition handler error = %#v", handlerErr)
+	}
+	d.peerStatus["fsck"] = &PeerState{
+		Hostname:   "fsck",
+		Port:       7853,
+		LastPushOK: true,
+		LastRecvTS: fixedTime,
+	}
+	if got := d.Snapshot(context.Background()); len(got) != 1 || got[0].Hostname != "fsck" {
+		t.Fatalf("ready snapshot = %#v, want fsck visible", got)
+	}
+
+	resetBody := []byte(`{"expected_config_revision":8,"from_state":"ssh_keys_ready","to_state":"loopback_unprovisioned","reason":"identity_removal_prepared","log_id":"peer-log-1780257601"}`)
+	if _, handlerErr := d.sshPeerConfigTransitionHandler("fsck", resetBody); handlerErr != nil {
+		t.Fatalf("reset transition handler error = %#v", handlerErr)
+	}
+	if got := d.Snapshot(context.Background()); len(got) != 0 {
+		t.Fatalf("snapshot after reset = %#v, want hidden peer and pruned activity", got)
+	}
+}
+
 func TestSSHPeerConfigHandlerErrorMapsValidationFailures(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -304,6 +420,61 @@ func TestSSHPeerConfigHandlerErrorMapsValidationFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func writeStaticPeerRemoveDaemonConfig(t *testing.T, sharedKey string) string {
+	t.Helper()
+	body := `{
+  "config_version": 2,
+  "config_revision": 7,
+  "listen": "127.0.0.1:7853",
+  "port": 7853,
+  "shared_key": "` + sharedKey + `",
+  "hostname": "m4",
+  "discovery": "static",
+  "static_peers": ["magic-kingdom"]
+}`
+	return writeListenerRepairDaemonConfig(t, body)
+}
+
+func writeSSHPeerReadyTransitionDaemonConfig(t *testing.T, sharedKey string) string {
+	t.Helper()
+	body := `{
+  "config_version": 2,
+  "config_revision": 7,
+  "listen": "127.0.0.1:7853",
+  "port": 7853,
+  "shared_key": "` + sharedKey + `",
+  "hostname": "m4",
+  "transport": "ssh",
+  "ssh": {
+    "sync_key": "/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+    "known_hosts": "/Users/jesse/.config/clipfan/ssh/known_hosts",
+    "peers": [{
+      "id": "fsck",
+      "enabled": true,
+      "accept": true,
+      "connect": true,
+      "persistent": true,
+      "ssh_host": "fsck.com",
+      "ssh_user": "jesse",
+      "ssh_port": 22,
+      "gateway_path": "/Users/jesse/.local/bin/clipfan",
+      "migration_state": "ssh_material_staged",
+      "proof": {
+        "accept_key_id": "accept-key-123",
+        "accept_gateway_path": "/Users/jesse/.local/bin/clipfan",
+        "accept_verified_at": "2026-06-03T12:00:00Z",
+        "accept_verified_by": "regular_ssh",
+        "connect_key_id": "connect-key-123",
+        "connect_gateway_path": "/Users/jesse/.local/bin/clipfan",
+        "connect_verified_at": "2026-06-03T12:00:00Z",
+        "connect_verified_by": "regular_ssh"
+      }
+    }]
+  }
+}`
+	return writeListenerRepairDaemonConfig(t, body)
 }
 
 func writeSSHPeerDaemonConfig(t *testing.T, sharedKey string) string {

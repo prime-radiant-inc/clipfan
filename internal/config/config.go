@@ -70,6 +70,10 @@ func Load() (*Config, error) {
 	return load(Path(), GeneratedLoopbackDefaultsEnabled())
 }
 
+func LoadFromPath(path string) (*Config, error) {
+	return load(path, GeneratedLoopbackDefaultsEnabled())
+}
+
 func LoadForDaemonStart() (*Config, error) {
 	return loadForDaemonStart(Path(), ListenerMigrationPolicy{
 		GeneratedLoopbackListenEnabled: GeneratedLoopbackDefaultsEnabled(),

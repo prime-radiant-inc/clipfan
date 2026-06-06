@@ -43,6 +43,7 @@ type pusher interface {
 // interface so polling, receive, history, echo, and tmux rules stay centralized.
 type SSHSyncRuntime interface {
 	Start(ctx context.Context)
+	Refresh(ctx context.Context, cfg *config.Config)
 	Publish(ctx context.Context, content clipboard.Content, origin string, skipOrigin string)
 }
 
@@ -62,6 +63,10 @@ type Daemon struct {
 	configPath       string
 	peerHTTPDisabled bool
 	sshSync          SSHSyncRuntime
+	sshSyncMu        sync.RWMutex
+	discMu           sync.RWMutex
+	runCtxMu         sync.RWMutex
+	runCtx           context.Context
 
 	mu      sync.Mutex
 	seen    *seenSet
@@ -125,13 +130,7 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 		runtimeCfg.Listen = listenerPlan.BindListen
 	}
 
-	var disc discovery.Discoverer
-	switch runtimeCfg.Discovery {
-	case "static":
-		disc = discovery.NewStatic(runtimeCfg.StaticPeers, runtimeCfg.Port)
-	default:
-		disc = discovery.NewTailscale(runtimeCfg.Port, runtimeCfg.StaticPeers)
-	}
+	disc := discovererFromConfig(runtimeCfg)
 
 	origin := runtimeCfg.Hostname
 	if origin == "" {
@@ -217,7 +216,7 @@ func (d *Daemon) Origin() string { return d.origin }
 func (d *Daemon) Snapshot(ctx context.Context) []PeerState {
 	known := map[string]*PeerState{}
 
-	if peers, err := d.disc.Peers(ctx); err == nil {
+	if peers, err := d.discoveredPeers(ctx); err == nil {
 		for _, p := range peers {
 			if p.Self {
 				continue
@@ -227,6 +226,7 @@ func (d *Daemon) Snapshot(ctx context.Context) []PeerState {
 	}
 
 	d.peersMu.RLock()
+	d.addConfiguredSSHPeersToSnapshot(known)
 	for h, s := range d.peerStatus {
 		// `clipfan copy` injects with origin=self; the recv path then
 		// records a peerStatus entry for our own short name. Filter it
@@ -266,6 +266,100 @@ func (d *Daemon) Snapshot(ctx context.Context) []PeerState {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Hostname < out[j].Hostname })
 	return out
+}
+
+func discovererFromConfig(cfg config.Config) discovery.Discoverer {
+	switch cfg.Discovery {
+	case "static":
+		return discovery.NewStatic(cfg.StaticPeers, cfg.Port)
+	default:
+		return discovery.NewTailscale(cfg.Port, cfg.StaticPeers)
+	}
+}
+
+func (d *Daemon) discoveredPeers(ctx context.Context) ([]discovery.Peer, error) {
+	d.discMu.RLock()
+	disc := d.disc
+	d.discMu.RUnlock()
+	if disc == nil {
+		return nil, nil
+	}
+	return disc.Peers(ctx)
+}
+
+func (d *Daemon) addConfiguredSSHPeersToSnapshot(known map[string]*PeerState) {
+	if d == nil || d.cfg == nil || d.cfg.Transport != config.TransportSSH || d.cfg.SSH == nil {
+		return
+	}
+	port := d.cfg.Port
+	if port == 0 {
+		port = 7853
+	}
+	for _, peer := range d.cfg.SSH.Peers {
+		if !sshPeerVisibleInSnapshot(peer) {
+			continue
+		}
+		if hostsMatch(peer.ID, d.origin) {
+			continue
+		}
+		d.mergeSnapshotPeer(known, PeerState{Hostname: peer.ID, Port: port})
+	}
+}
+
+func (d *Daemon) mergeSnapshotPeer(known map[string]*PeerState, candidate PeerState) *PeerState {
+	target := candidate.Hostname
+	for existing := range known {
+		if hostsMatch(existing, candidate.Hostname) {
+			target = existing
+			break
+		}
+	}
+	row, ok := known[target]
+	if !ok {
+		row = &PeerState{Hostname: candidate.Hostname, Port: candidate.Port}
+		known[target] = row
+	}
+	if row.Port == 0 {
+		row.Port = candidate.Port
+	}
+	return row
+}
+
+func sshPeerVisibleInSnapshot(peer config.SSHPeer) bool {
+	if !peer.Enabled || peer.MigrationState != config.MigrationStateSSHKeysReady {
+		return false
+	}
+	return peer.Accept || peer.Connect
+}
+
+func configuredSnapshotHostnames(cfg *config.Config) map[string]struct{} {
+	out := map[string]struct{}{}
+	if cfg == nil {
+		return out
+	}
+	for _, peer := range cfg.StaticPeers {
+		if strings.TrimSpace(peer) != "" {
+			out[peer] = struct{}{}
+		}
+	}
+	if cfg.Transport != config.TransportSSH || cfg.SSH == nil {
+		return out
+	}
+	for _, peer := range cfg.SSH.Peers {
+		if sshPeerVisibleInSnapshot(peer) {
+			out[peer.ID] = struct{}{}
+		}
+	}
+	return out
+}
+
+func configuredHostnamesMatch(host string, configured map[string]struct{}) bool {
+	for configuredHost := range configured {
+		if hostsMatch(host, configuredHost) {
+			return true
+		}
+	}
+	return false
 }
 
 func shortName(h string) string {
@@ -357,6 +451,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
+	d.setRunContext(ctx)
 	serverErr, err := d.startServer(ctx)
 	if err != nil {
 		return err
@@ -369,8 +464,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return err
 		}
 	}
-	if d.sshSync != nil {
-		d.sshSync.Start(ctx)
+	if runtime := d.currentSSHSyncRuntime(); runtime != nil {
+		runtime.Start(ctx)
 	}
 
 	if c, err := d.cb.Read(); err == nil && len(c.Bytes) > 0 {
@@ -617,7 +712,7 @@ func (d *Daemon) fanout(ctx context.Context, c clipboard.Content, skipOrigin str
 	if d.listenerPlan.SafeMode || d.peerHTTPDisabled {
 		return
 	}
-	peers, err := d.disc.Peers(ctx)
+	peers, err := d.discoveredPeers(ctx)
 	if err != nil {
 		slog.Warn("discovery", "err", err)
 		return
@@ -647,10 +742,37 @@ func (d *Daemon) fanout(ctx context.Context, c clipboard.Content, skipOrigin str
 }
 
 func (d *Daemon) publishSSH(ctx context.Context, c clipboard.Content, origin string, skipOrigin string) {
-	if d.listenerPlan.SafeMode || d.sshSync == nil {
+	if d.listenerPlan.SafeMode {
 		return
 	}
-	d.sshSync.Publish(ctx, c, origin, skipOrigin)
+	runtime := d.currentSSHSyncRuntime()
+	if runtime == nil {
+		return
+	}
+	runtime.Publish(ctx, c, origin, skipOrigin)
+}
+
+func (d *Daemon) setRunContext(ctx context.Context) {
+	d.runCtxMu.Lock()
+	d.runCtx = ctx
+	d.runCtxMu.Unlock()
+}
+
+func (d *Daemon) currentRunContext() context.Context {
+	d.runCtxMu.RLock()
+	ctx := d.runCtx
+	d.runCtxMu.RUnlock()
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+func (d *Daemon) currentSSHSyncRuntime() SSHSyncRuntime {
+	d.sshSyncMu.RLock()
+	runtime := d.sshSync
+	d.sshSyncMu.RUnlock()
+	return runtime
 }
 
 func (d *Daemon) recordPush(p discovery.Peer, err error) {
