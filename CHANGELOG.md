@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.19] - 2026-06-05
+
+### Fixed
+
+- Private SSH mesh probes now use only the generated sync key and never fall back to normal SSH identities when validating a peer.
+- Add Peer now replaces stale unrestricted authorized_keys entries for the same Clipfan sync key so older installs cannot bypass the managed forced-command gateway.
+
 ## [0.3.18] - 2026-06-05
 
 ### Fixed
