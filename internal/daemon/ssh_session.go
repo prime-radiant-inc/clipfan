@@ -268,10 +268,17 @@ func (m *sshSyncManager) markPeerConnectedLocked(peerID string, now time.Time) {
 	m.peerRuntime[peerID] = state
 }
 
-func (m *sshSyncManager) markPeerPending(peerID string, pending bool) {
+func (m *sshSyncManager) markPeerPendingIfSessionCurrent(session *sshPeerSession, pending bool) bool {
+	if session == nil {
+		return false
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.markPeerPendingLocked(peerID, pending)
+	if m.sessions[session.peer.id] != session {
+		return false
+	}
+	m.markPeerPendingLocked(session.peer.id, pending)
+	return true
 }
 
 func (m *sshSyncManager) markPeerPendingLocked(peerID string, pending bool) {
@@ -533,7 +540,9 @@ func (m *sshSyncManager) runPeerOnce(ctx context.Context, session *sshPeerSessio
 		seq++
 		currentSeq := seq
 		wasIdle := len(inflight) == 0
-		m.markPeerPending(session.peer.id, true)
+		if !m.markPeerPendingIfSessionCurrent(session, true) {
+			return context.Canceled
+		}
 		if err := write(attemptCtx, func(ctx context.Context) error {
 			return stream.WriteState(ctx, currentSeq, state.content, state.origin)
 		}); err != nil {

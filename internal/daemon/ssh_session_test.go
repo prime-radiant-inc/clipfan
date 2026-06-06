@@ -633,6 +633,13 @@ func TestSSHSyncManagerStaleReplacedSessionAckDoesNotClearPendingState(t *testin
 	if !currentSnapshot.Active || currentSnapshot.LastAckTS.IsZero() {
 		t.Fatalf("current ack runtime snapshot = %#v, want live ack", currentSnapshot)
 	}
+	if manager.markPeerPendingIfSessionCurrent(oldSession, true) {
+		t.Fatal("stale session marked peer pending")
+	}
+	afterStalePending := manager.Snapshot()["linux-b"]
+	if afterStalePending.Pending || afterStalePending.Status != "live" {
+		t.Fatalf("stale pending updated runtime snapshot = %#v, want live without pending", afterStalePending)
+	}
 }
 
 func TestSSHSyncManagerWriteFrameTimeoutCancelsAttempt(t *testing.T) {
