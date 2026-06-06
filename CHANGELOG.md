@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.23] - 2026-06-05
+
+### Fixed
+
+- Private SSH mesh setup now detects Tailscale SSH servers and probes them through a direct `ssh-gateway` command instead of relying on `authorized_keys` forced commands that Tailscale SSH bypasses.
+- Persistent SSH sync now uses direct gateway startup for peers verified through Tailscale SSH while keeping the existing managed-key path for OpenSSH servers.
+
 ## [0.3.22] - 2026-06-05
 
 ### Fixed
