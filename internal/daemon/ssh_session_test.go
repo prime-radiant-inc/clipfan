@@ -604,14 +604,20 @@ func TestSSHSyncManagerStaleReplacedSessionAckDoesNotClearPendingState(t *testin
 	if newSession == nil || newSession == oldSession {
 		t.Fatalf("replacement session = %#v, old = %#v; want distinct replacement", newSession, oldSession)
 	}
+	if manager.markPeerConnectingIfSessionCurrent(oldSession) {
+		t.Fatal("stale session marked peer connecting")
+	}
 	if manager.markPeerConnectedIfSessionCurrent(oldSession, fixedTime) {
 		t.Fatal("stale session marked peer connected")
 	}
 	if manager.markPeerReceivedIfSessionCurrent(oldSession, fixedTime) {
 		t.Fatal("stale session marked peer received")
 	}
+	if manager.markPeerErrorIfSessionCurrent(oldSession, io.ErrClosedPipe) {
+		t.Fatal("stale session marked peer errored")
+	}
 	staleTransitionSnapshot := manager.Snapshot()["linux-b"]
-	if staleTransitionSnapshot.Active || !staleTransitionSnapshot.LastConnectTS.IsZero() || !staleTransitionSnapshot.LastRecvTS.IsZero() {
+	if staleTransitionSnapshot.Active || !staleTransitionSnapshot.LastConnectTS.IsZero() || !staleTransitionSnapshot.LastRecvTS.IsZero() || staleTransitionSnapshot.LastError != "" {
 		t.Fatalf("stale session updated runtime snapshot = %#v, want no connect/receive", staleTransitionSnapshot)
 	}
 	inflight := map[uint64]sshOutboundState{1: state}
@@ -639,6 +645,13 @@ func TestSSHSyncManagerStaleReplacedSessionAckDoesNotClearPendingState(t *testin
 	afterStalePending := manager.Snapshot()["linux-b"]
 	if afterStalePending.Pending || afterStalePending.Status != "live" {
 		t.Fatalf("stale pending updated runtime snapshot = %#v, want live without pending", afterStalePending)
+	}
+	if manager.markPeerErrorIfSessionCurrent(oldSession, io.ErrClosedPipe) {
+		t.Fatal("stale session marked live peer errored")
+	}
+	afterStaleError := manager.Snapshot()["linux-b"]
+	if !afterStaleError.Active || afterStaleError.Status != "live" || afterStaleError.LastError != "" {
+		t.Fatalf("stale error updated runtime snapshot = %#v, want live without error", afterStaleError)
 	}
 }
 

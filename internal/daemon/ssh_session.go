@@ -224,18 +224,25 @@ func (m *sshSyncManager) Snapshot() map[string]SSHPeerRuntimeState {
 	return out
 }
 
-func (m *sshSyncManager) markPeerConnecting(peerID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.markPeerConnectingLocked(peerID)
-}
-
 func (m *sshSyncManager) markPeerConnectingLocked(peerID string) {
 	state := m.ensurePeerRuntimeLocked(peerID)
 	state.Active = false
 	state.Pending = m.pendingContainsLocked(peerID)
 	state.Status = "connecting"
 	m.peerRuntime[peerID] = state
+}
+
+func (m *sshSyncManager) markPeerConnectingIfSessionCurrent(session *sshPeerSession) bool {
+	if session == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.sessions[session.peer.id] != session {
+		return false
+	}
+	m.markPeerConnectingLocked(session.peer.id)
+	return true
 }
 
 func (m *sshSyncManager) markPeerConnected(peerID string, now time.Time) {
@@ -291,6 +298,27 @@ func (m *sshSyncManager) markPeerPendingLocked(peerID string, pending bool) {
 func (m *sshSyncManager) markPeerAcked(peerID string, now time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.markPeerAckedLocked(peerID, now)
+}
+
+func (m *sshSyncManager) clearPendingAndMarkAckedIfSessionCurrent(session *sshPeerSession, state sshOutboundState, now time.Time) bool {
+	if session == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.sessions[session.peer.id] != session {
+		return false
+	}
+	if pending, ok := m.pending[session.peer.id]; ok && pending.content.ID == state.content.ID {
+		delete(m.pending, session.peer.id)
+		m.markPeerPendingLocked(session.peer.id, false)
+	}
+	m.markPeerAckedLocked(session.peer.id, now)
+	return true
+}
+
+func (m *sshSyncManager) markPeerAckedLocked(peerID string, now time.Time) {
 	state := m.ensurePeerRuntimeLocked(peerID)
 	state.Active = true
 	state.Pending = m.pendingContainsLocked(peerID)
@@ -343,6 +371,23 @@ func (m *sshSyncManager) sessionIsCurrent(session *sshPeerSession) bool {
 func (m *sshSyncManager) markPeerError(peerID string, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.markPeerErrorLocked(peerID, err)
+}
+
+func (m *sshSyncManager) markPeerErrorIfSessionCurrent(session *sshPeerSession, err error) bool {
+	if session == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.sessions[session.peer.id] != session {
+		return false
+	}
+	m.markPeerErrorLocked(session.peer.id, err)
+	return true
+}
+
+func (m *sshSyncManager) markPeerErrorLocked(peerID string, err error) {
 	state := m.ensurePeerRuntimeLocked(peerID)
 	state.Active = false
 	state.Pending = m.pendingContainsLocked(peerID)
@@ -419,9 +464,11 @@ func drainQueuedDuplicateSSHState(session *sshPeerSession, state sshOutboundStat
 
 func (m *sshSyncManager) runPeer(ctx context.Context, session *sshPeerSession) {
 	for {
-		m.markPeerConnecting(session.peer.id)
+		if !m.markPeerConnectingIfSessionCurrent(session) {
+			return
+		}
 		if err := m.runPeerOnce(ctx, session); err != nil && ctx.Err() == nil {
-			m.markPeerError(session.peer.id, err)
+			m.markPeerErrorIfSessionCurrent(session, err)
 			slog.Debug("ssh sync stream ended", "peer", session.peer.id, "err", err)
 		}
 		if ctx.Err() != nil {
@@ -639,9 +686,7 @@ func (m *sshSyncManager) handleSSHStreamAck(session *sshPeerSession, inflight ma
 	if !qualifyingSSHStreamAck(ack, state) {
 		return true
 	}
-	if m.clearPendingIfSessionCurrent(session, state) {
-		m.markPeerAcked(session.peer.id, time.Now().UTC())
-	}
+	m.clearPendingAndMarkAckedIfSessionCurrent(session, state, time.Now().UTC())
 	return true
 }
 
