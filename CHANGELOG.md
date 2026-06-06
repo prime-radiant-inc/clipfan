@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.28] - 2026-06-06
+
+### Fixed
+
+- Linux peers now load received clips into standard tmux sockets whose default permissions are group-writable inside the private user socket directory, restoring tmux paste-buffer sync for headless hosts.
+
 ## [0.3.27] - 2026-06-05
 
 ### Fixed
