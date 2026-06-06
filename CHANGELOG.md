@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.26] - 2026-06-05
+
+### Fixed
+
+- Fleet status now shows ready SSH peers immediately after Add Peer provisioning, even before clipboard traffic has been exchanged.
+- SSH peer config mutations now refresh the daemon's in-memory config, discovery snapshot, and persistent SSH sessions without requiring a daemon restart.
+- Removed or disabled hosts no longer linger in the fleet UI because of stale push/receive activity.
+
 ## [0.3.25] - 2026-06-05
 
 ### Fixed
