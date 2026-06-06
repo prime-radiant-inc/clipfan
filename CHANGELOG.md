@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.22] - 2026-06-05
+
+### Fixed
+
+- Add Peer private SSH mesh setup now updates the local installed helper from the bundled app payload before provisioning, but runs provisioning through the bundled helper so stale installed helpers are never trusted.
+- Add Peer no longer asks users to choose Linux or macOS for manual hosts; setup infers remote platform paths from `uname` while preserving custom paths.
+
 ## [0.3.21] - 2026-06-05
 
 ### Fixed
