@@ -246,6 +246,31 @@ extension FleetRowTests {
         XCTAssertTrue(rows[1].diagnostic?.contains("ssh stream ended") == true)
     }
 
+    func testSSHPeerDiagnosticsOmitUnsetZeroDates() {
+        let peer = Peer(hostname: "flower-garden",
+                        port: 7853,
+                        last_push_ts: nil,
+                        last_push_ok: false,
+                        last_push_err: nil,
+                        last_recv_ts: .distantPast,
+                        transport: "ssh",
+                        ssh_host: "flower-garden.local",
+                        ssh_port: 22,
+                        ssh_user: "jesse",
+                        ssh_active: false,
+                        ssh_pending: false,
+                        ssh_status: "waiting",
+                        ssh_last_connect_ts: .distantPast,
+                        ssh_last_ack_ts: .distantPast)
+
+        let rows = fleetRows(origin: "m4", connected: true, peers: [peer])
+
+        XCTAssertFalse(rows[1].diagnostic?.contains("never") == true)
+        XCTAssertFalse(rows[1].diagnostic?.contains("connected") == true)
+        XCTAssertFalse(rows[1].diagnostic?.contains("last ack") == true)
+        XCTAssertFalse(rows[1].diagnostic?.contains("last receive") == true)
+    }
+
     private func legacyPeerHTTPProbePolicy() -> SSHTransportGatePolicy {
         SSHTransportGatePolicy(
             peerHTTPRuntimeDisabled: false,

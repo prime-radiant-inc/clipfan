@@ -87,13 +87,13 @@ private func diagnostic(for p: Peer, versionStatus: PeerVersionStatus?) -> Strin
                 parts.append("endpoint \(host):\(port)")
             }
         }
-        if let connected = p.ssh_last_connect_ts {
+        if let connected = p.ssh_last_connect_ts, connected > Date.distantPast {
             parts.append("connected \(peerTimeAgo(connected))")
         }
-        if let ack = p.ssh_last_ack_ts {
+        if let ack = p.ssh_last_ack_ts, ack > Date.distantPast {
             parts.append("last ack \(peerTimeAgo(ack))")
         }
-        if let recv = p.last_recv_ts {
+        if let recv = p.last_recv_ts, recv > Date.distantPast {
             parts.append("last receive \(peerTimeAgo(recv))")
         }
         if let error = p.ssh_last_error, !error.isEmpty {
