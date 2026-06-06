@@ -94,6 +94,31 @@ func TestSocketsIgnoresSharedSocket(t *testing.T) {
 	}
 }
 
+func TestSocketsIncludesGroupWritableTmuxSocketInPrivateDir(t *testing.T) {
+	tmp := shortTempDir(t)
+	t.Setenv("TMUX_TMPDIR", tmp)
+	dir := tmp + "/tmux-" + uid()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", dir+"/default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if err := os.Chmod(dir+"/default", 0o770); err != nil {
+		t.Fatal(err)
+	}
+
+	socks, err := Sockets()
+	if err != nil {
+		t.Fatalf("Sockets() error: %v", err)
+	}
+	if len(socks) != 1 || !strings.HasSuffix(socks[0], "/default") {
+		t.Fatalf("expected default socket, got %v", socks)
+	}
+}
+
 func uid() string {
 	// strconv.Itoa(os.Getuid()) but kept inline to keep the test small
 	return func() string {

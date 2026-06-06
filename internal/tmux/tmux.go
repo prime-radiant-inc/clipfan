@@ -86,7 +86,10 @@ func requireTrustedSocketDir(path string, info os.FileInfo) error {
 }
 
 func trustedSocket(info os.FileInfo) bool {
-	return ownedByCurrentUser(info) && info.Mode().Perm()&0o022 == 0
+	// tmux commonly creates sockets as 0660/0770 under a 0700 user-owned
+	// directory. The directory gate above is what prevents other users from
+	// reaching them; reject only world-writable sockets here.
+	return ownedByCurrentUser(info) && info.Mode().Perm()&0o002 == 0
 }
 
 func ownedByCurrentUser(info os.FileInfo) bool {
