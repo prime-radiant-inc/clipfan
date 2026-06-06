@@ -290,7 +290,9 @@ func scanSSHProvisionDirectHostKeys(ctx context.Context, runner sshprovision.Com
 		if output.StdoutTruncated || output.StderrTruncated {
 			return nil, nil, fmt.Errorf("ssh_keyscan_output_truncated: %s", host.Host.ID)
 		}
-		host.Host.SSHServerMode = sshProvisionDirectServerModeFromKeyscan(string(output.Stdout), string(output.Stderr))
+		if host.Host.SSHServerMode == sshprovision.SSHServerModeOpenSSH {
+			host.Host.SSHServerMode = sshProvisionDirectServerModeFromKeyscan(string(output.Stdout), string(output.Stderr))
+		}
 		line, err := selectSSHProvisionDirectHostKeyLine(host.Host, keyscanTarget, string(output.Stdout))
 		if err != nil {
 			return nil, nil, err

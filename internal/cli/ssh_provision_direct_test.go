@@ -329,6 +329,34 @@ func TestRunSSHProvisionDirectDetectsTailscaleSSHTargetAndUsesDirectGateway(t *t
 	}
 }
 
+func TestRunSSHProvisionDirectPreservesExplicitTailscaleSSHServerMode(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeDirectProvisionRunner{}
+	var stdout, stderr bytes.Buffer
+
+	err := runSSHProvisionDirect([]string{
+		"--trust-keyscan",
+		"--regular-known-hosts", "/Users/jesse/.ssh/known_hosts",
+		"--host", "id=m4,ssh=100.114.54.38,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+		"--host", "id=magic-kingdom,ssh=magic-kingdom,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/.config/clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519,server_mode=tailscale_ssh",
+	}, &stdout, &stderr, sshProvisionDirectOptions{
+		Runner:            runner,
+		ConfigV2WriteGate: func() bool { return true },
+		SharedKey:         func() (string, error) { return testDirectProvisionSharedKey, nil },
+	})
+	if err != nil {
+		t.Fatalf("runSSHProvisionDirect() error = %v stderr=%q", err, stderr.String())
+	}
+	if !containsSubstring(runner.probeCommands, "'--host' 'magic-kingdom'") ||
+		!containsSubstring(runner.probeCommands, "'--direct-gateway'") {
+		t.Fatalf("probe commands = %#v, want explicit direct gateway probe to magic-kingdom", runner.probeCommands)
+	}
+	if !containsString(runner.configProofModes, "m4->magic-kingdom:accept=regular_ssh:connect=tailscale_ssh") {
+		t.Fatalf("config proof modes = %#v, want explicit tailscale_ssh preserved", runner.configProofModes)
+	}
+}
+
 func TestSSHProvisionDirectServerModeFromKeyscanReadsStdoutAndStderr(t *testing.T) {
 	t.Parallel()
 
