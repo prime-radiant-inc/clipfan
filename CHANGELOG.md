@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.20] - 2026-06-05
+
+### Fixed
+
+- Private SSH mesh provisioning now prefers ED25519 host keys from keyscan output instead of accepting an RSA key just because it appears first.
+- Runtime known_hosts updates now allow multiple key types for the same exact host while still rejecting same-key-type, wildcard, hashed, or marked conflicts.
+- Add Peer now asks for SSH keyscan trust at the moment of provisioning instead of requiring a persistent checkbox before the button can be used.
+
 ## [0.3.19] - 2026-06-05
 
 ### Fixed
