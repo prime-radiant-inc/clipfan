@@ -1097,7 +1097,7 @@ actor Installer {
     }
 
     static func privateDirectMeshObservedSSHClientHostCommand() -> String {
-        #"set -- $SSH_CONNECTION; test -n "${1:-}" || exit 44; printf '%s\n' "$1""#
+        #"v=${SSH_CONNECTION:-$SSH_CLIENT}; v=${v%% *}; test -n "$v" || exit 44; printf '%s\n' "$v""#
     }
 
     private static func readPrivateDirectMeshObservedSSHClientHost(from host: PrivateDirectMeshHost,

@@ -34,6 +34,21 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertTrue(command.contains("cd \"$stage\" && bash install.sh --no-tmux"))
     }
 
+    func testRemoteObservedCallbackCommandExtractsFirstFieldUnderZsh() throws {
+        let zsh = "/bin/zsh"
+        guard FileManager.default.isExecutableFile(atPath: zsh) else {
+            throw XCTSkip("zsh is not available")
+        }
+
+        let result = try runShell(zsh,
+                                  Installer.privateDirectMeshObservedSSHClientHostCommand(),
+                                  environment: ["SSH_CONNECTION": "100.92.23.74 51775 100.113.28.18 22"])
+
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.stdout, "100.92.23.74\n")
+        XCTAssertEqual(result.stderr, "")
+    }
+
     func testPrivateDirectMeshInstallConfigIsConfigV2IdentityOnly() {
         let body = Installer.privateDirectMeshInstallConfigJSON(hostID: "linux-b")
 
@@ -2169,8 +2184,12 @@ final class InstallerFlagTests: XCTestCase {
     }
 
     private func runBash(_ command: String, environment: [String: String]) throws -> ShellResult {
+        try runShell("/bin/bash", command, environment: environment)
+    }
+
+    private func runShell(_ shell: String, _ command: String, environment: [String: String]) throws -> ShellResult {
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.executableURL = URL(fileURLWithPath: shell)
         proc.arguments = ["-lc", command]
         proc.environment = environment
         let out = Pipe()
