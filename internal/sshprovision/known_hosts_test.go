@@ -172,6 +172,23 @@ func TestUpsertKnownHostPinPreservesUnmanagedLinesAndAppends(t *testing.T) {
 	assertFileBody(t, path, want)
 }
 
+func TestUpsertKnownHostPinAllowsSameTargetDifferentKeyType(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(knownHostsTempDir(t), "known_hosts")
+	before := "example.com ssh-rsa " + testRSAKey + "\n"
+	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+		t.Fatalf("write known_hosts: %v", err)
+	}
+	pin := mustKnownHostPin(t, "example.com", 22, "ssh-ed25519", testEd25519Key)
+
+	if err := UpsertKnownHostPin(path, pin); err != nil {
+		t.Fatalf("UpsertKnownHostPin() error = %v", err)
+	}
+
+	assertFileBody(t, path, before+"example.com ssh-ed25519 "+testEd25519Key+"\n")
+}
+
 func TestUpsertKnownHostPinRejectsMismatchesAndLeavesFileUnchanged(t *testing.T) {
 	t.Parallel()
 
@@ -182,10 +199,6 @@ func TestUpsertKnownHostPinRejectsMismatchesAndLeavesFileUnchanged(t *testing.T)
 		{
 			name:   "same key type different key",
 			before: "example.com ssh-ed25519 " + testOtherEd25519Key + "\n",
-		},
-		{
-			name:   "same target different key type",
-			before: "example.com ssh-rsa " + testRSAKey + "\n",
 		},
 		{
 			name:   "same target marker line",

@@ -22,6 +22,7 @@ const (
 	testDirectProvisionEd25519Key      = "AAAAC3NzaC1lZDI1NTE5AAAAIC6JxQKUfHw2JMc2+5ZUTc5xI8QX1sGm8c5C7h4eY7p1"
 	testDirectProvisionOtherEd25519Key = "AAAAC3NzaC1lZDI1NTE5AAAAIHP7O1LPaDr6RfFdqHtKc9m8gw98RK54GpcfwoAK2JhH"
 	testDirectProvisionThirdEd25519Key = "AAAAC3NzaC1lZDI1NTE5AAAAIHRoaXJkLXRlc3QtZWQyNTUxOS1wdWJsaWMta2V5ISEh"
+	testDirectProvisionRSAKey          = "AAAAB3NzaC1yc2EAAAADAQABAAABAQC7kMUR5W3sljGXhgmwsMOFGv17tZuxKQnF4k8sJgMhaY20"
 	testDirectProvisionEd25519KeyID    = "626e58c17d770373"
 	testDirectProvisionSharedKey       = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 )
@@ -267,6 +268,28 @@ func TestRunSSHProvisionDirectResolvesSSHConfigPortForRuntimeTarget(t *testing.T
 	}
 	if !containsString(runner.configPeerEndpoints, "mac-a=mac-a:2222") {
 		t.Fatalf("config peer endpoints = %#v, want resolved runtime port", runner.configPeerEndpoints)
+	}
+}
+
+func TestSelectSSHProvisionDirectHostKeyLinePrefersEd25519OverRSA(t *testing.T) {
+	t.Parallel()
+
+	line, err := selectSSHProvisionDirectHostKeyLine(
+		sshprovision.DirectPairHost{ID: "magic-kingdom", SSHHost: "magic-kingdom", SSHPort: 22},
+		sshProvisionDirectKeyscanTarget{Host: "magic-kingdom", Port: 22},
+		strings.Join([]string{
+			"# magic-kingdom:22 SSH-2.0-OpenSSH",
+			"magic-kingdom ssh-rsa " + testDirectProvisionRSAKey,
+			"magic-kingdom ssh-ed25519 " + testDirectProvisionEd25519Key,
+			"",
+		}, "\n"),
+	)
+	if err != nil {
+		t.Fatalf("selectSSHProvisionDirectHostKeyLine() error = %v", err)
+	}
+	want := "magic-kingdom ssh-ed25519 " + testDirectProvisionEd25519Key
+	if line != want {
+		t.Fatalf("selected host key line = %q, want %q", line, want)
 	}
 }
 

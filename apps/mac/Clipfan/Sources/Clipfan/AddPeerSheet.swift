@@ -4,11 +4,10 @@ import SwiftUI
 func isAddPeerInstallDisabled(installCount: Int,
                               installing: Bool,
                               policy: SSHTransportGatePolicy = .current,
-                              privateDirectMeshRequested: Bool = false,
-                              trustKeyscan: Bool = false) -> Bool {
+                              privateDirectMeshRequested: Bool = false) -> Bool {
     if installing || installCount == 0 { return true }
     if privateDirectMeshRequested {
-        return !policy.privateDirectMeshProvisioningEnabled || !trustKeyscan || installCount < 2
+        return !policy.privateDirectMeshProvisioningEnabled || installCount < 2
     }
     return !policy.addPeerProvisioningEnabled
 }
@@ -232,7 +231,6 @@ struct AddPeerSheet: View {
     @State private var localSSHUser: String = NSUserName()
     @State private var localSSHPort: Int = 22
     @State private var directMeshRegularKnownHosts: String = "~/.ssh/known_hosts"
-    @State private var trustDirectMeshKeyscan = false
     @State private var showingAdvancedSSH = false
 
     @State private var tailnet: [TailscalePeer] = []
@@ -243,6 +241,7 @@ struct AddPeerSheet: View {
     @State private var progress: String = ""
     @State private var log: AddPeerOperationLog?
     @State private var failure: AddPeerOperationFailure?
+    @State private var confirmingDirectMeshKeyscanTrust = false
 
     private var installCount: Int {
         if SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled {
@@ -369,12 +368,11 @@ struct AddPeerSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                Button(installButtonTitle) { install() }
+                Button(installButtonTitle) { requestInstall() }
                     .keyboardShortcut(.return)
                     .disabled(isAddPeerInstallDisabled(installCount: installCount,
                                                        installing: installing,
-                                                       privateDirectMeshRequested: SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled,
-                                                       trustKeyscan: trustDirectMeshKeyscan))
+                                                       privateDirectMeshRequested: SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled))
             }
         }
         .padding(20)
@@ -384,6 +382,14 @@ struct AddPeerSheet: View {
             localSystemHostName = addPeerLiveSystemLocalHostName()
             await daemon.refresh()
             await loadTailnet()
+        }
+        .alert("Trust SSH host keys?", isPresented: $confirmingDirectMeshKeyscanTrust) {
+            Button("Trust and add peer") {
+                install(trustKeyscanConfirmed: true)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Clipfan will pin SSH host keys returned by ssh-keyscan for the selected hosts.")
         }
     }
 
@@ -477,7 +483,6 @@ struct AddPeerSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             TextField("Known hosts file", text: $directMeshRegularKnownHosts)
                 .textFieldStyle(.roundedBorder)
-            Toggle("Trust SSH host key from ssh-keyscan", isOn: $trustDirectMeshKeyscan)
             DisclosureGroup("Advanced local SSH", isExpanded: $showingAdvancedSSH) {
                 VStack(alignment: .leading, spacing: 8) {
                     TextField("Host override", text: $localSSHHostOverride, prompt: Text("Automatic"))
@@ -551,7 +556,15 @@ struct AddPeerSheet: View {
         }
     }
 
-    private func install() {
+    private func requestInstall() {
+        if SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled {
+            confirmingDirectMeshKeyscanTrust = true
+            return
+        }
+        install(trustKeyscanConfirmed: false)
+    }
+
+    private func install(trustKeyscanConfirmed: Bool) {
         installing = true
         progress = ""
         failure = nil
@@ -574,7 +587,7 @@ struct AddPeerSheet: View {
                     try await Installer.provisionPrivateDirectMesh(
                         hostSpecs: directSpecs,
                         regularKnownHosts: directMeshRegularKnownHosts,
-                        trustKeyscan: trustDirectMeshKeyscan,
+                        trustKeyscan: trustKeyscanConfirmed,
                         withTmux: withTmux,
                         onProgress: { @MainActor p in
                             let s = friendly(p, host: "private-ssh-mesh")

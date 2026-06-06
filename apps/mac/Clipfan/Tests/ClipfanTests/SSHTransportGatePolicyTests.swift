@@ -89,7 +89,7 @@ final class SSHTransportGatePolicyTests: XCTestCase {
         XCTAssertFalse(isAddPeerInstallDisabled(installCount: 1, installing: false, policy: enabled))
     }
 
-    func testPrivateDirectMeshInstallButtonUsesPrivateGateAndTrustKeyscan() {
+    func testPrivateDirectMeshInstallButtonUsesPrivateGate() {
         let privateEnabled = SSHTransportGatePolicy(
             peerHTTPRuntimeDisabled: true,
             configV2WriteEnabled: true,
@@ -101,21 +101,14 @@ final class SSHTransportGatePolicyTests: XCTestCase {
             syncKeyRotationEnabled: false
         )
 
-        XCTAssertTrue(isAddPeerInstallDisabled(installCount: 2,
-                                               installing: false,
-                                               policy: privateEnabled,
-                                               privateDirectMeshRequested: true,
-                                               trustKeyscan: false))
         XCTAssertFalse(isAddPeerInstallDisabled(installCount: 2,
                                                 installing: false,
                                                 policy: privateEnabled,
-                                                privateDirectMeshRequested: true,
-                                                trustKeyscan: true))
+                                                privateDirectMeshRequested: true))
         XCTAssertTrue(isAddPeerInstallDisabled(installCount: 1,
                                                installing: false,
                                                policy: privateEnabled,
-                                               privateDirectMeshRequested: true,
-                                               trustKeyscan: true))
+                                               privateDirectMeshRequested: true))
     }
 
     func testPrivateDirectMeshInstallButtonAllowsOneRemotePlusLocalSpec() {
@@ -133,8 +126,7 @@ final class SSHTransportGatePolicyTests: XCTestCase {
         XCTAssertFalse(isAddPeerInstallDisabled(installCount: 2,
                                                 installing: false,
                                                 policy: privateEnabled,
-                                                privateDirectMeshRequested: true,
-                                                trustKeyscan: true))
+                                                privateDirectMeshRequested: true))
     }
 
     func testAddPeerDerivedHostIDUsesShortSafeHostName() {

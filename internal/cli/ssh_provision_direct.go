@@ -368,6 +368,8 @@ func parseSSHProvisionDirectKeyscanTarget(host sshprovision.DirectPairHost, outp
 
 func selectSSHProvisionDirectHostKeyLine(host sshprovision.DirectPairHost, target sshProvisionDirectKeyscanTarget, output string) (string, error) {
 	scanner := bufio.NewScanner(strings.NewReader(output))
+	selectedLine := ""
+	selectedRank := len(sshProvisionDirectHostKeyPreference) + 1
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -381,12 +383,38 @@ func selectSSHProvisionDirectHostKeyLine(host sshprovision.DirectPairHost, targe
 		if err != nil {
 			return "", err
 		}
-		return retargeted.Line(), nil
+		rank := sshProvisionDirectHostKeyRank(retargeted.KeyType)
+		if selectedLine == "" || rank < selectedRank {
+			selectedLine = retargeted.Line()
+			selectedRank = rank
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return "", err
 	}
+	if selectedLine != "" {
+		return selectedLine, nil
+	}
 	return "", fmt.Errorf("ssh_keyscan_no_matching_host_key: %s", host.ID)
+}
+
+var sshProvisionDirectHostKeyPreference = []string{
+	"ssh-ed25519",
+	"sk-ssh-ed25519@openssh.com",
+	"ecdsa-sha2-nistp256",
+	"ecdsa-sha2-nistp384",
+	"ecdsa-sha2-nistp521",
+	"sk-ecdsa-sha2-nistp256@openssh.com",
+	"ssh-rsa",
+}
+
+func sshProvisionDirectHostKeyRank(keyType string) int {
+	for i, preferred := range sshProvisionDirectHostKeyPreference {
+		if keyType == preferred {
+			return i
+		}
+	}
+	return len(sshProvisionDirectHostKeyPreference)
 }
 
 func sshProvisionDirectPairPayload(result sshprovision.DirectPairProvisionResult) map[string]any {

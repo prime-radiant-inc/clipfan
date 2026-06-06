@@ -218,7 +218,10 @@ func verifyKnownHostPinData(data []byte, pin KnownHostPin) (bool, error) {
 		if !knownHostPatternListContains(entry.patterns, pin.Pattern) {
 			continue
 		}
-		if entry.keyType != pin.KeyType || entry.publicKey != pin.PublicKey {
+		if entry.keyType != pin.KeyType {
+			continue
+		}
+		if entry.publicKey != pin.PublicKey {
 			return false, fmt.Errorf("%w: %s %s", ErrKnownHostMismatch, pin.Pattern, pin.KeyType)
 		}
 		found = true
