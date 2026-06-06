@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.24] - 2026-06-05
+
+### Fixed
+
+- Private SSH mesh provisioning can now be safely retried for peers that are already staged or ready, refreshing config without trying to reset their migration state.
+- Direct config apply now rejects unsupported existing SSH peer states before mutating peer fields, avoiding partial config updates on failed retries.
+
 ## [0.3.23] - 2026-06-05
 
 ### Fixed
