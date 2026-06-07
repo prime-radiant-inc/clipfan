@@ -264,41 +264,53 @@ func otherValidationHost(id string) sshprovision.DirectPairHost {
 	}
 }
 
+// prepHost resolves one host's keyscan target (ssh -G), keyscans it, detects the
+// server mode, and selects the sync host-key pin line. It returns the host with
+// Host set to the resolved endpoint and AdminHost set to the original (admin)
+// endpoint, plus the selected pin line. Factored from the per-host body so both
+// the one-shot provision scan and mesh-heal's resilient prepHosts share it.
+func prepHost(ctx context.Context, runner sshprovision.CommandRunner, host sshprovision.DirectPairProvisionHost) (sshprovision.DirectPairProvisionHost, string, error) {
+	keyscanTarget, err := resolveSSHProvisionDirectKeyscanTarget(ctx, runner, host.Host)
+	if err != nil {
+		return sshprovision.DirectPairProvisionHost{}, "", err
+	}
+	host.AdminHost = host.Host
+	host.Host.SSHHost = keyscanTarget.Host
+	host.Host.SSHPort = keyscanTarget.Port
+	command, err := sshprovision.SSHKeyscanCommand(sshprovision.SSHKeyscanSpec{
+		Host: keyscanTarget.Host,
+		Port: keyscanTarget.Port,
+	})
+	if err != nil {
+		return sshprovision.DirectPairProvisionHost{}, "", err
+	}
+	output, err := runner.Run(ctx, command)
+	if err != nil {
+		return sshprovision.DirectPairProvisionHost{}, "", err
+	}
+	if output.StdoutTruncated || output.StderrTruncated {
+		return sshprovision.DirectPairProvisionHost{}, "", fmt.Errorf("ssh_keyscan_output_truncated: %s", host.Host.ID)
+	}
+	if host.Host.SSHServerMode == sshprovision.SSHServerModeOpenSSH {
+		host.Host.SSHServerMode = sshProvisionDirectServerModeFromKeyscan(string(output.Stdout), string(output.Stderr))
+	}
+	line, err := selectSSHProvisionDirectHostKeyLine(host.Host, keyscanTarget, string(output.Stdout))
+	if err != nil {
+		return sshprovision.DirectPairProvisionHost{}, "", err
+	}
+	return host, line, nil
+}
+
 func scanSSHProvisionDirectHostKeys(ctx context.Context, runner sshprovision.CommandRunner, hosts []sshprovision.DirectPairProvisionHost) ([]sshprovision.DirectPairProvisionHost, map[string]string, error) {
 	out := make(map[string]string, len(hosts))
 	resolvedHosts := make([]sshprovision.DirectPairProvisionHost, 0, len(hosts))
 	for _, host := range hosts {
-		keyscanTarget, err := resolveSSHProvisionDirectKeyscanTarget(ctx, runner, host.Host)
+		resolved, line, err := prepHost(ctx, runner, host)
 		if err != nil {
 			return nil, nil, err
 		}
-		adminHost := host.Host
-		host.AdminHost = adminHost
-		host.Host.SSHHost = keyscanTarget.Host
-		host.Host.SSHPort = keyscanTarget.Port
-		command, err := sshprovision.SSHKeyscanCommand(sshprovision.SSHKeyscanSpec{
-			Host: keyscanTarget.Host,
-			Port: keyscanTarget.Port,
-		})
-		if err != nil {
-			return nil, nil, err
-		}
-		output, err := runner.Run(ctx, command)
-		if err != nil {
-			return nil, nil, err
-		}
-		if output.StdoutTruncated || output.StderrTruncated {
-			return nil, nil, fmt.Errorf("ssh_keyscan_output_truncated: %s", host.Host.ID)
-		}
-		if host.Host.SSHServerMode == sshprovision.SSHServerModeOpenSSH {
-			host.Host.SSHServerMode = sshProvisionDirectServerModeFromKeyscan(string(output.Stdout), string(output.Stderr))
-		}
-		line, err := selectSSHProvisionDirectHostKeyLine(host.Host, keyscanTarget, string(output.Stdout))
-		if err != nil {
-			return nil, nil, err
-		}
-		out[host.Host.ID] = line
-		resolvedHosts = append(resolvedHosts, host)
+		out[resolved.Host.ID] = line
+		resolvedHosts = append(resolvedHosts, resolved)
 	}
 	return resolvedHosts, out, nil
 }
