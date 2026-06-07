@@ -271,6 +271,29 @@ extension FleetRowTests {
         XCTAssertFalse(rows[1].diagnostic?.contains("last receive") == true)
     }
 
+    func testSSHPeerOutboundUsesAckTimestamp() {
+        let ack = Date(timeIntervalSince1970: 1_000_000)
+        let p = Peer(hostname: "m4", port: 7853, last_push_ts: nil, last_push_ok: false,
+                     last_push_err: nil, last_recv_ts: nil, transport: "ssh",
+                     ssh_last_ack_ts: ack)
+        XCTAssertEqual(fleetOutboundTS(p), ack)
+    }
+
+    func testSSHPeerConnectedButNeverSentHasNoOutbound() {
+        let p = Peer(hostname: "m4", port: 7853, last_push_ts: nil, last_push_ok: false,
+                     last_push_err: nil, last_recv_ts: nil, transport: "ssh",
+                     ssh_last_connect_ts: Date(timeIntervalSince1970: 5),
+                     ssh_last_ack_ts: nil)
+        XCTAssertNil(fleetOutboundTS(p))
+    }
+
+    func testHTTPPeerOutboundUsesPushTimestamp() {
+        let push = Date(timeIntervalSince1970: 2_000_000)
+        let p = Peer(hostname: "linux-b", port: 7853, last_push_ts: push, last_push_ok: true,
+                     last_push_err: nil, last_recv_ts: nil)
+        XCTAssertEqual(fleetOutboundTS(p), push)
+    }
+
     private func legacyPeerHTTPProbePolicy() -> SSHTransportGatePolicy {
         SSHTransportGatePolicy(
             peerHTTPRuntimeDisabled: false,

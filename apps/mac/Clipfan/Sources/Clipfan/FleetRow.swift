@@ -1,5 +1,12 @@
 import SwiftUI
 
+/// Outbound "last sent" time for the up-arrow. SSH transport never sets
+/// last_push_ts (that's the HTTP fanout path), so use the SSH ack time —
+/// deliberately NOT ssh_last_connect_ts, since connecting is not sending.
+func fleetOutboundTS(_ p: Peer) -> Date? {
+    p.isSSHTransport ? p.ssh_last_ack_ts : p.last_push_ts
+}
+
 /// Health of a fleet member, mapped to a dot color. Colors mirror PeerHealth:
 /// green synced, orange stale-or-failed, gray idle/down.
 enum FleetHealth {
@@ -158,7 +165,7 @@ func fleetRows(origin: String,
             health: health(for: p, versionStatus: versionStatus),
             diagnostic: diagnostic(for: p, versionStatus: versionStatus),
             isSelf: false,
-            pushTS: p.last_push_ts,
+            pushTS: fleetOutboundTS(p),
             recvTS: p.last_recv_ts,
             peer: p
         )
@@ -201,10 +208,10 @@ struct FleetRow: View {
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 0)
-            if let push = model.pushTS, let recv = model.recvTS {
+            if model.pushTS != nil || model.recvTS != nil {
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text("↑ \(peerTimeAgo(push))")
-                    Text("↓ \(peerTimeAgo(recv))")
+                    if let push = model.pushTS { Text("↑ \(peerTimeAgo(push))") }
+                    if let recv = model.recvTS { Text("↓ \(peerTimeAgo(recv))") }
                 }
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
