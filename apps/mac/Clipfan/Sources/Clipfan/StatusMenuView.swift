@@ -17,6 +17,10 @@ struct StatusMenuView: View {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "settings")
             }
+            menuButton("About clipfan…", systemImage: "info.circle", shortcut: "") {
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: "about")
+            }
             menuButton("Check for Updates…", systemImage: "arrow.triangle.2.circlepath", shortcut: "") {
                 NSApp.activate(ignoringOtherApps: true)
                 Updater.shared.checkForUpdates()

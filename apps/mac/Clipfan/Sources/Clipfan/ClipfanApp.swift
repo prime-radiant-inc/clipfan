@@ -31,6 +31,12 @@ struct ClipfanApp: App {
                 .frame(minWidth: 720, minHeight: 480)
         }
         .windowResizability(.contentMinSize)
+
+        Window("About clipfan", id: "about") {
+            AboutView()
+                .environmentObject(daemon)
+        }
+        .windowResizability(.contentSize)
     }
 }
 
