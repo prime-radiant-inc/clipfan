@@ -594,6 +594,43 @@ func TestRegularSSHRosterReadCommandRejectsBadInstallPath(t *testing.T) {
 	}
 }
 
+func TestRegularSSHShellCommand(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := RegularSSHShellCommand(RegularSSHShellSpec{
+		User:           "jesse",
+		Host:           "host.example",
+		Port:           22,
+		KnownHostsPath: "/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		Script:         "echo hi && exit 0",
+	})
+	if err != nil {
+		t.Fatalf("RegularSSHShellCommand() error = %v", err)
+	}
+	last := cmd.Args[len(cmd.Args)-1]
+	if last != "'sh' '-c' 'echo hi && exit 0'" {
+		t.Fatalf("remote command = %q", last)
+	}
+	if cmd.Args[len(cmd.Args)-2] != "jesse@host.example" {
+		t.Fatalf("target = %q", cmd.Args[len(cmd.Args)-2])
+	}
+	assertRegularSSHCommandSafety(t, cmd.Args)
+}
+
+func TestRegularSSHShellCommandRejectsEmptyScript(t *testing.T) {
+	t.Parallel()
+
+	if _, err := RegularSSHShellCommand(RegularSSHShellSpec{
+		User:           "jesse",
+		Host:           "host.example",
+		Port:           22,
+		KnownHostsPath: "/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		Script:         "",
+	}); err == nil {
+		t.Fatalf("expected error for empty script")
+	}
+}
+
 func TestRegularSSHRunProbeCommandDirectGateway(t *testing.T) {
 	t.Parallel()
 

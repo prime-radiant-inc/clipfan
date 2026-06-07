@@ -97,6 +97,14 @@ type RegularSSHRosterReadSpec struct {
 	InstallPath    string
 }
 
+type RegularSSHShellSpec struct {
+	User           string
+	Host           string
+	Port           int
+	KnownHostsPath string
+	Script         string
+}
+
 type RegularSSHApplyDirectConfigSpec struct {
 	User           string
 	Host           string
@@ -334,6 +342,27 @@ func RegularSSHRosterReadCommand(spec RegularSSHRosterReadSpec) (SSHCommand, err
 			normalized.InstallPath,
 			"roster-read",
 		},
+	}), nil
+}
+
+// RegularSSHShellCommand runs `sh -c <script>` on a host over the user's regular,
+// strict-host-key-checked SSH. The script is shell-quoted into a single argument
+// (embedded quotes escaped), so mesh-heal can ship a multi-line restart script
+// without argv injection. The script content is the caller's responsibility.
+func RegularSSHShellCommand(spec RegularSSHShellSpec) (SSHCommand, error) {
+	user, host, err := normalizeRegularSSHTarget(spec.User, spec.Host, spec.Port, spec.KnownHostsPath)
+	if err != nil {
+		return SSHCommand{}, err
+	}
+	if spec.Script == "" {
+		return SSHCommand{}, fmt.Errorf("%w: empty script", ErrInvalidRegularSSHCommand)
+	}
+	return regularSSHRemoteCommand(regularSSHRemoteSpec{
+		User:           user,
+		Host:           host,
+		Port:           spec.Port,
+		KnownHostsPath: spec.KnownHostsPath,
+		RemoteArgs:     []string{"sh", "-c", spec.Script},
 	}), nil
 }
 
