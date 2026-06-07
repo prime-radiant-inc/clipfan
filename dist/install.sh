@@ -128,6 +128,10 @@ case "$goos" in
         echo "Writing $plist"
         # Resolve the shell PATH so the daemon can find pngpaste, tailscale, etc.
         run_path=$(/bin/zsh -lc 'echo $PATH' 2>/dev/null || echo "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin")
+        # Guarantee Homebrew dirs are present even when the captured login PATH
+        # omitted them (the launchd daemon must find tmux/pngpaste/etc).
+        case ":$run_path:" in *":/opt/homebrew/bin:"*) :;; *) run_path="/opt/homebrew/bin:$run_path";; esac
+        case ":$run_path:" in *":/usr/local/bin:"*) :;; *) run_path="/usr/local/bin:$run_path";; esac
         sed -e "s|__BIN__|$DEST/clipfan|g" \
             -e "s|__LOG__|$log_dir|g" \
             -e "s|__PATH__|$run_path|g" \
