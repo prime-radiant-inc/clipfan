@@ -89,6 +89,14 @@ type RegularSSHRunProbeSpec struct {
 	ExpectKeyID    string
 }
 
+type RegularSSHRosterReadSpec struct {
+	User           string
+	Host           string
+	Port           int
+	KnownHostsPath string
+	InstallPath    string
+}
+
 type RegularSSHApplyDirectConfigSpec struct {
 	User           string
 	Host           string
@@ -309,6 +317,23 @@ func RegularSSHRunProbeCommand(spec RegularSSHRunProbeSpec) (SSHCommand, error) 
 		Port:           normalized.Port,
 		KnownHostsPath: normalized.KnownHostsPath,
 		RemoteArgs:     remoteArgs,
+	}), nil
+}
+
+func RegularSSHRosterReadCommand(spec RegularSSHRosterReadSpec) (SSHCommand, error) {
+	normalized, err := normalizeRegularSSHRosterReadSpec(spec)
+	if err != nil {
+		return SSHCommand{}, err
+	}
+	return regularSSHRemoteCommand(regularSSHRemoteSpec{
+		User:           normalized.User,
+		Host:           normalized.Host,
+		Port:           normalized.Port,
+		KnownHostsPath: normalized.KnownHostsPath,
+		RemoteArgs: []string{
+			normalized.InstallPath,
+			"roster-read",
+		},
 	}), nil
 }
 
@@ -534,6 +559,19 @@ func normalizeRegularSSHRunProbeSpec(spec RegularSSHRunProbeSpec) (RegularSSHRun
 	spec.User = user
 	spec.Host = host
 	spec.Probe = probe
+	return spec, nil
+}
+
+func normalizeRegularSSHRosterReadSpec(spec RegularSSHRosterReadSpec) (RegularSSHRosterReadSpec, error) {
+	user, host, err := normalizeRegularSSHTarget(spec.User, spec.Host, spec.Port, spec.KnownHostsPath)
+	if err != nil {
+		return RegularSSHRosterReadSpec{}, err
+	}
+	if err := config.ValidateSSHExecutablePath(spec.InstallPath); err != nil {
+		return RegularSSHRosterReadSpec{}, fmt.Errorf("%w: invalid install path: %v", ErrInvalidRegularSSHCommand, err)
+	}
+	spec.User = user
+	spec.Host = host
 	return spec, nil
 }
 

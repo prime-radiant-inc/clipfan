@@ -524,6 +524,76 @@ func TestRegularSSHRunProbeCommand(t *testing.T) {
 	assertRegularSSHCommandSafety(t, cmd.Args)
 }
 
+func TestRegularSSHRosterReadCommand(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := RegularSSHRosterReadCommand(RegularSSHRosterReadSpec{
+		User:           "jesse",
+		Host:           "Connector.EXAMPLE.",
+		Port:           22,
+		KnownHostsPath: "/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		InstallPath:    "/home/jesse/.local/bin/clipfan",
+	})
+	if err != nil {
+		t.Fatalf("RegularSSHRosterReadCommand() error = %v", err)
+	}
+
+	want := []string{
+		"ssh",
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UserKnownHostsFile=/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		"-o", "GlobalKnownHostsFile=/dev/null",
+		"-o", "PermitLocalCommand=no",
+		"-o", "RequestTTY=no",
+		"-o", "ClearAllForwardings=yes",
+		"-o", "LogLevel=ERROR",
+		"jesse@connector.example",
+		"'/home/jesse/.local/bin/clipfan' 'roster-read'",
+	}
+	assertSSHCommandArgs(t, cmd.Args, want)
+	assertRegularSSHCommandSafety(t, cmd.Args)
+}
+
+func TestRegularSSHRosterReadCommandNonDefaultPort(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := RegularSSHRosterReadCommand(RegularSSHRosterReadSpec{
+		User:           "jesse",
+		Host:           "connector.example",
+		Port:           2222,
+		KnownHostsPath: "/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		InstallPath:    "/home/jesse/.local/bin/clipfan",
+	})
+	if err != nil {
+		t.Fatalf("RegularSSHRosterReadCommand() error = %v", err)
+	}
+	found := false
+	for i := 0; i+1 < len(cmd.Args); i++ {
+		if cmd.Args[i] == "-p" && cmd.Args[i+1] == "2222" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected -p 2222 in args: %v", cmd.Args)
+	}
+}
+
+func TestRegularSSHRosterReadCommandRejectsBadInstallPath(t *testing.T) {
+	t.Parallel()
+
+	_, err := RegularSSHRosterReadCommand(RegularSSHRosterReadSpec{
+		User:           "jesse",
+		Host:           "connector.example",
+		Port:           22,
+		KnownHostsPath: "/Users/jesse/.config/clipfan/ssh/regular_known_hosts",
+		InstallPath:    "clipfan; rm -rf /",
+	})
+	if err == nil {
+		t.Fatalf("expected error for unsafe install path")
+	}
+}
+
 func TestRegularSSHRunProbeCommandDirectGateway(t *testing.T) {
 	t.Parallel()
 
