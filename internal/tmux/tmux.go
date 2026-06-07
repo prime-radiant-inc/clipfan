@@ -25,7 +25,7 @@ func LoadBufferAll(content []byte) error {
 	}
 	var first error
 	for _, s := range socks {
-		cmd := exec.Command("tmux", "-S", s, "load-buffer", "-")
+		cmd := exec.Command(tmuxBinary(), "-S", s, "load-buffer", "-")
 		cmd.Stdin = bytes.NewReader(content)
 		if err := cmd.Run(); err != nil && first == nil {
 			first = fmt.Errorf("%s: %w", s, err)
@@ -102,4 +102,33 @@ func socketDir() string {
 		return filepath.Join(d, fmt.Sprintf("tmux-%d", os.Getuid()))
 	}
 	return fmt.Sprintf("/tmp/tmux-%d", os.Getuid())
+}
+
+// tmuxBinaryCandidates are absolute fallbacks for hosts whose PATH omits the
+// directory tmux lives in — notably the launchd-launched macOS daemon, whose
+// baked PATH excludes Homebrew's /opt/homebrew/bin.
+var tmuxBinaryCandidates = []string{
+	"/opt/homebrew/bin/tmux",
+	"/usr/local/bin/tmux",
+	"/usr/bin/tmux",
+	"/bin/tmux",
+}
+
+// resolveTmuxBinary returns the tmux executable to run: PATH lookup first, then
+// the first existing executable absolute candidate. lookPath and candidates are
+// injected so tests don't depend on the host's real tmux install.
+func resolveTmuxBinary(lookPath func(string) (string, error), candidates []string) string {
+	if p, err := lookPath("tmux"); err == nil && p != "" {
+		return p
+	}
+	for _, c := range candidates {
+		if info, err := os.Stat(c); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return c
+		}
+	}
+	return "tmux"
+}
+
+func tmuxBinary() string {
+	return resolveTmuxBinary(exec.LookPath, tmuxBinaryCandidates)
 }
