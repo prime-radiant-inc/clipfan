@@ -1,27 +1,29 @@
 # clipfan: self-healing mesh, onboarding wizard, and docs overhaul — design
 
 **Date:** 2026-06-07
-**Status:** Draft for review
+**Status:** Draft for review (revised after adversarial review)
 
 ## Summary
 
 This work makes clipfan's fleet topology robust and legible, modernizes onboarding,
-and brings the docs up to date. Concretely: any provisioning operation heals the
-whole fleet into a full mesh; the macOS app shows the complete mesh state (every
-host and the health of its edges), not just this Mac's own peers; first-run becomes
-a multi-step wizard that sets up this Mac *and* walks the user through adding their
-first host; the add-peer panel gains a real success state; the app gets an About
-screen; the README is rewritten for users with development docs moved under `docs/`;
-and two confirmed bugs are fixed — Mac tmux paste, and the dead outbound sync
-indicator under SSH transport.
+and brings the docs up to date. Concretely: a new CLI command heals the fleet into a
+full mesh from any host; the macOS app shows the mesh state it can observe (every
+host and the health of its edges); first-run becomes a multi-step wizard that sets up
+this Mac *and* walks the user through adding their first host; the add-peer panel
+gains a real success state; the app gets an About screen; the README is rewritten for
+users with development docs moved under `docs/`; and two confirmed bugs are fixed —
+Mac tmux paste, and the dead outbound sync indicator under SSH transport.
 
 ## Goals
 
-- **Self-healing mesh:** every provisioning op (add host, wizard, explicit repair)
-  converges the entire fleet to a full mesh — every host peers bidirectionally with
-  every other host.
-- **Full mesh visibility:** the macOS Fleet view shows all hosts and the health of
-  their edges, using per-host rows with expandable edge detail.
+- **Self-healing mesh, in the CLI.** A `clipfan mesh-heal` command provisions the
+  complete mesh among the fleet roster, idempotently and resiliently, runnable on
+  **any** host (macOS or Linux) using the invoking user's SSH reach. Provisioning
+  orchestration lives in the Go CLI, not in the Mac app, so a future Linux desktop UI
+  can drive the same command.
+- **Mesh visibility.** The macOS Fleet view shows all hosts and the health of their
+  edges (per-host rows with expandable edge detail), marking edges it cannot observe
+  as unknown rather than pretending.
 - **Onboarding wizard:** a multi-step first-run flow (intro → set up this Mac → add
   your first host → done), re-runnable from the menu.
 - **Add-peer success state:** an explicit "Done" (and "Add another") after a
@@ -31,18 +33,22 @@ indicator under SSH transport.
   prime-radiant ticket IDs** anywhere in `docs/`.
 - **Bug fix — Mac tmux paste:** received clips reach tmux paste buffers on macOS
   peers, not just the OS clipboard.
-- **Bug fix — outbound indicator:** the Fleet "↑" (last-sent) reflects SSH transport
-  activity instead of reading "never".
+- **Bug fix — outbound indicator:** the Fleet "↑" reflects SSH transport activity
+  instead of reading "never".
 
 ## Non-goals
 
 - Re-enabling a non-loopback HTTP listener. Daemon HTTP stays loopback-only; all
-  remote reads/writes go over SSH. (Established by the hybrid-SSH transport design.)
-- Auto-pruning unreachable hosts. Healing only **adds and re-verifies** edges;
-  removing a host stays an explicit user action via the existing remove flow.
+  remote reads/writes go over SSH.
+- Auto-pruning unreachable hosts. Healing only adds and re-verifies edges; removing a
+  host stays an explicit user action via the existing remove flow.
+- Self-installing brand-new hosts. Getting the clipfan *binary* onto a new host stays
+  a push from the UI that adds it (the Mac app ships the cross-arch binaries today);
+  `mesh-heal` only links hosts that already have clipfan installed. Packaging the
+  installer for a Linux UI is future work.
 - Changing the clipboard sync protocol or the last-write-wins conflict policy.
-- Backward-compatibility shims. (Per standing project rule, none are added without
-  explicit approval; mixed-version fleets fail closed as today.)
+- Backward-compatibility shims (none without explicit approval; mixed-version fleets
+  fail closed as today).
 
 ## Current state (verified context)
 
@@ -52,255 +58,276 @@ indicator under SSH transport.
   only the underlay network for some hosts' SSH addresses).
 - **The live fleet is a star, not a mesh.** `jesse-paradise-park`'s config lists one
   peer (`m4`); `m4`'s lists three (`flower-garden`, `magic-kingdom`,
-  `jesse-paradise-park`). Cross-host delivery to non-adjacent peers works only
-  because `m4` relays (`daemon.go` `onReceive` re-fanouts to non-origin peers). If
-  `m4` is down, the others cannot sync.
-- **Why it's a star:** the provisioning *engine* already builds a full mesh — `clipfan
-  ssh-provision-direct` with N `--host` specs provisions all N(N-1)/2 pairs
-  idempotently with revision-locked, two-phase config apply
-  (`internal/cli/ssh_provision_direct.go`, `internal/sshprovision/pair_plan.go`,
-  `config_applicator.go`; proven by `TestDirectMeshPlanBuildsThreeHostFullMesh`).
-  But `AddPeerSheet` only ever passes `[this Mac] + [hosts added in this operation]`,
-  so hosts added separately never become peers of each other.
-- **Gateway verbs today:** `probe` and `sync-stream` only. There is no read-only path
-  for the Mac to read a *remote* host's roster or peer-state; daemon HTTP is
-  loopback-only.
-- **Daemon launch / PATH:** on macOS the daemon's effective `PATH` is
-  `/Users/jesse/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/jesse/.orbstack/bin`
-  — it omits Homebrew's `/opt/homebrew/bin`, where `tmux` lives.
+  `jesse-paradise-park`). Cross-host delivery to non-adjacent peers works only because
+  `m4` relays: on receive, the daemon re-publishes over SSH via `publishSSH`
+  (`daemon.go:766`; the HTTP `fanout` path no-ops under SSH). If `m4` is down, the
+  others cannot sync.
+- **The pair-provisioning engine already builds a full mesh.** `clipfan
+  ssh-provision-direct` with N `--host` specs loops every pair `(i, j)` and provisions
+  it idempotently with revision-locked, two-phase config apply
+  (`internal/cli/ssh_provision_direct.go:97-109`; `internal/sshprovision/pair_plan.go`;
+  `config_applicator.go`). The end-to-end proof is
+  `TestRunSSHProvisionDirectBuildsThreeHostMesh`. (Note: `BuildDirectMeshPlan` /
+  `TestDirectMeshPlanBuildsThreeHostFullMesh` exercise an *unused* plan-builder — the
+  CLI uses its own inline loop, so that test is not the operative proof.)
+- **But provisioning orchestration is Mac-only and all-or-nothing.** The roster
+  building, platform probing, binary install, the `ssh-provision-direct` invocation,
+  and the daemon restarts all live in Swift `Installer.swift`
+  (`provisionPrivateDirectMesh`), which only ever passes `[this Mac] + [hosts added
+  now]` — hence the star. Two limits matter for healing: `ssh-provision-direct` aborts
+  the whole run on the first unreachable host (`ssh_provision_direct.go:83-86`,
+  `99-106`); and the Swift flow re-installs every non-local host and restarts **every**
+  daemon on each run (`Installer.swift:599-642`).
+- **Per-host keys; reach is over the user's regular SSH.** Each host has its own
+  ed25519 sync key; meshing two hosts requires configuring `authorized_keys`,
+  `known_hosts`, and config peer entries on **both** sides. Provisioning reaches and
+  configures each host over the invoking user's regular SSH (with `ssh-keyscan` host
+  key trust), not the clipfan sync key. The orchestrator must be able to resolve and
+  SSH to each host; stored peer endpoints are peer-relative (`.local` mDNS, bare
+  hostnames) and not guaranteed reachable from an arbitrary orchestrator.
+- **Gateway verbs today:** `probe` and `sync-stream` only. The gateway can reach the
+  local daemon over loopback to push received clips (`PushAsToRecipient`) and to read
+  `current`, but `transport.Client` has **no** method to read `/v1/peers`, and there
+  is no read-only path for a remote host to read another host's roster or edge-health.
+- **Daemon launch / PATH:** on macOS the daemon's effective `PATH` omits Homebrew's
+  `/opt/homebrew/bin`, where `tmux` lives (the running daemon is app-spawned, not
+  launched from the plist that `install.sh` writes — so the plist's PATH is moot for
+  the running process).
 
-## Architecture: the `fleet-snapshot` gateway verb (shared foundation)
+## Architecture
 
-Both self-healing (roster discovery) and the mesh-state UI need the same missing
-capability: the Mac must read a *remote* host's roster and edge-health. We add **one
-new read-only SSH gateway command** that serves both.
+Two foundations underpin the mesh work.
 
-- **Name:** `fleet-snapshot` (read-only; no state change).
-- **Invocation & auth:** identical model to existing gateway verbs — the caller
-  connects over SSH and runs `clipfan ssh-gateway --authorized-peer <localID>
-  --authorized-key-id <id> --direct-command fleet-snapshot`. The gateway validates
-  the peer via the existing `validateSSHGatewaySyncPeer` path, reads the local
-  daemon's data over loopback, and writes a JSON document to stdout.
-- **Returns** (single JSON document):
-  - **Identity:** this host's `origin`, `version`, sync public key id, and SSH host
-    key fingerprint.
-  - **Roster:** the host's configured `ssh.peers[]` — for each: peer id, ssh
-    host/port/user, platform if known, `migration_state`, and proof key ids. This is
-    what roster discovery needs to learn endpoints and find missing edges.
-  - **Edge health:** the host's runtime `Snapshot()` per peer — `ssh_status`,
-    `ssh_active`, `last_recv_ts`, `ssh_last_ack_ts`, `ssh_last_connect_ts`,
-    `ssh_last_error`. This is what the UI renders.
-- **Bounds:** the response is size-bounded like other stream frames; it is read-only
-  and never mutates config or transport state.
+### Foundation 1 — `clipfan mesh-heal` (Go CLI, runnable on any host)
 
-This verb is the dependency that workstreams **D** (discovery) and **E** (UI) build
-on. It must land before they can complete.
+A new CLI command that converges the fleet to a complete mesh. Design properties:
+
+- **Lives in Go**, in the `clipfan` binary, so it runs on macOS and Linux and is
+  driven identically by the Mac app today and a Linux desktop UI later. The
+  orchestration that is currently in Swift `Installer.provisionPrivateDirectMesh`
+  (roster building, platform probe, `ssh-provision-direct` invocation, restarts) moves
+  here; the Swift side becomes a thin invoker.
+- **Runs as the invoking user**, using the user's regular SSH reach (the same
+  mechanism the current add-peer flow uses to reach hosts). It is *not* the background
+  daemon autonomously SSHing — it's a user-invoked command (from the UI or a shell),
+  so it has the user's credentials/agent.
+- **Roster discovery (decentralized, in Go).** Build the roster as the union of this
+  host's configured peers plus the rosters of reachable hosts, read over the user's
+  SSH reach (read each host's `ssh.peers[]` and the host's own config paths directly,
+  so no platform guessing is needed). Platform, where required for a freshly probed
+  host, comes from a `uname` probe over SSH (as the installer already does).
+- **Provisions the complete mesh among the roster**, reusing the existing
+  pair-provisioning primitive — but **per-pair and resilient**: iterate pairs, and a
+  pair that fails (unreachable host, unresolved address) is recorded and skipped
+  rather than aborting the run. The command returns a per-host / per-edge status
+  report. Idempotent: already-`ready` edges are re-verified, not rebuilt, and hosts
+  whose binary is already current are not re-installed; only changed hosts' daemons
+  restart.
+- **Completeness:** running `mesh-heal` on a host provisions every pair that host can
+  reach (configuring both ends of each). A single host with reach to all others
+  completes the whole mesh; where reach is partial, another host completes the
+  remainder when it runs `mesh-heal`. "Every host can provision its links to the
+  complete mesh" is satisfied because the command exists on, and runs from, every
+  host.
+
+The exact subcommand surface (a new `mesh-heal` vs. extending `ssh-provision-direct`,
+flag shapes, report JSON) is for the implementation plan; the implementer confirms the
+existing reach mechanism in `internal/sshprovision/regular_ssh_driver.go` rather than
+assuming it.
+
+### Foundation 2 — read-only mesh-state surface
+
+The UI needs each host's view of its edges. Two read paths, both read-only:
+
+- **Local:** this host's own edge-health is the daemon's existing `Snapshot()` via the
+  signed loopback `GET /v1/peers`.
+- **Remote (adjacent hosts):** a new read-only gateway verb, `fleet-snapshot`, invoked
+  over an existing sync-key edge (validated by the existing
+  `validateSSHGatewaySyncPeer` path). It returns the host's identity, its roster from
+  `config.Load()`, and its runtime edge-health. **Plumbing note:** the gateway process
+  cannot read `/v1/peers` today (`transport.Client` exposes only push/`current`), so
+  serving runtime edge-health requires new code — either a signed loopback `/v1/peers`
+  client method or a small new daemon endpoint the gateway can call. The roster half
+  needs no daemon round-trip (`config.Load()` suffices).
+
+A host can only `fleet-snapshot` peers it already shares a sync edge with. Pre-heal
+(star) that is just the adjacent host(s); post-heal (full mesh) it is the whole fleet.
+The UI therefore renders the edges it can observe and marks the rest **unknown** —
+honest, and complete once the mesh is healed.
 
 ## Workstream A — Documentation
 
-**Problem.** The README leads with build-from-source (developer flow), buries daily
-usage and troubleshooting, and carries a ticket id. Development docs and historical
-specs live under `docs/` but leak ticket ids.
+**Problem.** The README leads with build-from-source, buries daily usage and
+troubleshooting, and carries a ticket id; `docs/` leaks ticket ids.
 
 **Design.**
 
-1. **Rewrite `README.md` user-first**, in this order: what clipfan is → how it works
-   (brief) → install (binary/app first; build-from-source linked out) → getting
-   started (set up this Mac, add a host) → daily use (copy/paste across hosts, tmux,
-   clipboard history) → configuration → security summary → troubleshooting →
-   pointers to `docs/`. Move the current build/release/CI material out.
-2. **Reorganize `docs/`:** add `docs/development/` for build-from-source and
-   developer setup (extracted from the README). Keep `ARCHITECTURE.md`, `ROADMAP.md`,
-   `RELEASING.md`, and `ci/` where they are. Add `docs/TROUBLESHOOTING.md` covering
-   the two most common failures (daemon not running; peers not syncing / mesh health).
-3. **Scrub ticket ids in place** (Jesse's choice: keep `docs/superpowers/` as dev
-   history, strip the ids). Known occurrences to remove: `README.md:10`,
-   `docs/PLAN.md:8`, `docs/superpowers/plans/2026-05-28-clipboard-history.md:1938`,
+1. **Rewrite `README.md` user-first:** what clipfan is → how it works (brief) →
+   install (app/binary first; build-from-source linked out) → getting started (set up
+   this Mac, add a host) → daily use (copy/paste across hosts, tmux, history) →
+   configuration → security summary → troubleshooting → pointers to `docs/`.
+2. **Reorganize `docs/`:** add `docs/development/` for build-from-source and developer
+   setup (extracted from the README); keep `ARCHITECTURE.md`, `ROADMAP.md`,
+   `RELEASING.md`, `ci/` as-is; add `docs/TROUBLESHOOTING.md` (daemon not running;
+   peers not syncing / mesh health).
+3. **Scrub ticket references in place** across `docs/` and `README.md`: remove all
+   `PRI-NNNN` ids and the `**Tracks:**` / `**Ticket:**` headers, and rewrite inline
+   process references (e.g. "Update Linear PRI-…", "move the ticket to …") to describe
+   behavior, not tickets. Known id occurrences: `README.md:10`, `docs/PLAN.md:8`,
+   `docs/superpowers/plans/2026-05-28-clipboard-history.md` (lines 1938, ~1940),
    `docs/superpowers/specs/2026-05-28-clipboard-history-design.md:5`,
-   `docs/superpowers/specs/2026-05-29-clip-id-recirculation-design.md` (lines 16, 76,
-   130), `docs/superpowers/specs/2026-05-29-mac-app-ux-redesign-design.md:5`. Remove
-   "Tracks/Ticket" headers; rewrite inline references to describe the behavior, not
-   the ticket.
+   `docs/superpowers/specs/2026-05-29-clip-id-recirculation-design.md` (16, 76, 130),
+   `docs/superpowers/specs/2026-05-29-mac-app-ux-redesign-design.md:5`.
 
 **Acceptance.**
-- `grep -rnE 'PRI-[0-9]+|Tracks |Ticket:' README.md docs/` returns nothing.
+- This grep finds nothing (note the exclusion — this design doc and any future spec
+  legitimately quote the patterns):
+  `grep -rnE 'PRI-[0-9]+|\*\*(Tracks|Ticket):\*\*|Update Linear|move the ticket' README.md docs/ --exclude='2026-06-07-clipfan-mesh-onboarding-docs-design.md'`
 - README's first install instruction is the user path (app/binary), not `go build`.
-- A new contributor can find build-from-source under `docs/development/`.
-- Spot-checked commands in the README match the current CLI surface.
+- Build-from-source is discoverable under `docs/development/`.
+- Spot-checked README commands match the current CLI surface.
 
 ## Workstream B — Bug fix: Mac tmux paste (PATH root cause)
 
-**Root cause (confirmed by live reproduction).** On macOS the daemon is launched
-with a `PATH` that omits Homebrew's bin dir, so `tmux.LoadBufferAll`'s
-`exec.Command("tmux", …)` fails to find the binary. The OS-clipboard write still
-succeeds (`pbpaste` works — no PATH needed), so received clips reach the Mac
-clipboard but never the tmux paste buffer. Linux peers are unaffected (`tmux` is in
-`/usr/bin`, which is on the daemon PATH). Reproduction: copying on Linux
-`magic-kingdom` updated this Mac's `pbpaste` but not its tmux buffer; `tmux` was
-absent from the daemon's PATH; a full-path `tmux load-buffer` on the same socket
-worked.
+**Root cause (confirmed by live reproduction).** On macOS the daemon runs with a PATH
+that omits Homebrew's bin dir, so `tmux.LoadBufferAll`'s `exec.Command("tmux", …)`
+fails to find the binary; the OS-clipboard write still succeeds (`pbpaste` works — no
+PATH needed), so received clips reach the clipboard but not the tmux buffer. Linux
+peers are unaffected (`tmux` is in `/usr/bin`). Reproduction: copying on Linux
+`magic-kingdom` updated this Mac's `pbpaste` but not its tmux buffer; `tmux` was absent
+from the daemon's PATH; a full-path `tmux load-buffer` on the same socket worked.
 
-**Design.** Resolve `tmux` robustly instead of trusting the inherited PATH, in
-`internal/tmux/tmux.go`:
-
-- Add a `tmuxBinary()` resolver: prefer `exec.LookPath("tmux")`, then fall back to a
-  list of absolute candidates — `/opt/homebrew/bin/tmux`, `/usr/local/bin/tmux`,
-  `/usr/bin/tmux`, `/bin/tmux` — returning the first that exists and is executable.
-  `LoadBufferAll` uses the resolved path. Structure the resolver so the candidate
-  list and the lookup are injectable, so tests can point candidates at a temp dir
-  without depending on the host's real tmux install.
-- **Defense in depth:** also have `dist/install.sh` bake a complete `PATH` into the
-  launchd plist (include `/opt/homebrew/bin` and `/usr/local/bin`) so other
-  PATH-dependent calls are covered. The resolver is the primary fix because it works
-  regardless of how the daemon is launched (launchd vs. spawned by the app).
+**Design.** In `internal/tmux/tmux.go`, resolve `tmux` robustly: a `tmuxBinary()`
+resolver that prefers `exec.LookPath("tmux")` then falls back to absolute candidates
+(`/opt/homebrew/bin/tmux`, `/usr/local/bin/tmux`, `/usr/bin/tmux`, `/bin/tmux`),
+returning the first that exists and is executable; `LoadBufferAll` uses the resolved
+path. Structure the resolver so candidates and the lookup are injectable for testing.
+(`install.sh` already bakes a login-shell PATH into the plist — but the running daemon
+is app-spawned and ignores it, so the resolver, which is launch-independent, is the
+fix; no `install.sh` change is required.)
 
 **Acceptance.**
-- New unit test: the resolver finds `tmux` given a PATH that lacks it but with a
-  known absolute candidate present (table-driven, using a temp dir as a candidate).
-- Live verification on the real fleet: copy on one host → the tmux paste buffer
-  updates on a **macOS** peer running tmux (not just `pbpaste`).
-- No behavior change on Linux peers (regression check).
+- Unit test: the resolver finds `tmux` given a PATH lacking it but with a temp-dir
+  candidate present.
+- Live: copy on one host → the tmux paste buffer updates on a macOS peer running tmux
+  (not just `pbpaste`); no change on Linux peers.
 
 ## Workstream C — Bug fix: outbound indicator under SSH ("↑ never")
 
 **Root cause (confirmed).** The Fleet "↑" reads `last_push_ts`, set only by
 `recordPush`, which is called only inside `fanout` — and `fanout` no-ops under SSH
-transport (`peerHTTPDisabled`). SSH sends record `ssh_last_ack_ts` /
-`ssh_last_connect_ts` in separate fields the indicator never reads. So under SSH the
-outbound indicator is dead even though delivery works.
+(`peerHTTPDisabled`, `daemon.go:773`/`142`). The row also requires *both* a push and a
+recv timestamp to render the up/down block (`FleetRow.swift:204`), so SSH peers show
+neither arrow.
 
-**Design.** Make the outbound indicator transport-aware:
-
-- In `FleetRow.swift`, for SSH peers, source the "↑" from the SSH timestamps
-  (`ssh_last_ack_ts`, falling back to `ssh_last_connect_ts`) rather than
-  `last_push_ts`. Keep the HTTP path reading `last_push_ts`. Render the row's up/down
-  block when *either* a transport-appropriate send time or a receive time exists
-  (today it requires both, so SSH peers show neither arrow).
-- No daemon change is required for correctness — the SSH ack/connect timestamps are
-  already exposed in the peers payload — but verify they are populated end-to-end and
-  surfaced through `Models.swift`/`DaemonClient`.
+**Design.** Make the indicator transport-aware in `FleetRow.swift`: for SSH peers
+source the "↑" from **`ssh_last_ack_ts`** (an ack means a clip was sent and accepted) —
+do **not** fall back to `ssh_last_connect_ts`, which is set on connect even with zero
+sends and would show a send time when nothing was sent. Render the up/down block when a
+transport-appropriate send time *or* a recv time exists. Verify the SSH timestamps
+surface through `Models.swift`/`DaemonClient` (they are already in the peers payload).
 
 **Acceptance.**
-- Swift test: given a peer with SSH ack/connect timestamps and no `last_push_ts`, the
-  row model yields a non-"never" outbound time.
-- Live: with SSH transport active, the Fleet "↑" advances after a copy.
+- Swift test: a peer with `ssh_last_ack_ts` and no `last_push_ts` yields a non-"never"
+  outbound time; a peer with only `ssh_last_connect_ts` (connected, never sent) does
+  not show a spurious send time.
+- Live: with SSH transport, the Fleet "↑" advances after a copy.
 
-## Workstream D — Self-healing mesh provisioning
+## Workstream D — Self-healing mesh (the `mesh-heal` command + drivers)
 
-**Problem.** Provisioning meshes only the hosts in one operation, producing a star.
-We want any provisioning op to converge the whole fleet to a full mesh.
+**Problem.** Provisioning is Mac-only, star-producing, and all-or-nothing.
 
-**Design.**
+**Design.** Build Foundation 1 (`clipfan mesh-heal`) and drive it:
 
-1. **Roster discovery (decentralized).** Starting from this Mac's configured peers,
-   read each reachable host's roster via `fleet-snapshot` and take the transitive
-   closure to obtain the full host set and each host's SSH endpoint and platform. In a
-   connected fleet this reaches everyone (e.g. `m4`'s snapshot reveals
-   `flower-garden` and `magic-kingdom`). No central authority; healing can run from
-   any Mac.
-2. **Heal = provision the full roster.** Build host specs (the existing
-   `addPeerDirectMeshSpec` form) for **every** discovered host and invoke the existing
-   `ssh-provision-direct` with all `--host` specs. The engine provisions every pair
-   idempotently — adding missing edges and re-verifying existing ones (two-phase,
-   revision-locked apply). Hosts the Mac is not an endpoint of are configured the same
-   way the current add-peer flow reaches remote hosts.
-3. **Add + re-verify only.** Unreachable hosts are retried/left in place; nothing is
-   pruned automatically. Removal remains the explicit existing action.
-4. **Triggers.** Run heal after: (a) the add-peer install, (b) the wizard's add-host
-   step, and (c) an explicit **"Repair mesh"** action (added to Settings → Fleet
-   and/or the menu). Heal is safe to re-run (idempotent), so it can also run on
-   demand.
-
-**Bootstrapping note.** Discovery uses `fleet-snapshot` over the sync-key gateway for
-already-adjacent hosts; provisioning a *new* edge uses the same host-reach mechanism
-the current add-peer flow uses (the implementer confirms the exact path in
-`internal/sshprovision/regular_ssh_driver.go`). After a successful heal, this Mac is
-adjacent to every host, so subsequent `fleet-snapshot` reads cover the whole fleet
-directly.
+1. **Roster discovery in Go** (decentralized, over the user's SSH reach): union of
+   local config peers and reachable hosts' rosters; read each host's real config paths
+   directly so no platform derivation is needed; `uname`-probe platform only when
+   provisioning a host fresh.
+2. **`mesh-heal` provisions the complete mesh** among the roster via the existing
+   pair primitive, **per-pair and resilient** — failures are recorded per host/edge and
+   skipped, not fatal. Idempotent: re-verify ready edges, skip re-install of
+   already-current hosts, restart only changed hosts' daemons.
+3. **Reach is a real constraint.** A pair can only be provisioned by a runner that can
+   resolve and SSH to both hosts. The command reports unreachable/unresolved pairs;
+   the UI surfaces them so the user can fix an address or run heal from a host with the
+   needed reach. (Stored endpoints may be `.local`/peer-relative.)
+4. **Drivers.** The Mac app (and later the Linux UI) invoke `mesh-heal` after an
+   add-host and from an explicit **"Repair mesh"** action; the heavy Swift
+   orchestration is removed in favor of the CLI command. Initial binary install of a
+   brand-new host stays the UI's responsibility (non-goal boundary).
 
 **Acceptance.**
-- Go test: given a 3+ host roster with a missing edge, the heal planner targets the
-  missing pair and the idempotent apply leaves already-ready edges untouched (extends
-  existing `pair_plan`/`config_applicator` tests).
-- Live: after running heal on the real fleet, `jesse-paradise-park`'s config lists
-  **all** other hosts as peers (not just `m4`), and a copy on `jesse-paradise-park`
-  reaches `magic-kingdom` **without** depending on `m4` relaying (verify by checking
-  direct edge health).
+- Go test: given a roster with a missing edge and one unreachable host, `mesh-heal`
+  provisions the reachable missing edge, leaves ready edges untouched, and reports the
+  unreachable host without aborting (extends `pair_plan`/`config_applicator` tests;
+  uses the fake command runner already used by `ssh_provision_direct` tests).
+- Live: after running heal on the real fleet, `jesse-paradise-park`'s config lists all
+  other hosts as peers (not just `m4`), and a copy on `jesse-paradise-park` reaches
+  `magic-kingdom` over a **direct** edge (verify by edge health, not via `m4`).
 
-## Workstream E — Full mesh-state visibility (macOS)
+## Workstream E — Mesh-state visibility (macOS)
 
-**Problem.** The Fleet view shows only this Mac's peers. We want the whole mesh.
+**Problem.** The Fleet view shows only this Mac's peers.
 
-**Design.**
+**Design.** Using Foundation 2: read this host's local `Snapshot()` and
+`fleet-snapshot` from each adjacent host; assemble a fleet-wide model of hosts and
+per-edge health from the observations available. Render **per-host rows with edge
+detail** (reusing `FleetRow`/`HealthDot`): each host gets an aggregate dot (worst
+observed edge) and a summary; expanding shows its edges, with unobservable edges marked
+**unknown** rather than healthy/down. Example:
 
-1. **Gather.** The Mac reads `fleet-snapshot` from every host in the discovered
-   roster and assembles a fleet-wide model: the set of hosts, and for each ordered
-   pair, the edge health as reported by the source host.
-2. **Render — per-host rows with edge detail.** Each host is one row with an aggregate
-   health dot (worst of its edges) and a short summary (e.g. "5 peers · live", or
-   "3/4 edges · 1 down"). Expanding/hovering a row shows that host's edges with their
-   individual health, e.g.:
+```
+FLEET — 4 hosts · mesh 11/12 edges healthy
+  ● jesse-paradise-park  (you)   running
+  ● m4                    5 peers · live
+  ● magic-kingdom         4 peers · live
+  ⚠ flower-garden         3/4 edges · 1 down
+       └ ● m4   ● magic-kingdom   ○ jesse-paradise-park
+```
 
-   ```
-   FLEET — 4 hosts · mesh 11/12 edges healthy
-     ● jesse-paradise-park  (you)   running
-     ● m4                    5 peers · live
-     ● magic-kingdom         4 peers · live
-     ⚠ flower-garden         3/4 edges · 1 down
-          └ ● m4   ● magic-kingdom   ○ jesse-paradise-park
-   ```
-
-3. **Reuse** existing `FleetRow`/`HealthDot` idioms and the health mapping. Refresh on
-   Fleet-view open and on an explicit refresh; this is read-only and bounded.
+Refresh on Fleet-view open and on explicit refresh; reads are bounded and read-only.
+Pre-heal the view is necessarily partial (only adjacent hosts are observable); post-heal
+it covers the whole fleet.
 
 **Acceptance.**
-- Swift tests for the fleet-wide model: aggregate health = worst edge; edge counts
-  correct; a down edge surfaces on both endpoints' rows where data exists.
-- Live: the Fleet view lists every host (not just `m4`) and flags a deliberately
-  broken edge.
+- Swift tests: aggregate = worst *observed* edge; unobservable edges render "unknown,"
+  not "down"; counts correct.
+- Live: the Fleet view lists every host (not just `m4`) and flags a deliberately broken
+  edge once it is observable.
 
 ## Workstream F — Onboarding wizard
 
-**Problem.** First-run only installs the local daemon; it never helps the user add a
-host. (`WelcomeView` is a single screen with `SetupState` idle→installing→success/
-failed.)
+**Problem.** First-run only installs the local daemon (`WelcomeView` is one screen with
+`SetupState` idle→installing→success/failed); it never helps add a host.
 
-**Design.** Replace the single screen with a multi-step wizard in the existing
-`WelcomeWindow` (the managed `NSWindow`; keep that pattern):
+**Design.** Replace the single screen with a multi-step wizard in the existing managed
+`WelcomeWindow`:
 
-1. **Welcome** — what clipfan does, one Continue.
-2. **Set up this Mac** — the current local install flow (reuse `BootstrapController`
-   states), advancing on success.
+1. **Welcome** — what clipfan does.
+2. **Set up this Mac** — the current local install (reuse `BootstrapController`).
 3. **Add your first host** — collect SSH host/user (reuse `AddPeerSheet`'s host fields
-   and provisioning), then run a **mesh heal** so the fleet is fully connected. Skippable
-   ("I'll do this later").
-4. **You're all set** — the existing tips (⇧⌘V, paste flow) plus a one-line fleet
-   summary.
+   and provisioning), then run **`mesh-heal`** so the fleet is fully connected.
+   Skippable.
+4. **You're all set** — existing tips (⇧⌘V, paste flow) + a one-line fleet summary.
 
-A step indicator (`●─○─○─○`) shows progress. The wizard is **re-runnable** from the
-menu ("Set up clipfan…" / "Add a host…"). Model the step machine as pure, testable
-state (mirroring how `SetupState` is unit-tested) so logic is covered without driving
-SwiftUI.
+A step indicator (`●─○─○─○`) shows progress; the wizard is re-runnable from the menu.
+Model the step machine as pure, testable state (as `SetupState` is tested today).
 
 **Acceptance.**
-- Swift tests for the step state machine (advance on local-setup success; skip path;
+- Swift tests for the step machine (advance on local-setup success; skip path;
   completion).
 - Manual: a fresh run walks Welcome → local setup → add host (heals mesh) → done; the
   wizard reopens from the menu.
 
 ## Workstream G — Add-peer success state & dismiss
 
-**Problem.** On success the sheet sets a progress string then silently
-`Task.sleep`-then-`dismiss()`s after 1s, with no success UI and only "Cancel" + the
-install button.
+**Problem.** On success the sheet silently `Task.sleep`-then-`dismiss()`s after 1s, with
+only "Cancel" + the install button — no success UI.
 
-**Design.** Add an explicit success state to `AddPeerSheet`:
-
-- Track `installSuccess`; on success show a success view (checkmark + "Added
-  <host>"), and a brief note that the mesh was healed.
-- Replace the silent auto-dismiss with explicit buttons: **Done** (dismiss) and **Add
-  another** (reset the form to add another host). Remove the bare `Task.sleep`
-  dismiss. (`UpdatePeerSheet` is the sibling pattern for success-then-dismiss.)
+**Design.** Add an explicit success state to `AddPeerSheet`: track `installSuccess`;
+show a success view ("Added <host>", with a note that the mesh was healed); replace the
+silent auto-dismiss with **Done** (dismiss) and **Add another** (reset the form).
+(`UpdatePeerSheet` is the sibling success-then-dismiss pattern.)
 
 **Acceptance.**
 - Swift test: after a successful install the model exposes the success state and the
@@ -311,69 +338,64 @@ install button.
 
 **Problem.** There is no About screen.
 
-**Design.**
-
-- Add a `Window("about", id: "about")` scene in `ClipfanApp.swift` hosting a new
-  `AboutView`, opened via the captured `openWindow` (the existing `WindowOpener`
-  bridge), wired to an "About clipfan…" item in `StatusMenuView`.
-- `AboutView` shows: app icon, name, app version
-  (`CFBundleShortVersionString`), daemon version (`daemon.version`), a one-line
-  description, and links (project/docs). Reuse the app's visual idiom; the standard
-  AppKit about panel is the fallback if the custom window proves fiddly.
+**Design.** Add a `Window("about", id: "about")` scene in `ClipfanApp.swift` hosting a
+new `AboutView`, opened via the captured `openWindow` (`WindowOpener` bridge) and wired
+to an "About clipfan…" item in `StatusMenuView`. `AboutView` shows app icon, name, app
+version (`CFBundleShortVersionString`), daemon version (`daemon.version`), a one-line
+description, and links. The standard AppKit about panel is the fallback if the custom
+window proves fiddly.
 
 **Acceptance.**
-- The menu opens an About window showing app and daemon versions.
-- Version strings come from the real sources (no hard-coded literals).
+- The menu opens an About window showing app and daemon versions (from real sources, no
+  hard-coded literals).
 
 ## Testing strategy
 
-- **Go:** unit tests for the tmux resolver (B) and the mesh heal planner (D, extending
-  `pair_plan`/`config_applicator` tests); a test for `fleet-snapshot`'s output shape
-  and read-only/auth behavior.
-- **Swift:** tests for the SSH outbound-time mapping (C), the fleet-wide mesh model
-  (E), the wizard step machine (F), and the add-peer success state (G).
+- **Go:** unit tests for the tmux resolver (B); `mesh-heal` roster discovery, per-pair
+  resilience, and idempotent skip (D), using the existing fake command runner;
+  `fleet-snapshot` output shape, read-only behavior, and auth (Foundation 2).
+- **Swift:** SSH outbound-time mapping (C); the fleet-wide mesh model incl. "unknown"
+  edges (E); the wizard step machine (F); the add-peer success state (G).
 - **Live fleet verification** on the real hosts (`jesse-paradise-park`, `m4`,
-  `magic-kingdom`, `flower-garden`): tmux paste onto a Mac peer (B), outbound
-  indicator advancing under SSH (C), post-heal direct edges (D), Fleet view showing
-  all hosts and a broken edge (E). Test output must be clean; intentional error cases
-  capture and assert their output.
+  `magic-kingdom`, `flower-garden`): tmux paste onto a Mac peer (B); outbound indicator
+  advancing under SSH (C); post-heal direct edges and a partial-heal report with one
+  host down (D); Fleet view showing all hosts and a broken edge (E). Test output must be
+  clean; intentional error cases capture and assert their output.
 
 ## Dependencies & parallelization (for the implementation plan)
 
-- **Independent, can start immediately and run in parallel:**
-  - **A** (docs) — no code coupling.
-  - **B** (tmux PATH fix) — isolated to `internal/tmux` + `dist/install.sh`.
-  - **C** (outbound indicator) — isolated to `FleetRow.swift` (+ verify `Models`).
-  - **G** (add-peer success state) — isolated to `AddPeerSheet.swift`.
-  - **H** (About screen) — additive new view + scene + menu item.
-- **Foundation:** the **`fleet-snapshot` gateway verb** (Architecture section). Blocks
-  D and E.
-- **Dependent:**
-  - **D** (mesh heal) depends on `fleet-snapshot` (discovery).
-  - **E** (mesh UI) depends on `fleet-snapshot` (gather) and shares model concepts with
-    D.
-  - **F** (wizard) depends on **D** (its add-host step triggers a heal) and reuses
-    `AddPeerSheet` host fields from **G**.
+- **Independent, parallel-ready now:** **A** (docs), **B** (tmux PATH fix), **C**
+  (outbound indicator), **G** (add-peer success), **H** (About).
+- **Foundation 1 — `mesh-heal` CLI (Go):** blocks **D**'s drivers and the wizard's
+  add-host step (**F**).
+- **Foundation 2 — read-only mesh-state surface (`fleet-snapshot` + plumbing):** blocks
+  **E**.
+- **Dependent:** **D** (drivers/UI) on Foundation 1; **E** on Foundation 2; **F** on
+  **D** (its add-host step calls `mesh-heal`) and reuses `AddPeerSheet` fields from
+  **G**.
+- The Swift UI changes (C/E/F/G/H) touch overlapping files (`AddPeerSheet`,
+  `FleetRow`, `StatusMenuView`, `ClipfanApp`); sequence or worktree-isolate the Swift
+  work so parallel agents don't clobber each other.
 
-A workable order: land the independents (A/B/C/G/H) in parallel; land `fleet-snapshot`;
-then D and E in parallel; then F. The Swift UI changes (C/E/F/G/H) touch overlapping
-files (`AddPeerSheet`, `FleetRow`, `StatusMenuView`, `ClipfanApp`), so they should be
-sequenced or worktree-isolated to avoid clobbering.
+Suggested order: land A/B/C/G/H in parallel; build the two Go foundations
+(`mesh-heal`, `fleet-snapshot`); then D and E in parallel; then F.
 
 ## Risks & open questions
 
-- **Regular-SSH reachability for healing.** Healing a new edge requires the host-reach
-  mechanism the current add-peer flow uses. If a host is reachable for clipboard sync
-  but not for that provisioning path, heal can't create its missing edges. The
-  implementer verifies the exact reach path (`regular_ssh_driver.go`) and surfaces
-  per-host failures in the UI rather than failing the whole heal.
-- **Key rotation.** If a host's sync key rotates, previously-provisioned proofs on its
-  peers go stale. Heal's re-verify should detect and re-stage, but this path needs an
-  explicit test; out of scope to fully solve here beyond not regressing.
-- **Partitioned discovery.** If the reachable set doesn't transitively cover the whole
-  fleet, discovery sees only a subset. Acceptable: heal meshes what it can see and the
-  UI shows what it can read; full coverage returns once partitions reconnect.
-- **UI refresh cost.** Gathering `fleet-snapshot` from every host on each refresh is
-  N round-trips; keep it on-demand/open-triggered and bounded, not a tight poll.
-- **Wizard scope.** Keep the add-host step minimal (one host, then heal); resist
-  growing it into a full fleet manager in first-run.
+- **Reach prerequisite.** `mesh-heal` can only provision pairs whose hosts the runner
+  can resolve and SSH to. Peer-relative addresses (`.local`, bare hostnames) may not
+  resolve from every runner. Mitigation: per-host failure reporting, address
+  confirmation in the UI, and the ability to run heal from a host with the needed reach.
+- **Roster propagation.** Decentralized discovery sees only the transitively reachable
+  set; a new host is fully meshed once each host has discovered it and run heal (or one
+  well-connected host heals all reachable pairs). Acceptable; full coverage returns as
+  partitions reconnect.
+- **Moving orchestration to Go is real work.** The Swift `provisionPrivateDirectMesh`
+  logic (probe/stage/install/provision/restart) must be reimplemented in Go with the
+  resilient, idempotent semantics above; the Swift side shrinks to an invoker. The
+  implementer must preserve the existing config-preserving install behavior (a heal
+  must not clobber a host's `config.json`).
+- **Key rotation.** A rotated sync key staleens peers' proofs; heal's re-verify should
+  detect and re-stage, but this path needs an explicit test; not otherwise solved here.
+- **UI refresh cost.** Gathering `fleet-snapshot` from every adjacent host is N
+  round-trips; keep it on-demand/open-triggered and bounded, not a tight poll.
