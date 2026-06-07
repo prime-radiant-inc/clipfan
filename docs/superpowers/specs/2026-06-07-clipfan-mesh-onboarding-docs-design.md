@@ -89,10 +89,11 @@ Mac tmux paste, and the dead outbound sync indicator under SSH transport.
   local daemon over loopback to push received clips (`PushAsToRecipient`) and to read
   `current`, but `transport.Client` has **no** method to read `/v1/peers`, and there
   is no read-only path for a remote host to read another host's roster or edge-health.
-- **Daemon launch / PATH:** on macOS the daemon's effective `PATH` omits Homebrew's
-  `/opt/homebrew/bin`, where `tmux` lives (the running daemon is app-spawned, not
-  launched from the plist that `install.sh` writes — so the plist's PATH is moot for
-  the running process).
+- **Daemon launch / PATH:** on macOS the daemon is launchd-launched from its plist
+  (verified live: PPID 1, `launchctl print … = running`), and the plist's baked `PATH`
+  *itself* omits Homebrew's `/opt/homebrew/bin`, where `tmux` lives. `install.sh` builds
+  that PATH from `zsh -lc 'echo $PATH'`, which did not include Homebrew in the app's
+  invocation context — so the launchd daemon inherits a PATH without `tmux`'s directory.
 
 ## Architecture
 
@@ -116,13 +117,22 @@ A new CLI command that converges the fleet to a complete mesh. Design properties
   SSH reach (read each host's `ssh.peers[]` and the host's own config paths directly,
   so no platform guessing is needed). Platform, where required for a freshly probed
   host, comes from a `uname` probe over SSH (as the installer already does).
-- **Provisions the complete mesh among the roster**, reusing the existing
-  pair-provisioning primitive — but **per-pair and resilient**: iterate pairs, and a
-  pair that fails (unreachable host, unresolved address) is recorded and skipped
-  rather than aborting the run. The command returns a per-host / per-edge status
-  report. Idempotent: already-`ready` edges are re-verified, not rebuilt, and hosts
-  whose binary is already current are not re-installed; only changed hosts' daemons
-  restart.
+- **Provisions the complete mesh among the roster** via the existing pair primitive
+  (`provisioner.Provision`), which configures both endpoints of a pair. Two properties
+  the primitive does **not** provide and that `mesh-heal` must add:
+  - **Resilience.** The all-or-nothing failure point is the up-front host-key scan
+    (`scanSSHProvisionDirectHostKeys`), which keyscans every host, resolves keyscan
+    targets, detects Tailscale-SSH server mode, and sets the admin host — and aborts on
+    any one host's failure. `mesh-heal` must run host-prep **per host with per-host
+    error capture**, then provision each reachable pair, recording and skipping failed
+    ones rather than aborting. It returns a per-host / per-edge status report.
+  - **Idempotency.** `provisioner.Provision` runs every step unconditionally and the
+    config write always bumps the revision, so re-running rewrites config even on a
+    healthy edge. `mesh-heal` must **pre-probe each edge** (the existing `RunProbe`
+    check) and skip edges already healthy, so a no-op heal changes nothing and triggers
+    no restarts.
+  `mesh-heal` does **not** install binaries (see Non-goals); it assumes clipfan is
+  present and only links hosts.
 - **Completeness:** running `mesh-heal` on a host provisions every pair that host can
   reach (configuring both ends of each). A single host with reach to all others
   completes the whole mesh; where reach is partial, another host completes the
@@ -143,8 +153,12 @@ The UI needs each host's view of its edges. Two read paths, both read-only:
   signed loopback `GET /v1/peers`.
 - **Remote (adjacent hosts):** a new read-only gateway verb, `fleet-snapshot`, invoked
   over an existing sync-key edge (validated by the existing
-  `validateSSHGatewaySyncPeer` path). It returns the host's identity, its roster from
-  `config.Load()`, and its runtime edge-health. **Plumbing note:** the gateway process
+  `validateSSHGatewaySyncPeer` path). It returns the host's identity, a **redacted**
+  roster, and its runtime edge-health. It must **not** serialize raw `config.Load()`
+  output — that carries the plaintext top-level `shared_key` and per-peer `proof`
+  material; match the existing read handlers' redaction (`redactRawPeer` /
+  `redactProofValue`) and return only the peer ids, endpoints, and migration state the
+  caller needs. **Plumbing note:** the gateway process
   cannot read `/v1/peers` today (`transport.Client` exposes only push/`current`), so
   serving runtime edge-health requires new code — either a signed loopback `/v1/peers`
   client method or a small new daemon endpoint the gateway can call. The roster half
@@ -202,9 +216,11 @@ resolver that prefers `exec.LookPath("tmux")` then falls back to absolute candid
 (`/opt/homebrew/bin/tmux`, `/usr/local/bin/tmux`, `/usr/bin/tmux`, `/bin/tmux`),
 returning the first that exists and is executable; `LoadBufferAll` uses the resolved
 path. Structure the resolver so candidates and the lookup are injectable for testing.
-(`install.sh` already bakes a login-shell PATH into the plist — but the running daemon
-is app-spawned and ignores it, so the resolver, which is launch-independent, is the
-fix; no `install.sh` change is required.)
+The resolver is the primary fix because it is launch-independent. As a **secondary
+fix**, correct `install.sh` so the plist's baked `PATH` always includes
+`/opt/homebrew/bin` and `/usr/local/bin` (the current `zsh -lc` capture missed Homebrew
+in the app's invocation context, which is why the launchd daemon's PATH lacks it);
+existing installs pick this up on the next install/upgrade.
 
 **Acceptance.**
 - Unit test: the resolver finds `tmux` given a PATH lacking it but with a temp-dir
@@ -243,10 +259,14 @@ surface through `Models.swift`/`DaemonClient` (they are already in the peers pay
    local config peers and reachable hosts' rosters; read each host's real config paths
    directly so no platform derivation is needed; `uname`-probe platform only when
    provisioning a host fresh.
-2. **`mesh-heal` provisions the complete mesh** among the roster via the existing
-   pair primitive, **per-pair and resilient** — failures are recorded per host/edge and
-   skipped, not fatal. Idempotent: re-verify ready edges, skip re-install of
-   already-current hosts, restart only changed hosts' daemons.
+2. **`mesh-heal` provisions the complete mesh** with per-host-resilient host-prep and
+   per-edge change-detection (see Foundation 1): failed hosts/edges are reported and
+   skipped; already-healthy edges are left untouched. **Activating changes needs a
+   restart:** `ssh-apply-direct-config` is a direct file write the daemon does *not*
+   hot-reload (only its loopback peer-config mutation API reloads, via `Refresh`), and
+   there is **no** Go daemon-restart today (it is Swift-only — `launchctl kickstart` /
+   `systemctl`). `mesh-heal` must add a Go restart path and restart only the hosts the
+   change-detection marked changed.
 3. **Reach is a real constraint.** A pair can only be provisioned by a runner that can
    resolve and SSH to both hosts. The command reports unreachable/unresolved pairs;
    the UI surfaces them so the user can fix an address or run heal from a host with the
@@ -390,11 +410,13 @@ Suggested order: land A/B/C/G/H in parallel; build the two Go foundations
   set; a new host is fully meshed once each host has discovered it and run heal (or one
   well-connected host heals all reachable pairs). Acceptable; full coverage returns as
   partitions reconnect.
-- **Moving orchestration to Go is real work.** The Swift `provisionPrivateDirectMesh`
-  logic (probe/stage/install/provision/restart) must be reimplemented in Go with the
-  resilient, idempotent semantics above; the Swift side shrinks to an invoker. The
-  implementer must preserve the existing config-preserving install behavior (a heal
-  must not clobber a host's `config.json`).
+- **Moving orchestration to Go is real work.** `mesh-heal` must reimplement, in Go:
+  per-host-resilient host-prep (keyscan / host-key confirm / server-mode detect /
+  admin-host resolve), per-edge change-detection to stay idempotent, and a
+  daemon-restart capability (today Swift-only — `launchctl kickstart` / `systemctl`). It
+  does **not** reimplement binary install — that stays the UI's job, and the
+  wizard/add-host runs install first, then `mesh-heal`. The Swift side shrinks to an
+  invoker.
 - **Key rotation.** A rotated sync key staleens peers' proofs; heal's re-verify should
   detect and re-stage, but this path needs an explicit test; not otherwise solved here.
 - **UI refresh cost.** Gathering `fleet-snapshot` from every adjacent host is N
