@@ -126,6 +126,11 @@ func lookupExistingRegularHostKeys(ctx context.Context, runner sshprovision.Comm
 		}
 		return nil, err
 	}
+	// Fail closed: a truncated lookup could hide a conflicting existing key and
+	// let reconcile append a divergent one. Sibling keyscan paths reject the same way.
+	if output.StdoutTruncated {
+		return nil, fmt.Errorf("ssh_keygen_lookup_output_truncated: %s", token)
+	}
 	var entries []knownHostLine
 	for _, raw := range strings.Split(string(output.Stdout), "\n") {
 		if entry, ok := parseKnownHostLine(raw); ok {
@@ -139,7 +144,18 @@ func lookupExistingRegularHostKeys(ctx context.Context, runner sshprovision.Comm
 // orchestrator's regular known_hosts so StrictHostKeyChecking=yes admin SSH to
 // the host succeeds. It is hashed-aware (via ssh-keygen -F), refuses to
 // overwrite a conflicting pin, and forces 0600 on write (user files are often
-// 0644). host/port are the resolved keyscan target.
+// 0644).
+//
+// host/port are the keyscan target resolved by ssh -G. The key is pinned under
+// that resolved token, which is exactly the name OpenSSH uses for the
+// known_hosts lookup on the subsequent admin SSH: that SSH reads ~/.ssh/config
+// (it does NOT pass -F /dev/null) and so applies the same HostName resolution
+// ssh -G reported. For mesh-heal's raw-IP endpoints the resolved and original
+// hosts are identical anyway.
+//
+// The existence check (ssh-keygen -F) and the append are run together under the
+// known_hosts lock so a concurrent trust of the same host cannot slip a
+// divergent key past the conflict check.
 func trustScannedHostKeys(ctx context.Context, runner sshprovision.CommandRunner, host string, port int, keyscanOutput, regularKnownHostsPath string) error {
 	token, err := sshprovision.KnownHostsPattern(host, port)
 	if err != nil {
@@ -165,21 +181,23 @@ func trustScannedHostKeys(ctx context.Context, runner sshprovision.CommandRunner
 		return fmt.Errorf("ssh_keyscan_no_matching_host_key: %s", token)
 	}
 
-	var existing []knownHostLine
-	if _, statErr := os.Stat(regularKnownHostsPath); statErr == nil {
-		existing, err = lookupExistingRegularHostKeys(ctx, runner, token, regularKnownHostsPath)
+	return sshprovision.WithKnownHostsLock(regularKnownHostsPath, func() error {
+		var existing []knownHostLine
+		if _, statErr := os.Stat(regularKnownHostsPath); statErr == nil {
+			entries, err := lookupExistingRegularHostKeys(ctx, runner, token, regularKnownHostsPath)
+			if err != nil {
+				return err
+			}
+			existing = entries
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+		appendLines, err := reconcileTrustedHostKeys(existing, scanned)
 		if err != nil {
 			return err
 		}
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return statErr
-	}
-
-	appendLines, err := reconcileTrustedHostKeys(existing, scanned)
-	if err != nil {
-		return err
-	}
-	return sshprovision.AppendKnownHostsLines(regularKnownHostsPath, appendLines)
+		return sshprovision.AppendKnownHostsLinesLocked(regularKnownHostsPath, appendLines)
+	})
 }
 
 // trustEndpoint resolves a host's keyscan target (ssh -G), ssh-keyscans it, and

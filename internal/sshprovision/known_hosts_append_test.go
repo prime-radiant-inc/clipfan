@@ -15,8 +15,8 @@ func TestAppendKnownHostsLinesCreatesFile0600(t *testing.T) {
 	path := filepath.Join(dir, "regular_known_hosts")
 	line := "host.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISAMPLE"
 
-	if err := AppendKnownHostsLines(path, []string{line}); err != nil {
-		t.Fatalf("AppendKnownHostsLines() error = %v", err)
+	if err := AppendKnownHostsLinesLocked(path, []string{line}); err != nil {
+		t.Fatalf("AppendKnownHostsLinesLocked() error = %v", err)
 	}
 
 	data, err := os.ReadFile(path)
@@ -48,8 +48,8 @@ func TestAppendKnownHostsLinesPreservesExistingAndForces0600(t *testing.T) {
 	}
 	line := "host.example ssh-ed25519 AAAANEW"
 
-	if err := AppendKnownHostsLines(path, []string{line}); err != nil {
-		t.Fatalf("AppendKnownHostsLines() error = %v", err)
+	if err := AppendKnownHostsLinesLocked(path, []string{line}); err != nil {
+		t.Fatalf("AppendKnownHostsLinesLocked() error = %v", err)
 	}
 
 	data, err := os.ReadFile(path)
@@ -71,7 +71,7 @@ func TestAppendKnownHostsLinesRejectsControlChars(t *testing.T) {
 		t.Fatalf("eval symlinks: %v", err)
 	}
 	path := filepath.Join(dir, "regular_known_hosts")
-	if err := AppendKnownHostsLines(path, []string{"injected.example ssh-ed25519 AAAA\nevil.example ssh-rsa BBBB"}); err == nil {
+	if err := AppendKnownHostsLinesLocked(path, []string{"injected.example ssh-ed25519 AAAA\nevil.example ssh-rsa BBBB"}); err == nil {
 		t.Fatalf("expected error for embedded newline in line")
 	}
 }
@@ -82,8 +82,8 @@ func TestAppendKnownHostsLinesEmptyIsNoop(t *testing.T) {
 		t.Fatalf("eval symlinks: %v", err)
 	}
 	path := filepath.Join(dir, "regular_known_hosts")
-	if err := AppendKnownHostsLines(path, nil); err != nil {
-		t.Fatalf("AppendKnownHostsLines(nil) error = %v", err)
+	if err := AppendKnownHostsLinesLocked(path, nil); err != nil {
+		t.Fatalf("AppendKnownHostsLinesLocked(nil) error = %v", err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("empty append should not create the file, stat err = %v", err)

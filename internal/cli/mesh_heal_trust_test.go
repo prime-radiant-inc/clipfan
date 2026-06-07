@@ -283,3 +283,51 @@ func TestTrustScannedHostKeysAppendsWhenAbsentFromExistingFile(t *testing.T) {
 		t.Fatalf("expected one ssh-keygen -F call, got %d", runner.keygenCalls)
 	}
 }
+
+// The two below drive the WHOLE refuse path through the real ssh-keygen -F (not
+// the fake), proving a genuinely different existing key, and a @cert-authority
+// marker surfaced by real ssh-keygen -F, both make trust refuse without writing.
+
+func TestTrustScannedHostKeysRealRunnerConflictRefusesWrite(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "known_hosts")
+	host := "host.example"
+	existingLine := host + " ssh-ed25519 " + testDirectProvisionEd25519Key
+	scannedLine := host + " ssh-ed25519 " + testDirectProvisionOtherEd25519Key
+	if err := os.WriteFile(path, []byte(existingLine+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := trustScannedHostKeys(context.Background(), sshprovision.ExecCommandRunner{}, host, 22, scannedLine+"\n", path); err == nil {
+		t.Fatalf("expected conflict via real ssh-keygen -F")
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), testDirectProvisionOtherEd25519Key) {
+		t.Fatalf("conflicting key was written: %q", data)
+	}
+}
+
+func TestTrustScannedHostKeysRealRunnerMarkerRefusesWrite(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "known_hosts")
+	host := "host.example"
+	caLine := "@cert-authority " + host + " ssh-ed25519 " + testDirectProvisionEd25519Key
+	scannedLine := host + " ssh-ed25519 " + testDirectProvisionOtherEd25519Key
+	if err := os.WriteFile(path, []byte(caLine+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := trustScannedHostKeys(context.Background(), sshprovision.ExecCommandRunner{}, host, 22, scannedLine+"\n", path); err == nil {
+		t.Fatalf("expected marker conflict via real ssh-keygen -F")
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), testDirectProvisionOtherEd25519Key) {
+		t.Fatalf("key was written despite CA marker: %q", data)
+	}
+}

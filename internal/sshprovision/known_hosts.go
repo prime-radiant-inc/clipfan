@@ -108,15 +108,25 @@ func UpsertKnownHostPin(path string, pin KnownHostPin) error {
 	})
 }
 
-// AppendKnownHostsLines appends the given lines to a regular known_hosts file
-// (e.g. the orchestrator's ~/.ssh/known_hosts) under the known_hosts lock,
-// creating the file if needed and forcing 0600. Unlike UpsertKnownHostPin it
-// tolerates a pre-existing file with looser permissions — a real user's
-// known_hosts is routinely 0644 — and does not interpret hashed entries: the
-// caller decides which lines to append. The read is O_NOFOLLOW so a symlinked
-// target is refused, and the write is temp-file-plus-rename, so the symlink is
-// replaced rather than followed. Lines must not contain embedded newlines or NUL.
-func AppendKnownHostsLines(path string, lines []string) error {
+// WithKnownHostsLock runs fn while holding the exclusive known_hosts lock for
+// path, so a caller can make a read-modify-write of the file atomic against
+// concurrent clipfan processes — e.g. look up a host's existing keys, decide
+// whether to trust a scanned key, and append, all in one locked section.
+func WithKnownHostsLock(path string, fn func() error) error {
+	return withKnownHostsLock(path, fn)
+}
+
+// AppendKnownHostsLinesLocked appends the given lines to a regular known_hosts
+// file (e.g. the orchestrator's ~/.ssh/known_hosts), creating it if needed and
+// forcing 0600. The CALLER MUST already hold the known_hosts lock (see
+// WithKnownHostsLock) so the trust decision and the append happen atomically.
+// Unlike UpsertKnownHostPin it tolerates a pre-existing file with looser
+// permissions — a real user's known_hosts is routinely 0644 — and does not
+// interpret hashed entries: the caller decides which lines to append. The read
+// is O_NOFOLLOW so a symlinked target is refused, and the write is
+// temp-file-plus-rename, so the symlink is replaced rather than followed. Lines
+// must not contain embedded newlines or NUL.
+func AppendKnownHostsLinesLocked(path string, lines []string) error {
 	if len(lines) == 0 {
 		return nil
 	}
@@ -128,16 +138,14 @@ func AppendKnownHostsLines(path string, lines []string) error {
 			return fmt.Errorf("%w: known_hosts line contains control characters", ErrInvalidKnownHostPin)
 		}
 	}
-	return withKnownHostsLock(path, func() error {
-		data, err := readKnownHostsFileLenient(path)
-		if err != nil {
-			return err
-		}
-		for _, line := range lines {
-			data = appendKnownHostLine(data, line)
-		}
-		return writeKnownHostsAtomic(path, data, 0o600)
-	})
+	data, err := readKnownHostsFileLenient(path)
+	if err != nil {
+		return err
+	}
+	for _, line := range lines {
+		data = appendKnownHostLine(data, line)
+	}
+	return writeKnownHostsAtomic(path, data, 0o600)
 }
 
 // readKnownHostsFileLenient reads a known_hosts file with O_NOFOLLOW (refusing a
