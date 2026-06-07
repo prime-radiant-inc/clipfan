@@ -147,6 +147,42 @@ func (r *fakeTrustRunner) Run(_ context.Context, command sshprovision.SSHCommand
 	return sshprovision.CommandOutput{}, errors.New("unexpected: " + strings.Join(command.Args, " "))
 }
 
+// These exercise the REAL ExecCommandRunner against the system ssh-keygen, so
+// the exit-1 detection is verified through the genuine SSHCommandError ->
+// errors.Join -> *exec.ExitError chain (not just the fake), and the parser is
+// proven against real `ssh-keygen -F` output (which prepends a "# Host ... found"
+// comment line).
+
+func TestLookupExistingRegularHostKeysRealRunnerNoMatch(t *testing.T) {
+	entries, err := lookupExistingRegularHostKeys(context.Background(), sshprovision.ExecCommandRunner{}, "no-such-host.example", "/dev/null")
+	if err != nil {
+		t.Fatalf("expected nil error when ssh-keygen -F exits 1 (no match), got %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no entries, got %+v", entries)
+	}
+}
+
+func TestLookupExistingRegularHostKeysRealRunnerFound(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "known_hosts")
+	line := "host.example ssh-ed25519 " + testDirectProvisionEd25519Key
+	if err := os.WriteFile(path, []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := lookupExistingRegularHostKeys(context.Background(), sshprovision.ExecCommandRunner{}, "host.example", path)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if len(entries) != 1 || entries[0].KeyType != "ssh-ed25519" || entries[0].Key != testDirectProvisionEd25519Key {
+		t.Fatalf("entries = %+v", entries)
+	}
+}
+
 func TestTrustEndpointAppendsToFreshFile(t *testing.T) {
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
