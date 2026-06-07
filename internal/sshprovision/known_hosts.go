@@ -108,6 +108,56 @@ func UpsertKnownHostPin(path string, pin KnownHostPin) error {
 	})
 }
 
+// AppendKnownHostsLines appends the given lines to a regular known_hosts file
+// (e.g. the orchestrator's ~/.ssh/known_hosts) under the known_hosts lock,
+// creating the file if needed and forcing 0600. Unlike UpsertKnownHostPin it
+// tolerates a pre-existing file with looser permissions — a real user's
+// known_hosts is routinely 0644 — and does not interpret hashed entries: the
+// caller decides which lines to append. The read is O_NOFOLLOW so a symlinked
+// target is refused, and the write is temp-file-plus-rename, so the symlink is
+// replaced rather than followed. Lines must not contain embedded newlines or NUL.
+func AppendKnownHostsLines(path string, lines []string) error {
+	if len(lines) == 0 {
+		return nil
+	}
+	if err := validateKnownHostsPath(path); err != nil {
+		return err
+	}
+	for _, line := range lines {
+		if strings.ContainsAny(line, "\n\x00") {
+			return fmt.Errorf("%w: known_hosts line contains control characters", ErrInvalidKnownHostPin)
+		}
+	}
+	return withKnownHostsLock(path, func() error {
+		data, err := readKnownHostsFileLenient(path)
+		if err != nil {
+			return err
+		}
+		for _, line := range lines {
+			data = appendKnownHostLine(data, line)
+		}
+		return writeKnownHostsAtomic(path, data, 0o600)
+	})
+}
+
+// readKnownHostsFileLenient reads a known_hosts file with O_NOFOLLOW (refusing a
+// symlinked target) but, unlike readKnownHostsFileForUpdate, does not require
+// 0600/single-link — user-owned regular known_hosts files are commonly 0644.
+func readKnownHostsFileLenient(path string) ([]byte, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, fmt.Errorf("%w: file is symlink: %s", ErrKnownHostsUnsafe, path)
+		}
+		return nil, err
+	}
+	defer file.Close()
+	return io.ReadAll(file)
+}
+
 func VerifyKnownHostPin(path string, pin KnownHostPin) error {
 	if err := validateKnownHostsPath(path); err != nil {
 		return err
