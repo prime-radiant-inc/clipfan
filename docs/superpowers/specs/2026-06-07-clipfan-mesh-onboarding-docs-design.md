@@ -128,9 +128,14 @@ A new CLI command that converges the fleet to a complete mesh. Design properties
     ones rather than aborting. It returns a per-host / per-edge status report.
   - **Idempotency.** `provisioner.Provision` runs every step unconditionally and the
     config write always bumps the revision, so re-running rewrites config even on a
-    healthy edge. `mesh-heal` must **pre-probe each edge** (the existing `RunProbe`
-    check) and skip edges already healthy, so a no-op heal changes nothing and triggers
-    no restarts.
+    healthy edge. `mesh-heal` must decide per edge whether work is needed by inspecting
+    **config state on both ends** — each side's peer entry present, proof key-ids
+    matching, and `migration_state == ssh_keys_ready` — and skip only edges correct on
+    both ends. An SSH/`RunProbe` connectivity check is **not** sufficient:
+    `authorized_keys` can be installed (probe passes) while the config peer entries are
+    missing or stuck at `ssh_material_staged` (a prior provision interrupted before
+    `WriteConfig`), and skipping such an edge would leave it unable to carry a sync
+    stream while reporting it healthy. Only edges that actually changed are restarted.
   `mesh-heal` does **not** install binaries (see Non-goals); it assumes clipfan is
   present and only links hosts.
 - **Completeness:** running `mesh-heal` on a host provisions every pair that host can
@@ -266,7 +271,9 @@ surface through `Models.swift`/`DaemonClient` (they are already in the peers pay
    hot-reload (only its loopback peer-config mutation API reloads, via `Refresh`), and
    there is **no** Go daemon-restart today (it is Swift-only — `launchctl kickstart` /
    `systemctl`). `mesh-heal` must add a Go restart path and restart only the hosts the
-   change-detection marked changed.
+   change-detection marked changed — a daemon restart drops that host's active
+   sync-stream sessions briefly, so restarting only genuinely-changed hosts keeps a
+   heal from causing a fleet-wide sync blip.
 3. **Reach is a real constraint.** A pair can only be provisioned by a runner that can
    resolve and SSH to both hosts. The command reports unreachable/unresolved pairs;
    the UI surfaces them so the user can fix an address or run heal from a host with the
@@ -297,11 +304,11 @@ observed edge) and a summary; expanding shows its edges, with unobservable edges
 **unknown** rather than healthy/down. Example:
 
 ```
-FLEET — 4 hosts · mesh 11/12 edges healthy
+FLEET — 4 hosts · mesh 5/6 edges healthy
   ● jesse-paradise-park  (you)   running
-  ● m4                    5 peers · live
-  ● magic-kingdom         4 peers · live
-  ⚠ flower-garden         3/4 edges · 1 down
+  ● m4                    3 peers · live
+  ● magic-kingdom         3 peers · live
+  ⚠ flower-garden         2/3 edges · 1 down
        └ ● m4   ● magic-kingdom   ○ jesse-paradise-park
 ```
 
@@ -345,9 +352,11 @@ Model the step machine as pure, testable state (as `SetupState` is tested today)
 only "Cancel" + the install button — no success UI.
 
 **Design.** Add an explicit success state to `AddPeerSheet`: track `installSuccess`;
-show a success view ("Added <host>", with a note that the mesh was healed); replace the
-silent auto-dismiss with **Done** (dismiss) and **Add another** (reset the form).
-(`UpdatePeerSheet` is the sibling success-then-dismiss pattern.)
+show a success view ("Added <host>") and replace the silent auto-dismiss with **Done**
+(dismiss) and **Add another** (reset the form). (`UpdatePeerSheet` is the sibling
+success-then-dismiss pattern.) G does **not** assert anything about mesh healing — that
+claim would be false until **D** wires `mesh-heal` into the add path; **D** augments
+this success view with heal status when it lands.
 
 **Acceptance.**
 - Swift test: after a successful install the model exposes the success state and the
@@ -392,7 +401,8 @@ window proves fiddly.
   **E**.
 - **Dependent:** **D** (drivers/UI) on Foundation 1; **E** on Foundation 2; **F** on
   **D** (its add-host step calls `mesh-heal`) and reuses `AddPeerSheet` fields from
-  **G**.
+  **G**. **G**'s base success state ships independently, but the heal-status shown in
+  that view is added by **D** — G alone must not claim the mesh was healed.
 - The Swift UI changes (C/E/F/G/H) touch overlapping files (`AddPeerSheet`,
   `FleetRow`, `StatusMenuView`, `ClipfanApp`); sequence or worktree-isolate the Swift
   work so parallel agents don't clobber each other.
