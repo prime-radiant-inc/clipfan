@@ -18,6 +18,22 @@ func addPeerInstallButtonTitle(installing: Bool, installCount: Int, failure: Add
     return installCount <= 1 ? "Install" : "Install on \(installCount) hosts"
 }
 
+enum AddPeerSheetButtons: Equatable {
+    case editing      // Cancel + Install
+    case installing   // Cancel(disabled) + Installing…
+    case success      // Done + Add another
+    case failed       // Cancel + Retry
+}
+
+/// Which buttons the sheet shows. Success takes precedence so a retry that
+/// finally succeeds shows Done, not Retry.
+func addPeerSheetButtons(installing: Bool, installSuccess: Bool, hasFailure: Bool) -> AddPeerSheetButtons {
+    if installSuccess { return .success }
+    if installing { return .installing }
+    if hasFailure { return .failed }
+    return .editing
+}
+
 enum AddPeerHostPlatform: String, CaseIterable, Identifiable {
     case linux = "Linux"
     case macOS = "macOS"
@@ -238,6 +254,8 @@ struct AddPeerSheet: View {
     @State private var tailnetAvailable = false
 
     @State private var installing = false
+    @State private var installSuccess = false
+    @State private var lastInstalledHost = ""
     @State private var progress: String = ""
     @State private var log: AddPeerOperationLog?
     @State private var failure: AddPeerOperationFailure?
@@ -363,16 +381,30 @@ struct AddPeerSheet: View {
                 Text(progress).font(.callout).foregroundStyle(.secondary)
             }
 
+            if installSuccess {
+                HStack(spacing: 10) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    Text("Added \(lastInstalledHost).").font(.callout)
+                }
+            }
+
             Spacer()
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                Button(installButtonTitle) { requestInstall() }
-                    .keyboardShortcut(.return)
-                    .disabled(isAddPeerInstallDisabled(installCount: installCount,
-                                                       installing: installing,
-                                                       privateDirectMeshRequested: SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled))
+                switch addPeerSheetButtons(installing: installing, installSuccess: installSuccess, hasFailure: failure != nil) {
+                case .success:
+                    Button("Add another") { resetForAnother() }
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.defaultAction)
+                default:
+                    Button("Cancel") { dismiss() }
+                    Button(installButtonTitle) { requestInstall() }
+                        .keyboardShortcut(.return)
+                        .disabled(isAddPeerInstallDisabled(installCount: installCount,
+                                                           installing: installing,
+                                                           privateDirectMeshRequested: SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled))
+                }
             }
         }
         .padding(20)
@@ -548,6 +580,17 @@ struct AddPeerSheet: View {
         }
     }
 
+    private func resetForAnother() {
+        installSuccess = false
+        installing = false
+        progress = ""
+        failure = nil
+        log = nil
+        lastInstalledHost = ""
+        remoteDrafts = [AddPeerRemoteHostDraft(user: NSUserName())]
+        tailnetSelected = []
+    }
+
     private func requestInstall() {
         if SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled {
             confirmingDirectMeshKeyscanTrust = true
@@ -593,8 +636,9 @@ struct AddPeerSheet: View {
                     )
                     await MainActor.run {
                         progress = "Provisioned private SSH mesh."
+                        lastInstalledHost = "private SSH mesh"
                         installing = false
-                        Task { try? await Task.sleep(nanoseconds: 1_000_000_000); dismiss() }
+                        installSuccess = true
                     }
                 } catch {
                     await MainActor.run {
@@ -631,7 +675,10 @@ struct AddPeerSheet: View {
                             }
                         }
                     )
-                    await MainActor.run { progress = "Installed on \(t.host)." }
+                    await MainActor.run {
+                        progress = "Installed on \(t.host)."
+                        lastInstalledHost = t.host
+                    }
                 } catch {
                     await MainActor.run {
                         var currentLog = log ?? AddPeerOperationLog(host: t.host)
@@ -647,7 +694,7 @@ struct AddPeerSheet: View {
             }
             await MainActor.run {
                 installing = false
-                Task { try? await Task.sleep(nanoseconds: 1_000_000_000); dismiss() }
+                installSuccess = true
             }
         }
     }
