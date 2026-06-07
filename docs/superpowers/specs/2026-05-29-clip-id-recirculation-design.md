@@ -13,9 +13,9 @@ None of these tracks a clip's **identity** across changes to its bytes. When a
 host re-represents a clip — most visibly an image rewritten as a file-path string
 on a text-only backend, but also `pngpaste` re-encoding image bytes, or any
 backend drift — the re-represented clip has a *new* hash and `origin=self`, so
-every guard treats it as brand-new content and it re-enters the mesh. PRI-1920
-fixed the one observed instance (image→path) semantically; this change removes the
-structural cause.
+every guard treats it as brand-new content and it re-enters the mesh. An earlier
+fix addressed the one observed instance (image→path) semantically; this change
+removes the structural cause.
 
 ## Goal
 
@@ -73,7 +73,7 @@ the text-byte hash, the image-byte hash, and the image-store path.
 Suppressing (rather than re-broadcasting under the same ID) is correct because
 the clip already propagated under its original ID; re-emitting it is pure noise.
 
-This subsumes the PRI-1920 image-path guard: the image path is simply one tracked
+This subsumes the earlier image-path guard: the image path is simply one tracked
 signature of the current clip. The `store.IsImageStorePath` check is retained as
 defense-in-depth — an image-store path is never broadcastable text regardless of
 whether current-clip state is set — but the clip-ID mechanism is the primary
@@ -127,7 +127,7 @@ tests; real behaviour, no mocks of the logic under test.
   relayed once.
 - **Distinct IDs:** two genuinely different clips both propagate.
 - **Echo suppression after receive:** apply a received image clip, then a
-  `pollOnce` whose clipboard read is the image path (PRI-1920 scenario) → no
+  `pollOnce` whose clipboard read is the image path (the image-path echo scenario) → no
   broadcast; and a `pollOnce` whose read is the same image bytes we wrote
   (matching the current-clip image hash) → no broadcast. (Re-encoded image bytes
   with a different hash are not signature-matched; per Risks they degrade to one

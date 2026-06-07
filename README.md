@@ -7,8 +7,6 @@ tmux paste buffer. Built so remote image paste into Claude Code and Codex CLI
 "just works" without OSC 52 support, without Xvfb, and without per-SSH session
 state.
 
-Tracks PRI-1873.
-
 ## How it works
 
 A daemon runs on every host. Peers discover each other (Tailscale `tailscale
@@ -30,106 +28,71 @@ Conflict policy: last-write-wins by monotonic timestamp. There is no central
 server. The Mac acts as a relay hub, so peers that can't see each other directly
 (one on the LAN, one on the tailnet) still converge through it.
 
-## Installation
+## Install
 
 clipfan has two pieces: a **daemon** that runs on every host (macOS + Linux),
 and a **menubar app** on the Mac that gives you the clipboard history panel and
-a one-click installer for adding more hosts.
+a one-click installer for adding more hosts. Start on your Mac with the menubar
+app — it bundles the daemon and installs everything for you.
 
-### 1. Build the binaries
+1. Get `Clipfan.app` and move it to `/Applications` (or run it from wherever you
+   downloaded it).
+2. Launch it. On first launch the app installs and starts the background daemon
+   for you, showing progress in a Welcome window. It then tells you the two
+   things you need: press **⇧⌘V** to open the clipboard panel, and paste =
+   clipfan re-copies the item you pick so you press **⌘V** yourself.
+3. No Accessibility permission is required. The only macOS permission clipfan
+   needs is **Local Network**, and only once you add LAN peers — if a peer can't
+   be reached, the app points you to the right System Settings pane. (See the
+   [Local Network caveat](#macos-launchd-vs-local-network-privacy).)
 
-From a clone of this repo on your Mac:
+Building from a source clone instead? See
+[docs/development/building-from-source.md](docs/development/building-from-source.md).
 
-```sh
-bash dist/build-all.sh        # cross-compiles the daemon for darwin + linux, amd64 + arm64
-```
+## Getting started
 
-### 2. Install the daemon on this Mac
-
-**The menubar app does this for you on first launch** — it bundles the daemon and
-runs `install.sh` itself, showing progress in a Welcome window. If you're going
-straight to the app, skip to step 3.
-
-To install by hand instead (or to see what the app runs):
-
-```sh
-cd dist && ./install.sh
-```
-
-`install.sh` installs the daemon to `~/.local/bin/clipfan`, installs the macOS
-pasteboard helper (for real image paste), registers a launchd user service, and
-stages the cross-arch binaries in `~/.local/share/clipfan/` so the menubar app
-can install other hosts for you. It generates a `shared_key` in
-`~/.config/clipfan/config.json` on first launch.
-
-**tmux integration is opt-in.** By default `install.sh` sets it up only if `tmux`
-is installed on the host. Force it either way:
-
-```sh
-./install.sh --with-tmux      # always install the tmux copy snippet + source it
-./install.sh --no-tmux        # never touch ~/.tmux.conf
-```
-
-See [Copying from a remote](#copying-from-a-remote-tmux-integration) for what the
-snippet does.
-
-### 3. Build and run the menubar app
-
-```sh
-cd apps/mac/Clipfan && ./build-app.sh
-open .build/Clipfan.app          # or: cp -R .build/Clipfan.app /Applications && open /Applications/Clipfan.app
-```
-
-On first launch the app installs and starts the background daemon for you (a
-Welcome window shows the progress), then tells you the two things you need:
-press **⇧⌘V** to open the clipboard panel, and paste = clipfan re-copies the
-item you pick so you press **⌘V** yourself. No Accessibility permission is
-required. Turn on *Launch at login* in Settings → General to start it
-automatically.
-
-The only macOS permission clipfan needs is **Local Network**, and only once you
-add LAN peers in step 4 — if a peer can't be reached, the app points you to the
-right System Settings pane. (See the
-[Local Network caveat](#macos-launchd-vs-local-network-privacy).)
-
-### 4. Add the rest of your fleet
-
-Open the menubar icon → **Settings… → Fleet → Add peer…**. If Tailscale is
-running, pick hosts from the tailnet list; otherwise type a host + SSH user. The
-app scp's the right-arch binary and a config carrying this Mac's `shared_key`,
-runs `install.sh` over SSH, and adds the host to your local peer list. Check the
-**tmux copy integration** box for hosts you use inside tmux.
+1. **Set up this Mac.** Launching the app (above) installs and starts the daemon.
+   Turn on *Launch at login* in **Settings → General** to start it automatically.
+2. **Add the rest of your fleet.** Open the menubar icon →
+   **Settings… → Fleet → Add peer…**. If Tailscale is running, pick hosts from
+   the tailnet list; otherwise type a host + SSH user. The app scp's the
+   right-arch binary and a config carrying this Mac's `shared_key`, runs the
+   installer over SSH, and adds the host to your local peer list. Check the
+   **tmux copy integration** box for hosts you use inside tmux.
 
 To update an existing peer, open **Settings… → Fleet** and click the update
 button on that peer's row. The app prompts for SSH details, uploads the current
-bundled payload, and runs `install.sh --no-tmux` on the peer. This refreshes the
-binary and restarts the launchd/systemd user service without rewriting the
-peer's `~/.config/clipfan/config.json` or touching tmux config. After a Mac app
-update, clipfan probes peers through their signed version endpoint and offers to
-open Fleet settings when a peer is older or lacks the version endpoint. App
-UI-only releases do not force peer updates; peers are compared against the
-daemon version stamped from `DAEMON_VERSION`.
+bundled payload, and refreshes the peer in place. This updates the binary and
+restarts the launchd/systemd user service without rewriting the peer's
+`~/.config/clipfan/config.json` or touching tmux config. After a Mac app update,
+clipfan probes peers through their signed version endpoint and offers to open
+Fleet settings when a peer is older or lacks the version endpoint. App UI-only
+releases do not force peer updates; peers are compared against the daemon version
+stamped from `DAEMON_VERSION`.
 
-You can also install a host by hand: copy this Mac's `shared_key` into the new
-host's `~/.config/clipfan/config.json` and run `./install.sh` there.
+You can also install a host by hand — copy this Mac's `shared_key` into the new
+host's `~/.config/clipfan/config.json` and run the installer there. See
+[docs/development/building-from-source.md](docs/development/building-from-source.md).
 
-### 5. Verify
+## Daily use
 
-```sh
-curl http://localhost:7853/v1/health                          # → ok
-launchctl kickstart -k gui/$UID/com.primeradiant.clipfan      # restart (macOS)
-systemctl --user restart clipfan                              # restart (Linux)
-```
-
-Copy something on one host; it lands on the others. (See the
-[Local Network caveat](#macos-launchd-vs-local-network-privacy) if LAN peers
-don't sync on macOS Sequoia.)
+- **Copy anywhere, paste anywhere.** Copy on one host and it lands on the others.
+  On a remote you can paste the synced item with **⌘V** from your Mac terminal or
+  **prefix-]** in tmux.
+- **Clipboard history panel — ⇧⌘V.** A keyboard-driven panel (Spotlight/Raycast
+  style) of your recent clips, local to each host. Type to search, **↑ / ↓** to
+  move, **⏎** to put the selected clip on your clipboard and sync it to the fleet.
+  See [Menubar app](#menubar-app-macos) for the full controls.
+- **tmux `prefix-]`.** Received clips land in every running tmux paste buffer, so
+  `prefix-]` pastes the latest synced clip. For getting a copy you make *inside*
+  tmux on a remote back to your Mac, see
+  [Copying from a remote](#copying-from-a-remote-tmux-integration).
 
 ## Copying from a remote (tmux integration)
 
 The daemon keeps the *OS clipboard* in sync on its own. Getting a **copy you
 make inside tmux on a remote** back to your Mac is what the tmux integration
-does. `install.sh` writes the snippet to `~/.config/clipfan/tmux.conf` and adds
+does. The installer writes the snippet to `~/.config/clipfan/tmux.conf` and adds
 `source-file ~/.config/clipfan/tmux.conf` to your `~/.tmux.conf` (idempotently —
 re-running won't duplicate it). Reload with `tmux source-file ~/.tmux.conf` or
 restart tmux.
@@ -275,6 +238,11 @@ Multi-user Linux notes:
 - Deleting a history item or clearing unpinned history also removes image files
   that are no longer referenced by remaining history entries.
 
+## Troubleshooting
+
+Common failures (daemon not running, peers not syncing) and their fixes are in
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
 ## Menubar app (macOS)
 
 `Clipfan.app` (`apps/mac/Clipfan`, a SwiftUI app) runs alongside the daemon. It
@@ -307,13 +275,13 @@ see at a glance whether your fleet is in sync. Click a peer to jump to its detai
 ### Settings
 
 - **Fleet** — every peer as a card (health, address, sync direction), plus
-  **Add peer…** (see [Installation](#4-add-the-rest-of-your-fleet)).
+  **Add peer…** (see [Getting started](#getting-started)).
 - **General** — *Launch at login*, the history limit, the global shortcut, and
   daemon health. Developer bits (config path, daemon log, restart) live in a
   collapsed **Developer** section.
 
 The app signs its `localhost:7853/v1/peers` loopback poll, so it needs no Local
-Network privacy grant. Build it from `apps/mac/Clipfan` (`./build-app.sh`).
+Network privacy grant.
 
 ## Known caveats
 
@@ -346,7 +314,7 @@ primary source) this is the right shape.
 
 ### Linux Ctrl-V image paste
 
-On a headless Linux remote, the xclip/wl-paste shim symlinks (`install.sh`
+On a headless Linux remote, the xclip/wl-paste shim symlinks (the installer
 creates them) answer Claude Code's `Ctrl-V` image paste. Claude Code shells out
 to `xclip -t TARGETS -o` and `xclip -t image/png -o`; the shim serves those out
 of clipfan's state directory, no display server required. Keep `~/.local/bin`
@@ -364,6 +332,9 @@ x11-bridge, no sudo on the remote.
 
 ## Documentation
 
+- [docs/development/building-from-source.md](docs/development/building-from-source.md)
+  — build the daemon and the menubar app from a source clone.
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — common failures and fixes.
 - `docs/ARCHITECTURE.md` — module layout, wire format, HTTP API, recirculation
   prevention, the image-on-receive flow, clipboard history, and the tmux
   copy-capture path.

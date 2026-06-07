@@ -1935,9 +1935,9 @@ git add docs/ README.md
 git commit -m "docs: reconcile history docs with shipped implementation"
 ```
 
-- [ ] **Step 5: Update Linear PRI-1875**
+- [ ] **Step 5: Update the tracking issue**
 
-Post a comment summarizing the implemented feature and move the ticket to In Review.
+Post a comment summarizing the implemented feature and move it to In Review.
 
 ---
 

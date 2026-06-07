@@ -2,7 +2,6 @@
 
 **Status:** Approved (design). Ready for implementation planning.
 **Date:** 2026-05-28
-**Ticket:** PRI-1875
 **Component:** clipfan daemon (Go) + Clipfan.app (SwiftUI)
 
 ## Summary

@@ -5,7 +5,7 @@
 > reference; for how the system works today see ARCHITECTURE.md, and for planned
 > work see ROADMAP.md.
 
-PRI-1873. Phased, each phase ends in a working binary.
+Phased, each phase ends in a working binary.
 
 ## Phase 1 — text-only MVP (Mac ⇄ paradise-park)
 

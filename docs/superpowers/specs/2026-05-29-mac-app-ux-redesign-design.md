@@ -2,7 +2,6 @@
 
 **Date:** 2026-05-29
 **Status:** Approved design (pending spec review)
-**Tracks:** PRI-1873 / PRI-1875 follow-on
 
 ## Problem
 
