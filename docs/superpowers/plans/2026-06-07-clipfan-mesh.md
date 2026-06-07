@@ -4,7 +4,7 @@
 
 **Goal:** Make any provisioning operation heal the whole fleet into a full mesh, drive it from a Go CLI command runnable on any host, and show the resulting mesh state in the macOS app.
 
-**Architecture:** A new Go CLI command `clipfan mesh-heal` reuses the existing per-pair provisioner (`sshprovision.DirectPairProvisioner.Provision`) but adds the three things the primitive lacks: decentralized roster discovery, per-host-resilient host-prep, and per-edge change-detection (so it's idempotent), plus a Go daemon-restart so applied config takes effect. A new read-only `fleet-snapshot` gateway verb lets the Mac read a peer's redacted roster + edge-health for the Fleet view. The Mac app (and a future Linux UI) become thin invokers of `mesh-heal`.
+**Architecture:** A new Go CLI command `clipfan mesh-heal` reuses the existing per-pair provisioner (`sshprovision.DirectPairProvisioner.Provision`) but adds the three things the primitive lacks: decentralized roster discovery, per-host-resilient host-prep, and per-edge change-detection (so it's idempotent), plus a Go daemon-restart so applied config takes effect. Both discovery and change-detection are powered by **one new read primitive** — a `clipfan roster-read` subcommand that a host runs on itself (reporting its own paths, platform, uid, and peers) and that the orchestrator invokes over regular SSH. A separate read-only `fleet-snapshot` gateway verb gives the Mac a redacted roster + edge-health for the Fleet view. The Mac app (and a future Linux UI) become thin invokers of `mesh-heal`.
 
 **Tech Stack:** Go (daemon/CLI under `internal/`, `cmd/clipfan`), SwiftUI/AppKit (`apps/mac/Clipfan`). Go tests: `go test ./...`. Swift tests: `cd apps/mac/Clipfan && swift test --filter <Name>`.
 
@@ -12,12 +12,13 @@
 
 **Verified existing APIs this plan builds on:**
 - `sshprovision.DirectPairProvisioner.Provision(ctx, DirectPairProvisionInput{Local, Remote DirectPairProvisionHost, SharedKey string}) (DirectPairProvisionResult, error)` — provisions one pair, both directions, unconditionally (no skip, always bumps config revision). `internal/sshprovision/pair_executor.go:75`.
-- `sshprovision.RegularSSHProvisionDriver{Runner, RegularKnownHostsPath, ConfirmedHostKeyLines map[string]string, ProvisionHosts map[string]DirectPairProvisionHost, ConfigPathByHostID map[string]string}` implements the driver; `ConfirmHostKey` reads pre-scanned pins; `WriteConfig` is a two-phase **direct file write** with no daemon reload. `internal/sshprovision/regular_ssh_driver.go`.
-- The existing all-or-nothing orchestration to refactor from: `runSSHProvisionDirect` (`internal/cli/ssh_provision_direct.go:44`) — its `scanSSHProvisionDirectHostKeys` (lines 83, 267-304) keyscans ALL hosts up front and aborts on any failure; its pair loop (97-109) aborts on first failure.
-- `config.Load() (*Config, error)`, `config.Path() string`, `config.ReadSSHPeer(path string, peerID string) (SSHPeerConfigReadResult, error)`. `config.SSHPeer{ID, SSHHost, SSHUser, SSHPort, InstallPath, GatewayPath, MigrationState, Proof SSHProof, Enabled, Accept, Connect, Persistent}`; `SSHProof{AcceptKeyID, ConnectKeyID, …}`; `config.MigrationStateSSHKeysReady == "ssh_keys_ready"`. `internal/config/ssh.go`, `internal/config/config.go`, `internal/config/ssh_peer_config.go`.
-- Subcommand dispatch: add a `case "mesh-heal":` in `cmd/clipfan/main.go` (mirrors `case "ssh-run-probe":` → `cli.RunSSHRunProbe(args[1:], stdout, stderr)`).
-- Restart commands (to port to Go): macOS `launchctl kickstart -k gui/<uid>/com.primeradiant.clipfan` (`DaemonClient.swift:95`); Linux `systemctl --user restart clipfan` (`Installer.swift:291` branch).
-- Gateway verbs live in `internal/cli/ssh_gateway.go`'s `command` switch (`runSSHGatewayWithHandlers`, line 71); peer auth is `validateSSHGatewaySyncPeer` (line 326). The Swift `Peer`/`LocalDaemonSSHPeer` models already redact secrets via `redactingSecretLikeFields` (`Models.swift:485`).
+- `sshprovision.DirectPairProvisionHost{Host DirectPairHost, AdminHost DirectPairHost, KnownHostsPath, SyncKeyPath string}`; `DirectPairHost{ID, SSHHost, SSHUser, SSHPort, InstallPath, GatewayPath, SSHServerMode}` (read `internal/sshprovision/pair_plan.go` for the exact `DirectPairHost` fields before constructing it). `Provision` requires `KnownHostsPath`, `SyncKeyPath`, and a config path **per host**.
+- `sshprovision.RegularSSHProvisionDriver{Runner, RegularKnownHostsPath, ConfirmedHostKeyLines map[string]string, ProvisionHosts map[string]DirectPairProvisionHost, ConfigPathByHostID map[string]string}` implements the driver; `ConfirmHostKey` reads pre-scanned pins keyed by `host.ID`; every other method SSHes to `adminHostFor(host)`; `WriteConfig` is a two-phase **direct file write** with no daemon reload. `internal/sshprovision/regular_ssh_driver.go`.
+- The existing all-or-nothing orchestration to generalize from: `runSSHProvisionDirect` (`internal/cli/ssh_provision_direct.go:44`); its `scanSSHProvisionDirectHostKeys` (lines 83, 267-304) keyscans ALL hosts up front (resolving the keyscan target with `ssh -G`, rewriting `Host.SSHHost`/`Port` to the resolved value while keeping `AdminHost` = original endpoint, and detecting server mode) and aborts on any failure; its pair loop (97-109) aborts on first failure. `parseSSHProvisionDirectHost` requires `id,ssh,user,port,install,config,known_hosts,sync_key` host-spec fields.
+- `config.Load() (*Config, error)`, `config.Path() string`. **`config.ReadSSHPeer(path, peerID)` is LOCAL-file only and returns `SSHPeerConfigReadResult{Peer map[string]any, …}` with secrets redacted — it is NOT a remote read and NOT a typed struct.** Do not use it for the over-SSH reads; this plan adds a typed `roster-read` primitive (Task 1.1) instead. `config.Config.SSH` is a pointer (`*SSHConfig`) — nil-guard it. `config.SSHPeer{ID, SSHHost, SSHUser, SSHPort, InstallPath, GatewayPath, MigrationState, Proof SSHProof, Enabled, Accept, Connect, Persistent}` with `Enabled/Accept/Connect` marked `omitempty`; `SSHProof{AcceptKeyID, ConnectKeyID, …}`; `config.MigrationStateSSHKeysReady == "ssh_keys_ready"`. `internal/config/ssh.go`, `config.go`, `ssh_peer_config.go`.
+- Subcommand dispatch: add `case`s in `cmd/clipfan/main.go` (mirror `case "ssh-run-probe":` → `cli.RunSSHRunProbe(args[1:], stdout, stderr)`).
+- The production remote-restart shell to **port in full** (not a single command): `apps/mac/Clipfan/Sources/Clipfan/Installer.swift:1268-1286` — it tries `systemctl --user daemon-reload + enable + restart clipfan.service`, then `launchctl enable + bootstrap/load + kickstart gui/<uid>/com.primeradiant.clipfan`, then `nohup <installPath> daemon` as a fallback. The `nohup` fallback is what covers a remote macOS where the GUI launchd domain isn't reachable over non-interactive SSH. The remote uid comes from `id -u` (gathered by the roster-read, Task 1.1).
+- Gateway verbs live in `internal/cli/ssh_gateway.go`'s `command` switch (`runSSHGatewayWithHandlers`, line 71); peer auth is `validateSSHGatewaySyncPeer` (line 326). `GET /v1/peers` IS served to a signed loopback client (`internal/transport/server.go:205`, gated by the local-auth-version check) — `fleet-snapshot` can fetch it the way the gateway fetches `current`. `internal/cli` already imports `internal/daemon` (`internal/cli/fleet_reset.go`), so referencing `daemon.PeerState` is safe (no import cycle). The Swift `Peer`/`LocalDaemonSSHPeer` models already redact secrets (`Models.swift:485`).
 
 **Dependency order (STRICT):** Phase 1 (mesh-heal) and Phase 2 (fleet-snapshot) are the foundations and have no Swift dependency — they can proceed in parallel with each other. Phase 3 (D) needs Phase 1. Phase 4 (E) needs Phase 2. Phase 5 (F) needs Phase 3 and reuses the add-peer success state from the quick-wins plan (Workstream G).
 
@@ -25,96 +26,64 @@
 
 ## File Structure
 
-- `internal/cli/mesh_heal.go` (new) — `RunMeshHeal` entry + orchestration (discover roster → host-prep → per-edge change-detect → provision reachable pairs → restart changed hosts → JSON report).
-- `internal/cli/mesh_heal_roster.go` (new) — roster discovery (read each reachable host's config over regular SSH; union; build host specs).
-- `internal/cli/mesh_heal_changedetect.go` (new) — `edgeIsHealthy(...)` predicate from both ends' config peer state.
-- `internal/cli/mesh_heal_restart.go` (new) — per-platform Go daemon restart over regular SSH.
-- `internal/cli/mesh_heal_*_test.go` (new) — tests per unit (use the existing fake `CommandRunner` pattern from `ssh_provision_direct_test.go`).
+- `internal/cli/roster_read.go` (new) — `RunRosterRead` subcommand: a host prints its OWN platform, uid, paths, and peers as typed JSON (no secrets).
+- `internal/cli/mesh_heal_roster.go` (new) — over-SSH invocation of `roster-read` + decentralized discovery (BFS to closure).
+- `internal/cli/mesh_heal_changedetect.go` (new) — `edgeIsHealthy(...)` from both ends' roster peer views.
+- `internal/cli/mesh_heal_hostprep.go` (new) — per-host resilient host-prep (factored from the scan, error-capturing).
+- `internal/cli/mesh_heal_restart.go` (new) — Go daemon restart over regular SSH (ports the full Installer fallback shell).
+- `internal/cli/mesh_heal.go` (new) — `RunMeshHeal` orchestration + JSON report.
+- `internal/cli/mesh_heal_*_test.go`, `internal/cli/roster_read_test.go` (new) — tests (reuse the fake `CommandRunner` from `ssh_provision_direct_test.go`).
 - `internal/cli/fleet_snapshot.go` (new) — the `fleet-snapshot` gateway handler (redacted roster + edge-health).
-- `internal/cli/ssh_gateway.go` (modify) — add `case sshprovision.SSHGatewayFleetSnapshotCommand:` to the verb switch + handler wiring.
-- `cmd/clipfan/main.go` (modify) — register `mesh-heal`.
-- `apps/mac/Clipfan/Sources/Clipfan/Installer.swift` (modify) — replace the Swift orchestration in `provisionPrivateDirectMesh` with a `clipfan mesh-heal` invocation.
-- `apps/mac/Clipfan/Sources/Clipfan/MeshHealClient.swift` (new) — thin wrapper that runs `mesh-heal` and decodes its JSON report.
-- `apps/mac/Clipfan/Sources/Clipfan/SettingsView.swift` / `StatusMenuView.swift` (modify) — a "Repair mesh" action.
-- `apps/mac/Clipfan/Sources/Clipfan/FleetMesh*.swift` (new) — fleet-wide mesh model + per-host edge rows for the Fleet view.
-- `apps/mac/Clipfan/Sources/Clipfan/WelcomeView.swift` / `WelcomeWindow.swift` / `Bootstrap.swift` (modify) — the multi-step wizard.
+- `internal/cli/ssh_gateway.go` (modify) — add the `fleet-snapshot` verb to the switch.
+- `cmd/clipfan/main.go` (modify) — register `roster-read` and `mesh-heal`.
+- `apps/mac/Clipfan/Sources/Clipfan/MeshHealClient.swift` (new) — runs `mesh-heal`, decodes the report.
+- `apps/mac/Clipfan/Sources/Clipfan/Installer.swift`, `SettingsView.swift`/`StatusMenuView.swift` (modify) — invoke heal + "Repair mesh".
+- `apps/mac/Clipfan/Sources/Clipfan/FleetMesh*.swift` (new) — fleet-wide mesh model + per-host edge rows.
+- `apps/mac/Clipfan/Sources/Clipfan/WelcomeView.swift`/`WelcomeWindow.swift`/`Bootstrap.swift` (modify) — the wizard.
 
 ---
 
 ## Phase 1 — Foundation 1: `clipfan mesh-heal` (Go)
 
-> The hard, dependency-heavy core. Build it bottom-up: change-detection predicate → roster discovery → restart → orchestration → subcommand. Each unit is independently testable with a fake `CommandRunner` (see `internal/cli/ssh_provision_direct_test.go` and `internal/sshprovision/*_test.go` for the established fakes — read those before starting to reuse the patterns).
+> Build bottom-up. Each unit is independently testable with a fake `CommandRunner` (read `internal/cli/ssh_provision_direct_test.go` and `internal/sshprovision/*_test.go` first to reuse the fakes).
 
-### Task 1.0: Read the references first
+### Task 1.0: Read the reuse surface (no edits)
 
-- [ ] **Step 1: Read the reuse surface end-to-end** (no edits)
+- [ ] **Step 1:** Read in full so you build against real signatures: `internal/cli/ssh_provision_direct.go` (esp. `scanSSHProvisionDirectHostKeys`, `parseSSHProvisionDirectHost`, `provisionHostsByID`); `internal/sshprovision/pair_executor.go`, `regular_ssh_driver.go`, `pair_plan.go` (for `DirectPairHost`); `internal/config/ssh.go` (`SSHPeer`/`SSHProof`), `config.go` (`Config`/`SSHConfig`); `internal/cli/ssh_provision_direct_test.go` (fake runner); `apps/mac/Clipfan/Sources/Clipfan/Installer.swift:1268-1286` (restart shell to port). Confirm field names/return types before writing.
 
-Read in full so you build against real signatures, not guesses:
-- `internal/cli/ssh_provision_direct.go` (the orchestration you're generalizing, incl. `scanSSHProvisionDirectHostKeys`, `parseSSHProvisionDirectHost`, `provisionHostsByID`).
-- `internal/sshprovision/pair_executor.go` and `regular_ssh_driver.go` (the provisioner + driver).
-- `internal/sshprovision/ssh_run_probe.go` and `internal/cli/ssh_run_probe.go` (what a probe proves — connectivity + identity, NOT config).
-- `internal/config/ssh_peer_config.go` `ReadSSHPeer` and `internal/config/ssh.go` `SSHPeer`/`SSHProof`.
-- `internal/cli/ssh_provision_direct_test.go` (the fake `CommandRunner` + how hosts/keyscans are stubbed).
+### Task 1.1: `roster-read` primitive (the foundation for discovery + change-detection)
 
-Confirm the exact field names/return types before writing code in the next tasks.
+**Why:** Peer entries carry a host's `ssh_host/port/user` + `install_path` but NOT its `config`/`known_hosts`/`sync_key` paths, platform, or uid. So the orchestrator can *invoke* `clipfan` on a peer (it has the endpoint + install path) but must ask the host to report the rest. `config.ReadSSHPeer` is local-only and returns a redacted map, so this typed self-report replaces it.
 
-### Task 1.1: Per-edge change-detection predicate (idempotency)
+**Files:** Create `internal/cli/roster_read.go`, `internal/cli/roster_read_test.go`.
 
-**Why:** The reused primitive rewrites config every run; the only way to make heal idempotent and scope restarts is to check, before provisioning a pair, whether both ends are *already correctly configured*. A probe is insufficient (authorized_keys can exist while config peers are missing/staged).
+- [ ] **Step 1: Write the failing test** — `buildRosterReadReport(cfg *config.Config, goos string, uid int, selfInstallPath string) RosterReadReport` returns `{origin, platform, uid, config_path, known_hosts_path, sync_key_path, install_path, peers:[{id, ssh_host, ssh_port, ssh_user, install_path, gateway_path, migration_state, enabled, accept, connect, accept_key_id, connect_key_id}]}`. Assert: the marshalled JSON contains the peers and paths but **no** `shared_key` / private-key material; `enabled/accept/connect` default to their real boolean (not dropped) when reading from a `Config` whose peer has them false.
+
+- [ ] **Step 2: Run to verify it fails** (`undefined: buildRosterReadReport`). `go test ./internal/cli/ -run RosterRead -v`.
+
+- [ ] **Step 3: Implement** `RosterReadReport` (typed structs), `buildRosterReadReport(...)` (copy allowlisted fields from `cfg.SSH.Peers`, paths from `cfg.SSH.{KnownHosts,SyncKey}` + `config.Path()`), and `RunRosterRead(args, stdout, stderr) error` that does `config.Load()`, reads `runtime.GOOS`, `os.Getuid()`, the running binary path, builds the report, and JSON-encodes it to stdout. No secrets in the output.
+
+- [ ] **Step 4: Run to verify pass.** `go build ./...`.
+
+- [ ] **Step 5: Commit** (`feat: clipfan roster-read self-report subcommand`).
+
+### Task 1.2: Per-edge change-detection predicate
+
+**Why:** The reused primitive rewrites config every run; to be idempotent and to scope restarts, decide per edge whether both ends are already correctly configured. A probe is insufficient (authorized_keys can exist while config peers are missing/staged) — check config state.
 
 **Files:** Create `internal/cli/mesh_heal_changedetect.go`, `internal/cli/mesh_heal_changedetect_test.go`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test** — `edgeIsHealthy(a, b edgePeerView)` where `edgePeerView{Found, Enabled, Accept, Connect bool; MigrationState, AcceptKeyID, ConnectKeyID string}` is populated from a `RosterReadReport` peer (Task 1.1). Tests: both ends ready+enabled+accept+connect+`ssh_keys_ready` with non-empty matching key ids → healthy; one end `Found:false` → unhealthy; one end `ssh_material_staged` → unhealthy; ready but empty `AcceptKeyID`/`ConnectKeyID` → unhealthy.
 
-```go
-package cli
+- [ ] **Step 2: Run to verify it fails.**
 
-import "testing"
-
-func TestEdgeIsHealthyRequiresBothEndsReadyWithMatchingProof(t *testing.T) {
-	// a's view of peer b, and b's view of peer a, both ssh_keys_ready with
-	// the expected accept/connect key ids, and enabled+accept+connect.
-	a := edgePeerView{Found: true, Enabled: true, Accept: true, Connect: true,
-		MigrationState: "ssh_keys_ready", AcceptKeyID: "kb", ConnectKeyID: "ka"}
-	b := edgePeerView{Found: true, Enabled: true, Accept: true, Connect: true,
-		MigrationState: "ssh_keys_ready", AcceptKeyID: "ka", ConnectKeyID: "kb"}
-	if !edgeIsHealthy(a, b) {
-		t.Fatal("expected healthy edge")
-	}
-}
-
-func TestEdgeIsHealthyFalseWhenOneEndMissing(t *testing.T) {
-	a := edgePeerView{Found: true, Enabled: true, Accept: true, Connect: true, MigrationState: "ssh_keys_ready"}
-	b := edgePeerView{Found: false}
-	if edgeIsHealthy(a, b) {
-		t.Fatal("missing peer entry must be unhealthy")
-	}
-}
-
-func TestEdgeIsHealthyFalseWhenStaged(t *testing.T) {
-	a := edgePeerView{Found: true, Enabled: true, Accept: true, Connect: true, MigrationState: "ssh_material_staged"}
-	b := edgePeerView{Found: true, Enabled: true, Accept: true, Connect: true, MigrationState: "ssh_keys_ready"}
-	if edgeIsHealthy(a, b) {
-		t.Fatal("staged migration state must be unhealthy")
-	}
-}
-```
-
-- [ ] **Step 2: Run to verify it fails**
-
-Run: `go test ./internal/cli/ -run TestEdgeIsHealthy -v`
-Expected: FAIL — `undefined: edgePeerView` / `edgeIsHealthy`.
-
-- [ ] **Step 3: Implement the predicate**
-
-In `mesh_heal_changedetect.go`:
+- [ ] **Step 3: Implement** `edgeIsHealthy`:
 
 ```go
 package cli
 
 import "github.com/prime-radiant-inc/clipfan/internal/config"
 
-// edgePeerView is one host's config view of a specific peer.
 type edgePeerView struct {
 	Found          bool
 	Enabled        bool
@@ -125,179 +94,145 @@ type edgePeerView struct {
 	ConnectKeyID   string
 }
 
-// edgeIsHealthy reports whether the A<->B edge is already fully provisioned on
-// BOTH ends: each side has the other as an enabled accept+connect peer in
-// ssh_keys_ready state. (Proof key-id cross-checks are added in step 5.)
 func edgeIsHealthy(a, b edgePeerView) bool {
 	ready := func(v edgePeerView) bool {
 		return v.Found && v.Enabled && v.Accept && v.Connect &&
-			v.MigrationState == string(config.MigrationStateSSHKeysReady)
+			v.MigrationState == string(config.MigrationStateSSHKeysReady) &&
+			v.AcceptKeyID != "" && v.ConnectKeyID != ""
 	}
 	return ready(a) && ready(b)
 }
 ```
 
-- [ ] **Step 4: Run to verify the first two tests pass**
+- [ ] **Step 4: Run to verify pass.**
 
-Run: `go test ./internal/cli/ -run TestEdgeIsHealthy -v`
-Expected: the missing-end and staged tests PASS; the matching-proof test passes too (proof not yet enforced).
+- [ ] **Step 5: Commit** (`feat: mesh-heal per-edge change-detection`).
 
-- [ ] **Step 5: Enforce proof cross-check + commit**
+### Task 1.3: Roster discovery (decentralized, via `roster-read`)
 
-Tighten `edgeIsHealthy` so A's stored `ConnectKeyID`/`AcceptKeyID` for B are non-empty and consistent with B's view (A connects with the key B accepts). Add a test `TestEdgeIsHealthyFalseWhenProofKeyMissing` (a `ready` edge but `AcceptKeyID`/`ConnectKeyID` empty → unhealthy). Run `go test ./internal/cli/ -run TestEdgeIsHealthy -v` → PASS.
-
-```bash
-git add internal/cli/mesh_heal_changedetect.go internal/cli/mesh_heal_changedetect_test.go
-git commit -m "feat: mesh-heal per-edge change-detection predicate"
-```
-
-### Task 1.2: Roster discovery
-
-**Why:** Heal needs the full host set + each host's real config paths/endpoints. Read each reachable host's config over regular SSH (the user's reach), union, and build provision host specs — no platform guessing (each host's config carries its own paths).
+**Why:** Build the full host set + each host's real paths/platform/uid by asking each reachable host to self-report.
 
 **Files:** Create `internal/cli/mesh_heal_roster.go`, `internal/cli/mesh_heal_roster_test.go`.
 
-- [ ] **Step 1: Write the failing test** — given a fake reader returning host A's config (peers B, C with endpoints/paths) and B's/C's configs, `discoverRoster(seed, reader)` returns the union {A,B,C} with each host's ssh endpoint, install/config/known_hosts/sync_key paths, and platform-independent config path. Use a fake `rosterReader` func type so no real SSH runs.
-
-- [ ] **Step 2: Run to verify it fails** (`undefined: discoverRoster`).
-
-- [ ] **Step 3: Implement** `discoverRoster(seed []rosterHost, read rosterReader) ([]rosterHost, error)`:
-  - `rosterReader` is `func(ctx, host rosterHost) (config.Config, error)` (reads that host's config.json over regular SSH — production impl runs `cat <configPath>` or a `clipfan` read over SSH against the admin host).
-  - BFS from `seed`: read each host's `cfg.SSH.Peers`, add unseen peers (id + ssh host/port/user + install/config/known_hosts/sync_key from the peer entry and the reading host's `cfg.SSH`), continue until closure over reachable hosts.
-  - Return the deduped host list. Hosts that can't be read are recorded as unreachable (returned in a separate slice or marked), not fatal.
-
-- [ ] **Step 4: Run to verify pass.**
-
-- [ ] **Step 5: Commit** (`feat: mesh-heal roster discovery`).
-
-### Task 1.3: Resilient host-prep (per host, error-capturing)
-
-**Why:** The existing `scanSSHProvisionDirectHostKeys` aborts on the first host's failure and is the source of host-key pins + server-mode + admin-host. Heal must prep each host independently, capturing failures so one unreachable host doesn't sink the run.
-
-**Files:** Create `internal/cli/mesh_heal_hostprep.go`, `internal/cli/mesh_heal_hostprep_test.go`.
-
-- [ ] **Step 1: Write the failing test** — `prepHosts(ctx, hosts, runner)` returns a `map[hostID]hostPrep` (with the confirmed host-key line + server-mode) for reachable hosts and a `map[hostID]error` for failures; a runner that errors for one host still returns prep for the others. Reuse the fake `CommandRunner` from `ssh_provision_direct_test.go`.
+- [ ] **Step 1: Write the failing test** — with a fake `rosterReader func(ctx, endpoint) (RosterReadReport, error)`, `discoverRoster(seed []rosterEndpoint, read rosterReader)` BFS-closes over peers: given A's report (peers B, C) and B's/C's reports, it returns all of {A,B,C} as `discoveredHost{report, endpoint}` and records an unreachable host (reader error) separately rather than aborting. `rosterEndpoint{ID, SSHHost, SSHPort, SSHUser, InstallPath}` (everything needed to *invoke* `roster-read`, all present in a peer entry).
 
 - [ ] **Step 2: Run to verify it fails.**
 
-- [ ] **Step 3: Implement** `prepHosts(...)` by factoring the per-host body of `scanSSHProvisionDirectHostKeys` (keyscan target resolution via `ssh -G`, the keyscan, server-mode detection) into a per-host function wrapped in a recover-and-record loop. Do NOT change `scanSSHProvisionDirectHostKeys` itself (leave `ssh-provision-direct` as-is); extract a shared helper both can call if convenient.
+- [ ] **Step 3: Implement** `discoverRoster(...)`: BFS from `seed`; for each unseen endpoint call `read` (production impl: `ssh <user>@<host> -p <port> <installPath> roster-read` via the `CommandRunner`, JSON-decode); enqueue its peers as endpoints (id + ssh fields + install_path from each peer entry); record reader errors in an `unreachable` slice; nil-guard `cfg.SSH`. Return `([]discoveredHost, []unreachableHost)`.
+
+- [ ] **Step 4: Run to verify pass.**
+
+- [ ] **Step 5: Commit** (`feat: mesh-heal decentralized roster discovery`).
+
+### Task 1.4: Resilient host-prep (per host, error-capturing)
+
+**Why:** The existing `scanSSHProvisionDirectHostKeys` aborts on the first host and is the source of host-key pins + the resolved-host/admin-host split. Heal must prep each host independently.
+
+**Files:** Create `internal/cli/mesh_heal_hostprep.go`, `internal/cli/mesh_heal_hostprep_test.go`.
+
+- [ ] **Step 1: Write the failing test** — `prepHosts(ctx, hosts, runner)` returns `map[hostID]hostPrep` and `map[hostID]error`; a runner that errors for one host still preps the others. `hostPrep` MUST carry the confirmed host-key line, the server mode, AND the resolved `Host.SSHHost/Port` separately from the original `AdminHost` endpoint (the driver SSHes to `adminHostFor(host)` but keys host-pins by `host.ID`).
+
+- [ ] **Step 2: Run to verify it fails.**
+
+- [ ] **Step 3: Implement** by factoring the per-host body of `scanSSHProvisionDirectHostKeys` (keyscan-target resolution via `ssh -G`, the keyscan, server-mode detection, admin-vs-resolved split) into a per-host function wrapped in an error-capturing loop. Leave `scanSSHProvisionDirectHostKeys` itself untouched (extract a shared helper if convenient).
 
 - [ ] **Step 4: Run to verify pass.**
 
 - [ ] **Step 5: Commit** (`feat: mesh-heal per-host resilient host-prep`).
 
-### Task 1.4: Go daemon-restart capability
+### Task 1.5: Go daemon-restart (full fallback chain)
 
-**Why:** Direct config writes don't hot-reload; a changed host needs a restart, and there is no Go restart today.
+**Why:** Direct config writes don't hot-reload; a changed host needs a restart, there is no Go restart today, and a single `launchctl kickstart` fails on a non-bootstrapped agent / unreachable GUI domain.
 
 **Files:** Create `internal/cli/mesh_heal_restart.go`, `internal/cli/mesh_heal_restart_test.go`.
 
-- [ ] **Step 1: Write the failing test** — `restartCommand(platform, uid)` returns the right argv: macOS → `launchctl kickstart -k gui/<uid>/com.primeradiant.clipfan`; Linux → `systemctl --user restart clipfan`. Pure function, table-driven.
+- [ ] **Step 1: Write the failing test** — `restartShell(platform string, uid int, installPath string) string` returns a shell script: for `linux`, `systemctl --user daemon-reload; systemctl --user enable clipfan.service; systemctl --user restart clipfan.service`; for `darwin`, the launchctl enable+bootstrap/load+`kickstart -k gui/<uid>/com.primeradiant.clipfan` sequence **followed by** a `nohup <installPath> daemon` fallback. Assert the unit name is `clipfan.service` (not bare `clipfan`) and the macOS branch includes the `nohup` fallback. Port the exact sequence from `Installer.swift:1268-1286`.
 
 - [ ] **Step 2: Run to verify it fails.**
 
-- [ ] **Step 3: Implement** `restartCommand(...)` (pure) and `restartDaemon(ctx, runner, adminHost, platform)` that runs it over regular SSH against the admin host via the existing `CommandRunner`. Note (verified live): `systemctl --user` works over non-interactive SSH on this fleet because PAM provides `DBUS_SESSION_BUS_ADDRESS` and lingering is enabled; do not inject env.
+- [ ] **Step 3: Implement** `restartShell(...)` (pure) and `restartDaemon(ctx, runner, adminHost, platform, uid, installPath)` that runs `sh -c <restartShell>` over regular SSH against the admin host. `platform` and `uid` come from the host's `RosterReadReport` (Task 1.1).
 
 - [ ] **Step 4: Run to verify pass.**
 
-- [ ] **Step 5: Commit** (`feat: mesh-heal Go daemon restart`).
+- [ ] **Step 5: Commit** (`feat: mesh-heal Go daemon restart with fallback chain`).
 
-### Task 1.5: The `mesh-heal` orchestration
+### Task 1.6: The `mesh-heal` orchestration
 
-**Why:** Tie it together: discover roster → prep hosts (resilient) → for each pair, read both ends' config and `edgeIsHealthy` → skip healthy, else `provisioner.Provision` with per-pair error capture → restart only hosts whose config changed → emit a JSON report.
+**Why:** Tie it together, resilient + idempotent.
 
 **Files:** Create `internal/cli/mesh_heal.go`, `internal/cli/mesh_heal_test.go`.
 
-- [ ] **Step 1: Write the failing test** — with a fully-faked runner/driver and a 3-host roster where one edge is already healthy and one host is unreachable: `runMeshHeal(...)` provisions the reachable unhealthy edge, SKIPS the healthy edge (no `Provision` call, no restart for its hosts), reports the unreachable host, and does NOT return an error for partial success. Assert the JSON report shape (`{"healed":[…],"skipped":[…],"failed":[…]}`).
+- [ ] **Step 1: Write the failing test** — fully faked runner/reader/driver, 3-host roster where one edge is already healthy and one host unreachable: `runMeshHeal(...)` provisions the reachable unhealthy edge, SKIPS the healthy edge (no `Provision` call; neither of its hosts marked changed/restarted), reports the unreachable host, and returns NO error for partial success. Assert the JSON report `{"healed":[…],"skipped":[…],"failed":[…],"restarted":[…]}`.
 
 - [ ] **Step 2: Run to verify it fails.**
 
-- [ ] **Step 3: Implement** `runMeshHeal(args, stdout, stderr, opts)` (mirror `runSSHProvisionDirect`'s option-injection so tests pass fakes): parse flags (`--regular-known-hosts`, optional `--host` seeds, `--trust-keyscan`), discover roster (Task 1.2), prep hosts (Task 1.3), build `DirectPairProvisionHost`s, iterate unordered pairs: read both ends via `config.ReadSSHPeer`-over-SSH → `edgeIsHealthy` → skip or `DirectPairProvisioner.Provision` (capture per-pair error into the report, continue), track changed hostIDs, restart changed hosts (Task 1.4), encode the report JSON. Add `RunMeshHeal(args, stdout, stderr) error` as the public entry.
+- [ ] **Step 3: Implement** `runMeshHeal(args, stdout, stderr, opts)` (mirror `runSSHProvisionDirect`'s option-injection for fakes): parse flags (`--regular-known-hosts`, `--trust-keyscan`, optional `--host` seeds); discover roster (1.3) — each `discoveredHost.report` carries platform/uid/paths; prep hosts (1.4); build `DirectPairProvisionHost`s from the reports (paths from the report, admin/resolved from prep); for each unordered pair: read both ends' edge views from the already-fetched reports (cache from discovery — do not re-SSH) → `edgeIsHealthy` → skip, else `DirectPairProvisioner.Provision` (capture per-pair error into the report, continue), recording both hosts as changed; restart each changed host via `restartDaemon` using its report's platform/uid/installPath; encode the report. Add `RunMeshHeal(args, stdout, stderr) error`.
 
-- [ ] **Step 4: Run to verify pass.** Then `go build ./...`.
+- [ ] **Step 4: Run to verify pass.** Then `go build ./... && go vet ./...`.
 
 - [ ] **Step 5: Commit** (`feat: clipfan mesh-heal orchestration`).
 
-### Task 1.6: Register the subcommand
+### Task 1.7: Register the subcommands
 
 **Files:** Modify `cmd/clipfan/main.go`.
 
-- [ ] **Step 1:** Add, alongside the other `case` blocks (after `case "ssh-apply-direct-config":`):
-
-```go
-		case "mesh-heal":
-			if err := cli.RunMeshHeal(args[1:], stdout, stderr); err != nil {
-				fmt.Fprintln(stderr, err)
-				return 1
-			}
-			return 0
-```
-
-- [ ] **Step 2:** Run `go build ./...` and `go vet ./...`. Expected: clean.
-- [ ] **Step 3:** Commit (`feat: register mesh-heal subcommand`).
+- [ ] **Step 1:** Add `case "roster-read":` → `cli.RunRosterRead(...)` and `case "mesh-heal":` → `cli.RunMeshHeal(...)`, mirroring the existing `case` blocks (each prints the error to stderr and returns 1, else 0).
+- [ ] **Step 2:** `go build ./... && go vet ./...` (clean). Commit (`feat: register roster-read and mesh-heal subcommands`).
 
 ---
 
 ## Phase 2 — Foundation 2: `fleet-snapshot` gateway verb (Go)
 
-**Why:** The Mac needs to read a peer's redacted roster + edge-health for the Fleet view. Add a read-only gateway verb, authed like the others, returning ONLY non-secret fields.
+**Why:** The Mac needs a peer's **redacted** roster + edge-health for the Fleet view. This is distinct from `roster-read` (Task 1.1): `roster-read` runs over the user's *regular* SSH and carries paths for provisioning; `fleet-snapshot` runs over the *sync-key gateway* (adjacent hosts only) and is redacted for display.
 
-**Files:** Create `internal/cli/fleet_snapshot.go`, `internal/cli/fleet_snapshot_test.go`; modify `internal/cli/ssh_gateway.go`; add the command constant alongside `SSHGatewayProbeCommand`/`SSHGatewaySyncStreamCommand` in `internal/sshprovision/` (grep `SSHGatewayProbeCommand` for its definition file).
+**Files:** Create `internal/cli/fleet_snapshot.go`, `internal/cli/fleet_snapshot_test.go`; modify `internal/cli/ssh_gateway.go`; add the command constant next to `SSHGatewayProbeCommand` (grep it for the file).
 
-- [ ] **Task 2.1 — redacted snapshot payload (TDD):** Write `buildFleetSnapshot(cfg *config.Config, localPeers []daemon.PeerState) FleetSnapshot` returning `{origin, version, peers:[{id, ssh_host, ssh_port, ssh_user, migration_state, ssh_status, ssh_active, last_recv_ts, ssh_last_ack_ts, ssh_last_connect_ts}]}` — and assert it contains **no** `shared_key`, no `proof` secrets, no sync-key paths. Test first (assert a marshalled snapshot of a config that has `shared_key` set does not contain that key's bytes). Implement by copying only the allowlisted fields. Commit.
+- [ ] **Task 2.1 — redacted snapshot payload (TDD):** `buildFleetSnapshot(cfg *config.Config, peers any) FleetSnapshot` returning `{origin, version, peers:[{id, ssh_host, ssh_port, ssh_user, migration_state, ssh_status, ssh_active, last_recv_ts, ssh_last_ack_ts, ssh_last_connect_ts}]}`. Test that a marshalled snapshot of a config with `shared_key` set contains NO `shared_key`, no `proof` key material, no sync-key paths. Implement by copying only the allowlist. Commit.
 
-- [ ] **Task 2.2 — gateway verb wiring (TDD):** Add `SSHGatewayFleetSnapshotCommand = "fleet-snapshot"`. In `runSSHGatewayWithHandlers`'s `switch command`, add a `case` that (a) requires `validateSSHGatewaySyncPeer(cfg, identity)` to pass, (b) loads config + the local daemon's `/v1/peers` snapshot over loopback (reuse the gateway's existing loopback client path; if no signed `/v1/peers` client method exists yet, add a minimal signed GET mirroring how `current` is fetched — confirm against `transport/client.go`), (c) writes `buildFleetSnapshot(...)` as JSON to stdout. Test the rejection path (unauthorized peer → `ErrSSHGatewayCommandRejected`) and the happy path with a fake. Commit.
-
-- [ ] **Task 2.3 — build + vet:** `go build ./... && go test ./internal/cli/ -run FleetSnapshot -v`. Commit if not already.
+- [ ] **Task 2.2 — gateway verb (TDD):** Add `SSHGatewayFleetSnapshotCommand = "fleet-snapshot"`. In the `switch command`, add a `case` that requires `validateSSHGatewaySyncPeer(cfg, identity)`, fetches the local daemon's `/v1/peers` over loopback (add a signed GET to `transport.Client` mirroring `current` — confirm against `transport/client.go`), and writes `buildFleetSnapshot(...)` as JSON. Test the unauthorized-peer rejection and the happy path with a fake. Commit. Then `go build ./... && go test ./internal/cli/ -run FleetSnapshot -v`.
 
 ---
 
 ## Phase 3 — Workstream D: Mac drivers (replace Swift orchestration)
 
-**Depends on Phase 1.** Replace the heavy Swift orchestration with a `mesh-heal` invocation; add a "Repair mesh" action.
+**Depends on Phase 1.**
 
-**Files:** Create `apps/mac/Clipfan/Sources/Clipfan/MeshHealClient.swift`; modify `Installer.swift` (`provisionPrivateDirectMesh`), `SettingsView.swift`/`StatusMenuView.swift`.
+**Files:** Create `apps/mac/Clipfan/Sources/Clipfan/MeshHealClient.swift`; modify `Installer.swift`, `SettingsView.swift`/`StatusMenuView.swift`.
 
-- [ ] **Task 3.1 — MeshHealClient (TDD):** Add a `MeshHealReport: Codable` matching the Go JSON (`healed`/`skipped`/`failed`), and a pure decoder `decodeMeshHealReport(_ data: Data) -> MeshHealReport?`. Test decoding a sample report (healed 1 edge, 1 failed host). Implement `MeshHealClient.heal()` that runs `clipfan mesh-heal …` via the existing `runCommand`/Process pattern (mirror how `Installer` invokes `ssh-provision-direct` today) and returns the decoded report.
-
-- [ ] **Task 3.2 — invoke mesh-heal from add-peer install:** In `Installer.provisionPrivateDirectMesh`, after the host install/bootstrap step, replace the inline `ssh-provision-direct` + restart-all logic with a single `MeshHealClient.heal()` call. Keep the binary-install step (heal does not install). Surface per-host failures from the report. `swift build`.
-
-- [ ] **Task 3.3 — Repair mesh action:** Add a "Repair mesh" button (Settings → Fleet and/or the menu) that calls `MeshHealClient.heal()` and shows the report summary. Reuse `FleetRow`/health idioms. `swift build`.
-
-- [ ] **Task 3.4 — augment add-peer success copy:** Now that add-peer actually heals, update the Workstream-G success view (from the quick-wins plan) to show heal status (e.g. "Added <host> · mesh healed (N edges)"). `swift build`. Commit each task.
+- [ ] **Task 3.1 — MeshHealClient (TDD):** `MeshHealReport: Codable` matching the Go JSON (`healed`/`skipped`/`failed`/`restarted`); pure `decodeMeshHealReport(_ data: Data) -> MeshHealReport?` (test decoding a sample). `MeshHealClient.heal()` runs `clipfan mesh-heal …` via the existing `runCommand`/Process pattern and returns the report.
+- [ ] **Task 3.2 — invoke from add-peer install:** In `Installer.provisionPrivateDirectMesh`, after the binary-install step, replace the inline `ssh-provision-direct` + restart-all logic with one `MeshHealClient.heal()` call. Keep binary install (heal does not install). Surface per-host failures. `swift build`.
+- [ ] **Task 3.3 — Repair mesh action:** "Repair mesh" button (Settings → Fleet and/or menu) → `MeshHealClient.heal()`, shows the report summary. `swift build`.
+- [ ] **Task 3.4 — augment add-peer success copy:** Now that add-peer heals, update the Workstream-G success view (quick-wins plan) to show heal status ("Added <host> · mesh healed (N edges)"). `swift build`. Commit each.
 
 ---
 
 ## Phase 4 — Workstream E: mesh-state visibility (macOS)
 
-**Depends on Phase 2.** Read `fleet-snapshot` from adjacent hosts, assemble a fleet-wide model, render per-host rows + edge detail with unobservable edges marked "unknown."
+**Depends on Phase 2.**
 
-**Files:** Create `apps/mac/Clipfan/Sources/Clipfan/FleetMeshModel.swift` (+ test) and a `FleetMeshView.swift`; wire into `SettingsView`/`StatusMenuView`.
+**Files:** Create `apps/mac/Clipfan/Sources/Clipfan/FleetMeshModel.swift` (+ test) and `FleetMeshView.swift`; wire into `SettingsView`/`StatusMenuView`.
 
-- [ ] **Task 4.1 — fleet-wide model (TDD):** Pure functions: given a set of per-host snapshots, produce `[MeshHostRow]` where each host's aggregate health = worst *observed* edge, edge counts are correct, and edges with no observation render `.unknown` (not `.down`). Test: a deliberately-down edge surfaces on both endpoints' rows where observed; an unobserved edge is `.unknown`; the header count ("M/N edges healthy") uses observed edges only. Match the spec's corrected example arithmetic (4 hosts → 6 undirected edges, 3 peers each).
-
-- [ ] **Task 4.2 — snapshot gathering:** Add a client method that, for each gateway-adjacent host, runs `fleet-snapshot` over SSH and decodes it (reuse `MeshHealClient`'s Process pattern; redaction is enforced server-side). On-demand / Fleet-view-open only; bounded.
-
-- [ ] **Task 4.3 — render per-host rows + edge detail:** `FleetMeshView` renders the rows from Task 4.1, expandable to edges, "unknown" styled distinctly. `swift build`. Commit each task.
+- [ ] **Task 4.1 — fleet-wide model (TDD):** Pure functions: from a set of per-host snapshots produce `[MeshHostRow]` where aggregate health = worst *observed* edge, counts correct, unobserved edges render `.unknown` (not `.down`); header "M/N edges healthy" counts observed edges only. Match the spec's corrected example (4 hosts → 6 undirected edges, 3 peers each).
+- [ ] **Task 4.2 — snapshot gathering:** Client method that, for each gateway-adjacent host, runs `fleet-snapshot` over SSH and decodes it (reuse `MeshHealClient`'s Process pattern; redaction is server-side). On-demand / Fleet-view-open only.
+- [ ] **Task 4.3 — render per-host rows + edge detail:** `FleetMeshView` renders Task 4.1 rows, expandable to edges, "unknown" styled distinctly. `swift build`. Commit each.
 
 ---
 
 ## Phase 5 — Workstream F: onboarding wizard
 
-**Depends on Phase 3** (its add-host step calls `mesh-heal`) **and the quick-wins Workstream G** (reuses `AddPeerSheet` host fields).
+**Depends on Phase 3 and the quick-wins Workstream G.**
 
 **Files:** Modify `WelcomeView.swift`, `WelcomeWindow.swift`, `Bootstrap.swift`; tests in `BootstrapTests.swift`.
 
-- [ ] **Task 5.1 — step state machine (TDD):** Add an `OnboardingStep` enum (`welcome → localSetup → addHost → done`) and pure transition logic: advance from `localSetup` on `SetupState.success`; `addHost` is skippable; `done` shows tips + a fleet summary. Test the transitions (advance on success; skip path; completion) mirroring the existing `SetupState` tests in `BootstrapTests.swift`.
-
-- [ ] **Task 5.2 — wizard view:** Rewrite `WelcomeView` to render the current step with a `●─○─○─○` indicator; step `addHost` reuses `AddPeerSheet`'s host fields + runs `MeshHealClient.heal()` (Phase 3); make the wizard re-runnable from the menu. `swift build`.
-
-- [ ] **Task 5.3 — wire menu re-entry + first-run:** Ensure `AppDelegate.firstRunInstall` opens the wizard and the menu has a "Set up clipfan…" entry. `swift build`. Commit each task.
+- [ ] **Task 5.1 — step state machine (TDD):** `OnboardingStep` enum (`welcome → localSetup → addHost → done`) + pure transitions: advance from `localSetup` on `SetupState.success`; `addHost` skippable; `done` shows tips + fleet summary. Test transitions mirroring the existing `SetupState` tests.
+- [ ] **Task 5.2 — wizard view:** Rewrite `WelcomeView` to render the current step with a `●─○─○─○` indicator; `addHost` reuses `AddPeerSheet`'s host fields + runs `MeshHealClient.heal()`; re-runnable from the menu. `swift build`.
+- [ ] **Task 5.3 — wire menu re-entry + first-run:** `AppDelegate.firstRunInstall` opens the wizard; add a "Set up clipfan…" menu entry. `swift build`. Commit each.
 
 ---
 
 ## Self-Review (completed by plan author)
 
-- **Spec coverage:** Foundation 1 → Phase 1 (Tasks 1.1–1.6); Foundation 2 → Phase 2; Workstream D → Phase 3; E → Phase 4; F → Phase 5. The spec's three round-2/round-3 corrections are all encoded: per-edge change-detection that checks *config state on both ends* (Task 1.1, not a probe), per-host resilient host-prep (Task 1.3), Go restart of only changed hosts (Tasks 1.4–1.5), redaction in `fleet-snapshot` (Task 2.1), and G not claiming "mesh healed" until Phase 3 augments it (Task 3.4).
-- **Placeholders:** the Go foundation tasks (Phase 1–2) include concrete signatures, real reused APIs, and TDD tests. Phases 3–5 (Swift) are specified as interfaces + tests + file targets rather than full line-level code, because their exact call sites depend on the Foundation APIs built in Phases 1–2 — the implementer wires them against the real signatures once those exist. Task 1.0 mandates reading the reuse surface first so nothing is guessed.
-- **Type consistency:** `edgePeerView`/`edgeIsHealthy`, `rosterHost`/`discoverRoster`/`rosterReader`, `prepHosts`/`hostPrep`, `restartCommand`/`restartDaemon`, `runMeshHeal`/`RunMeshHeal`, `buildFleetSnapshot`/`FleetSnapshot`, `MeshHealReport`/`decodeMeshHealReport`/`MeshHealClient`, `OnboardingStep` — names used consistently across each task and its test.
+- **Spec coverage:** Foundation 1 → Phase 1 (Tasks 1.1–1.7); Foundation 2 → Phase 2; D → Phase 3; E → Phase 4; F → Phase 5. Round-2/3 corrections encoded: config-state-both-ends change-detection fed by typed `roster-read` (Tasks 1.1–1.2, not a probe and not the redacted `ReadSSHPeer` map); per-host resilient host-prep with the admin/resolved split (1.4); Go restart of only changed hosts with the full fallback chain + `clipfan.service` + uid (1.5); redacted `fleet-snapshot` (2.1); G not claiming "healed" until Phase 3 (3.4).
+- **Adversarial-review fixes folded in:** the missing path source and the nonexistent over-SSH read are both resolved by the `roster-read` self-report primitive (Task 1.1) — a peer entry's `ssh_host/port/user`+`install_path` is enough to *invoke* it, and the host reports its own config/known_hosts/sync_key paths + platform + uid, so no platform-guessing and no chicken-and-egg. Restart now ports the full fallback shell with uid; the `*SSHConfig` pointer is nil-guarded; discovery caches reports so Task 1.6 doesn't re-SSH.
+- **Placeholders:** Phase 1–2 Go tasks have concrete signatures, reused real APIs, and TDD tests. Phase 3–5 Swift tasks are interfaces + tests + file targets (their call sites depend on the Foundation APIs built first). Task 1.0 mandates reading the reuse surface before writing.
+- **Type consistency:** `RosterReadReport`/`buildRosterReadReport`/`RunRosterRead`, `edgePeerView`/`edgeIsHealthy`, `rosterEndpoint`/`discoveredHost`/`discoverRoster`/`rosterReader`, `prepHosts`/`hostPrep`, `restartShell`/`restartDaemon`, `runMeshHeal`/`RunMeshHeal`, `buildFleetSnapshot`/`FleetSnapshot`, `MeshHealReport`/`decodeMeshHealReport`/`MeshHealClient`, `OnboardingStep` — consistent across each task and its test.
