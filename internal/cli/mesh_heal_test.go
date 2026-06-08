@@ -248,3 +248,98 @@ func TestRunMeshHealReportsUnreachablePeer(t *testing.T) {
 		t.Fatalf("expected no edges, got %+v", report)
 	}
 }
+
+// fakeMeshDriver satisfies the pair provisioner driver with benign success,
+// recording which directed pair each Provision wrote, so the orchestrator's
+// heal+restart path can be tested without real provisioning SSH.
+type fakeMeshDriver struct {
+	provisioned []string
+}
+
+func (d *fakeMeshDriver) ConfirmHostKey(_ context.Context, host sshprovision.DirectPairHost) (string, error) {
+	pin, err := sshprovision.NewKnownHostPin(host.SSHHost, host.SSHPort, "ssh-ed25519", testDirectProvisionPublicKey(host.ID))
+	if err != nil {
+		return "", err
+	}
+	return pin.Line(), nil
+}
+
+func (d *fakeMeshDriver) UpsertKnownHostPin(_ context.Context, _, _ sshprovision.DirectPairHost, _ string, _ sshprovision.KnownHostPin) error {
+	return nil
+}
+
+func (d *fakeMeshDriver) EnsureSyncKey(_ context.Context, host sshprovision.DirectPairProvisionHost) (sshprovision.SyncKeyMaterial, error) {
+	return sshprovision.SyncKeyMaterial{
+		PrivateKeyPath: host.SyncKeyPath,
+		PublicKey:      testDirectProvisionPublicKey(host.Host.ID + ".key"),
+		KeyID:          testDirectProvisionKeyID(host.Host.ID),
+	}, nil
+}
+
+func (d *fakeMeshDriver) InstallAuthorizedKey(_ context.Context, _ sshprovision.DirectPairHost, _ sshprovision.ManagedAuthorizedKey) error {
+	return nil
+}
+
+func (d *fakeMeshDriver) RunProbe(_ context.Context, _ sshprovision.PinnedSSHCommand, _ sshprovision.DirectPairProvisionHost, _, _ string) error {
+	return nil
+}
+
+func (d *fakeMeshDriver) WriteConfig(_ context.Context, m sshprovision.DirectPairConfigMutation) error {
+	d.provisioned = append(d.provisioned, m.Plan.ConnectHostID+"->"+m.Plan.AcceptHostID)
+	return nil
+}
+
+func TestRunMeshHealProvisionsUnhealthyEdgeAndRestartsBothEnds(t *testing.T) {
+	// L's view of R is not ready -> the L<->R edge is unhealthy and must be
+	// provisioned, then both ends restarted.
+	cfg := &config.Config{
+		Hostname:  "L",
+		SharedKey: testDirectProvisionSharedKey,
+		SSH: &config.SSHConfig{
+			KnownHosts: "/l/kh", SyncKey: "/l/sk",
+			Peers: []config.SSHPeer{{
+				ID: "R", SSHUser: "jesse", SSHHost: "rhost", SSHPort: 22, InstallPath: "/r/clipfan",
+				Enabled: true, Accept: true, Connect: true,
+				MigrationState: "ssh_material_staged", // not ready -> unhealthy edge
+				Proof:          config.SSHProof{AcceptKeyID: "ak-R", ConnectKeyID: "ck-R"},
+			}},
+		},
+	}
+	rReport, _ := json.Marshal(RosterReadReport{
+		Origin: "R", Platform: "linux", UID: 1000,
+		ConfigPath: "/r/config.json", KnownHostsPath: "/r/kh", SyncKeyPath: "/r/sk",
+		InstallPath: "/r/clipfan", GatewayPath: "/r/clipfan",
+		Peers: []RosterReadPeer{healthyMeshPeer("L", "jesse", "lhost", "/l/clipfan")},
+	})
+	runner := &fakeMeshRunner{reports: map[string]string{"rhost": string(rReport)}, selfAddr: "100.114.54.38"}
+	env := rosterReadEnv{GOOS: "darwin", UID: 501, SelfBinaryPath: "/l/clipfan", ConfigPath: "/l/config.json"}
+
+	args, opts := meshHealTestOptions(t, runner, cfg, env)
+	driver := &fakeMeshDriver{}
+	opts.Driver = driver
+	var out, errBuf strings.Builder
+	if err := runMeshHeal(args, &out, &errBuf, opts); err != nil {
+		t.Fatalf("runMeshHeal: %v (stderr=%s)", err, errBuf.String())
+	}
+
+	var report MeshHealReport
+	if err := json.Unmarshal([]byte(out.String()), &report); err != nil {
+		t.Fatalf("decode: %v (%s)", err, out.String())
+	}
+	if len(report.Healed) != 1 || report.Healed[0] != "L<->R" {
+		t.Fatalf("healed = %+v (failed=%+v)", report.Healed, report.Failed)
+	}
+	if len(report.Failed) != 0 {
+		t.Fatalf("failed = %+v", report.Failed)
+	}
+	if len(report.Restarted) != 2 || report.Restarted[0] != "L" || report.Restarted[1] != "R" {
+		t.Fatalf("restarted = %+v, want [L R]", report.Restarted)
+	}
+	if len(driver.provisioned) != 1 {
+		t.Fatalf("expected exactly one Provision, got %+v", driver.provisioned)
+	}
+	// Both ends were restarted over SSH.
+	if len(runner.restarts) != 2 {
+		t.Fatalf("expected two restart SSHs, got %+v", runner.restarts)
+	}
+}
