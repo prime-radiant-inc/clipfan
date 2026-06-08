@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.3] - 2026-06-07
+
+### Fixed
+
+- mesh-heal now heals a peer that shares only a LAN with the rest of the fleet (a peer on a different tailnet): when a host's Tailscale address is unreachable from a peer it must mesh with, mesh-heal falls back to a LAN address that peer can reach, verified by the host's SSH key (so a shared docker/bridge address can't be mistaken for the peer). Resolves the cross-tailnet known limitation noted in 0.4.0.
+
 ## [0.4.2] - 2026-06-07
 
 ### Changed
