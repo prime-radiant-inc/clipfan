@@ -72,6 +72,9 @@ struct FleetTab: View {
             }
             ScrollView {
                 VStack(spacing: 10) {
+                    if !daemon.peers.isEmpty {
+                        FleetMeshView()
+                    }
                     ForEach(fleetRows(origin: daemon.origin,
                                       connected: daemon.connected,
                                       peers: daemon.peers,

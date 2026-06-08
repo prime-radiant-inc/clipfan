@@ -42,6 +42,8 @@ final class DaemonClient: ObservableObject {
     @Published var configRevision: UInt64?
     @Published var revisionState: String?
     @Published var hostRemoveWarning: String?
+    @Published var fleetMesh: FleetMesh?
+    @Published var fleetMeshLoading: Bool = false
 
     var transportGatePolicy: SSHTransportGatePolicy = .current
     var peerVersionFetch: PeerUpdateVerifier.Fetch = PeerVersionProbe.fetch
@@ -356,6 +358,23 @@ final class DaemonClient: ObservableObject {
     private func fetchPeers(key: Data) async throws -> PeersResponse {
         let data = try await signedData(method: "GET", path: "/v1/peers", body: Data(), key: key)
         return try JSONDecoder.clipfan.decode(PeersResponse.self, from: data)
+    }
+
+    /// refreshFleet fetches the daemon's aggregated mesh view (GET /v1/fleet), which
+    /// the daemon gathers from each peer over SSH. It is on-demand — the Fleet view
+    /// triggers it on open / refresh — rather than part of the 3s status poll, because
+    /// a single refresh can SSH the entire fleet. A failed refresh leaves the prior
+    /// mesh visible (the daemon may be momentarily between restarts).
+    func refreshFleet() async {
+        guard let key = loadSharedKey() else { return }
+        fleetMeshLoading = true
+        defer { fleetMeshLoading = false }
+        do {
+            let data = try await signedData(method: "GET", path: "/v1/fleet", body: Data(), key: key)
+            fleetMesh = try buildFleetMesh(from: data)
+        } catch {
+            // leave the prior mesh visible on a transient refresh failure
+        }
     }
 
     private func refreshSafeModeStatus(key: Data) async {
