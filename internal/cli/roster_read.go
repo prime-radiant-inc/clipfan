@@ -18,14 +18,19 @@ import (
 // (e.g. connect:false on a half-built edge) survives, which change-detection
 // relies on.
 type RosterReadReport struct {
-	Origin         string           `json:"origin"`
-	Platform       string           `json:"platform"`
-	UID            int              `json:"uid"`
-	ConfigPath     string           `json:"config_path"`
-	KnownHostsPath string           `json:"known_hosts_path"`
-	SyncKeyPath    string           `json:"sync_key_path"`
-	InstallPath    string           `json:"install_path"`
-	GatewayPath    string           `json:"gateway_path"`
+	Origin         string `json:"origin"`
+	Platform       string `json:"platform"`
+	UID            int    `json:"uid"`
+	ConfigPath     string `json:"config_path"`
+	KnownHostsPath string `json:"known_hosts_path"`
+	SyncKeyPath    string `json:"sync_key_path"`
+	InstallPath    string `json:"install_path"`
+	GatewayPath    string `json:"gateway_path"`
+	// LocalAddresses are the host's own candidate LAN IPv4 addresses, used by
+	// mesh-heal to fall back from an unreachable Tailscale address to a LAN one
+	// for a cross-tailnet peer. Omitted when empty so an old binary degrades to
+	// today's behavior.
+	LocalAddresses []string         `json:"local_addresses,omitempty"`
 	Peers          []RosterReadPeer `json:"peers"`
 }
 
@@ -52,6 +57,7 @@ type rosterReadEnv struct {
 	UID            int
 	SelfBinaryPath string
 	ConfigPath     string
+	LocalAddresses []string
 }
 
 // buildRosterReadReport assembles the self-report from the host's config and
@@ -59,13 +65,14 @@ type rosterReadEnv struct {
 // convention that gateway defaults to install (parseSSHProvisionDirectHost).
 func buildRosterReadReport(cfg *config.Config, env rosterReadEnv) RosterReadReport {
 	report := RosterReadReport{
-		Origin:      cfg.Hostname,
-		Platform:    env.GOOS,
-		UID:         env.UID,
-		ConfigPath:  env.ConfigPath,
-		InstallPath: env.SelfBinaryPath,
-		GatewayPath: env.SelfBinaryPath,
-		Peers:       []RosterReadPeer{},
+		Origin:         cfg.Hostname,
+		Platform:       env.GOOS,
+		UID:            env.UID,
+		ConfigPath:     env.ConfigPath,
+		InstallPath:    env.SelfBinaryPath,
+		GatewayPath:    env.SelfBinaryPath,
+		LocalAddresses: env.LocalAddresses,
+		Peers:          []RosterReadPeer{},
 	}
 	if cfg.SSH != nil {
 		report.KnownHostsPath = cfg.SSH.KnownHosts
@@ -105,11 +112,13 @@ func RunRosterRead(args []string, stdout io.Writer, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	local, _ := enumerateLocalIPv4Addresses(nil)
 	report := buildRosterReadReport(cfg, rosterReadEnv{
 		GOOS:           runtime.GOOS,
 		UID:            os.Getuid(),
 		SelfBinaryPath: self,
 		ConfigPath:     config.Path(),
+		LocalAddresses: local,
 	})
 	enc := json.NewEncoder(stdout)
 	return enc.Encode(report)

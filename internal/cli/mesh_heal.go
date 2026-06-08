@@ -306,11 +306,13 @@ func meshHealSelfEnv(inject func() rosterReadEnv) (rosterReadEnv, error) {
 	if err != nil {
 		return rosterReadEnv{}, err
 	}
+	local, _ := enumerateLocalIPv4Addresses(nil)
 	return rosterReadEnv{
 		GOOS:           runtime.GOOS,
 		UID:            os.Getuid(),
 		SelfBinaryPath: self,
 		ConfigPath:     config.Path(),
+		LocalAddresses: local,
 	}, nil
 }
 
