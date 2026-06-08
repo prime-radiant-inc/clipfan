@@ -32,8 +32,9 @@ type SSHGatewayIdentity struct {
 }
 
 type SSHGatewayHandlers struct {
-	Probe      func(SSHGatewayIdentity, io.Writer) error
-	SyncStream func(SSHGatewayIdentity, io.Reader, io.Writer) error
+	Probe         func(SSHGatewayIdentity, io.Writer) error
+	SyncStream    func(SSHGatewayIdentity, io.Reader, io.Writer) error
+	FleetSnapshot func(SSHGatewayIdentity, io.Writer) error
 }
 
 func RunSSHGateway(args []string, stdout io.Writer, stderr io.Writer) error {
@@ -79,6 +80,11 @@ func runSSHGatewayWithHandlers(args []string, stdin io.Reader, stdout io.Writer,
 			return ErrSSHGatewayCommandRejected
 		}
 		return handlers.SyncStream(identity, stdin, stdout)
+	case sshprovision.SSHGatewayFleetSnapshotCommand:
+		if handlers.FleetSnapshot == nil {
+			return ErrSSHGatewayCommandRejected
+		}
+		return handlers.FleetSnapshot(identity, stdout)
 	default:
 		return ErrSSHGatewayCommandRejected
 	}
@@ -98,6 +104,7 @@ func defaultSSHGatewayHandlers() SSHGatewayHandlers {
 	if releaseflags.SSHSyncStreamEnabled {
 		handlers.SyncStream = runDefaultSSHGatewaySyncStream
 	}
+	handlers.FleetSnapshot = runDefaultSSHGatewayFleetSnapshot
 	return handlers
 }
 

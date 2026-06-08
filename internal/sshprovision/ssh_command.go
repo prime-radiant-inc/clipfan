@@ -122,6 +122,10 @@ func PinnedSSHSyncStreamCommand(spec PinnedSSHCommand) (SSHCommand, error) {
 	return pinnedSSHGatewayCommand(spec, SSHGatewaySyncStreamCommand)
 }
 
+func PinnedSSHFleetSnapshotCommand(spec PinnedSSHCommand) (SSHCommand, error) {
+	return pinnedSSHGatewayCommand(spec, SSHGatewayFleetSnapshotCommand)
+}
+
 func pinnedSSHGatewayCommand(spec PinnedSSHCommand, remoteCommand string) (SSHCommand, error) {
 	normalized, err := normalizePinnedSSHCommand(spec)
 	if err != nil {
@@ -157,7 +161,7 @@ func pinnedSSHGatewayCommand(spec PinnedSSHCommand, remoteCommand string) (SSHCo
 
 func directSSHGatewayCommand(normalized PinnedSSHCommand, remoteCommand string) (SSHCommand, error) {
 	switch remoteCommand {
-	case SSHGatewayProbeCommand, SSHGatewaySyncStreamCommand:
+	case SSHGatewayProbeCommand, SSHGatewaySyncStreamCommand, SSHGatewayFleetSnapshotCommand:
 	default:
 		return SSHCommand{}, fmt.Errorf("%w: invalid gateway command", ErrInvalidPinnedSSHCommand)
 	}

@@ -138,6 +138,60 @@ func readLimitedCurrentBody(reader io.Reader) ([]byte, error) {
 	return readLimitedBody(reader, MaxSSHStreamFrameBytes, ErrSSHStreamFrameTooLarge)
 }
 
+const maxPeersResponseBytes = 1 << 20
+
+// Peers performs a signed loopback GET of /v1/peers and returns the verified
+// response body for the caller to decode. The /v1/peers payload type lives above
+// transport (it carries daemon.PeerState), so this returns raw bytes rather than a
+// typed value; the SSH gateway's fleet-snapshot handler decodes it.
+func (c *Client) Peers(ctx context.Context, host string, port int) ([]byte, error) {
+	return c.signedLoopbackGet(ctx, host, port, "/v1/peers", maxPeersResponseBytes)
+}
+
+// signedLoopbackGet issues a signed GET to a loopback daemon endpoint and returns
+// the response body after verifying its signature. It mirrors Current's request
+// signing but is generic over the target so read-only endpoints can be fetched
+// without a bespoke typed method each.
+func (c *Client) signedLoopbackGet(ctx context.Context, host string, port int, target string, maxBytes int64) ([]byte, error) {
+	if !isLoopbackHost(host) {
+		return nil, fmt.Errorf("%w: %s", ErrPeerHTTPRuntimeDisabled, net.JoinHostPort(host, strconv.Itoa(port)))
+	}
+	url := fmt.Sprintf("http://%s%s", net.JoinHostPort(host, strconv.Itoa(port)), target)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	headers, err := c.auth.SignedRequestHeaders(req.Method, req.URL.RequestURI(), nil, SignedRequestOptions{
+		AuthVersion: AuthVersionRequestHMAC,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for header, value := range headers {
+		req.Header.Set(header, value)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := readLimitedBody(resp.Body, maxBytes, ErrSSHStreamFrameTooLarge)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("%s from %s: status %d", target, host, resp.StatusCode)
+	}
+	authVersion := resp.Header.Get(HeaderAuthVersion)
+	if authVersion == "" {
+		authVersion = headers[HeaderAuthVersion]
+	}
+	if err := c.auth.VerifyResponseWithAuthVersion(headers[HeaderNonce], body, resp.Header.Get("X-Clipfan-Response-Sig"), authVersion); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
 func readLimitedBody(reader io.Reader, maxBytes int64, tooLarge error) ([]byte, error) {
 	limited := io.LimitReader(reader, maxBytes+1)
 	body, err := io.ReadAll(limited)
