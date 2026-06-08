@@ -28,6 +28,7 @@ final class WelcomeWindowController: NSObject, NSWindowDelegate {
         }
 
         let view = WelcomeView(bootstrap: .shared) { [weak self] in self?.close() }
+            .environmentObject(DaemonClient.shared)
         let hosting = NSHostingView(rootView: view)
 
         let window = NSWindow(
