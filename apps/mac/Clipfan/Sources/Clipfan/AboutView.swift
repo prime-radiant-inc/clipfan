@@ -28,6 +28,6 @@ struct AboutView: View {
                 .font(.callout)
         }
         .padding(28)
-        .frame(width: 360, height: 260)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

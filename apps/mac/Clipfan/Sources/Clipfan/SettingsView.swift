@@ -2,13 +2,24 @@ import KeyboardShortcuts
 import ServiceManagement
 import SwiftUI
 
+/// Drives which Settings pane is shown so menu/AppKit call sites can open Settings
+/// to a specific tab — the menubar "About clipfan…" lands directly on the About pane.
+@MainActor
+final class SettingsRoute: ObservableObject {
+    static let shared = SettingsRoute()
+    @Published var tab: SettingsView.Tab = .fleet
+    init() {}
+}
+
 struct SettingsView: View {
     @EnvironmentObject var daemon: DaemonClient
+    @ObservedObject private var route = SettingsRoute.shared
 
     enum Tab: String, CaseIterable, Hashable, Identifiable {
         case fleet = "Fleet"
         case general = "General"
         case diagnostics = "Diagnostics"
+        case about = "About"
         var id: String { rawValue }
 
         var systemImage: String {
@@ -16,23 +27,23 @@ struct SettingsView: View {
             case .fleet:       return "network"
             case .general:     return "gearshape"
             case .diagnostics: return "stethoscope"
+            case .about:       return "info.circle"
             }
         }
     }
 
-    @State private var selection: Tab = .fleet
-
     var body: some View {
         NavigationSplitView {
-            List(Tab.allCases, selection: $selection) { tab in
+            List(Tab.allCases, selection: $route.tab) { tab in
                 Label(tab.rawValue, systemImage: tab.systemImage).tag(tab)
             }
             .navigationSplitViewColumnWidth(170)
         } detail: {
-            switch selection {
+            switch route.tab {
             case .fleet:       FleetTab()
             case .general:     GeneralTab()
             case .diagnostics: DiagnosticsTab()
+            case .about:       AboutView()
             }
         }
     }

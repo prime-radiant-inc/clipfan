@@ -19,7 +19,8 @@ struct StatusMenuView: View {
             }
             menuButton("About clipfan…", systemImage: "info.circle", shortcut: "") {
                 NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: "about")
+                SettingsRoute.shared.tab = .about
+                openWindow(id: "settings")
             }
             menuButton("Set up clipfan…", systemImage: "wand.and.stars", shortcut: "") {
                 WelcomeWindowController.shared.show(startInstall: false)
