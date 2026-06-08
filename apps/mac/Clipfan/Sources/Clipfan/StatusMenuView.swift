@@ -22,9 +22,6 @@ struct StatusMenuView: View {
                 SettingsRoute.shared.tab = .about
                 openWindow(id: "settings")
             }
-            menuButton("Set up clipfan…", systemImage: "wand.and.stars", shortcut: "") {
-                WelcomeWindowController.shared.show(startInstall: false)
-            }
             menuButton("Check for Updates…", systemImage: "arrow.triangle.2.circlepath", shortcut: "") {
                 NSApp.activate(ignoringOtherApps: true)
                 Updater.shared.checkForUpdates()
