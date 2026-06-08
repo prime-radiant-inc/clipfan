@@ -119,4 +119,46 @@ final class FleetMeshModelTests: XCTestCase {
         XCTAssertEqual(mesh.observedEdgeCount, 3)
         XCTAssertEqual(mesh.headerSummary, "3/3 edges healthy")
     }
+
+    // MARK: - Per-row mesh summary (Settings → Fleet rows)
+
+    private func hostRow(id: String, edges: [MeshEdgeHealth]) -> MeshHostRow {
+        let meshEdges = edges.enumerated().map { idx, health in
+            MeshEdge(a: id, b: "peer-\(idx)", health: health, detail: "")
+        }
+        return MeshHostRow(id: id, reachable: true, error: nil, edges: meshEdges, health: .healthy)
+    }
+
+    func testMeshRowSummaryAllHealthy() {
+        let row = hostRow(id: "alpha", edges: [.healthy, .healthy, .healthy])
+        XCTAssertEqual(meshRowSummary(row), "mesh 3/3 edges")
+    }
+
+    func testMeshRowSummaryFlagsIncompleteEdges() {
+        let row = hostRow(id: "alpha", edges: [.healthy, .healthy, .degraded])
+        XCTAssertEqual(meshRowSummary(row), "mesh 2/3 · 1 incomplete")
+    }
+
+    func testMeshRowSummaryFlagsUnobservedEdges() {
+        let row = hostRow(id: "alpha", edges: [.healthy, .healthy, .unknown])
+        XCTAssertEqual(meshRowSummary(row), "mesh 2/3 · 1 unobserved")
+    }
+
+    func testMeshRowSummaryFlagsIncompleteAndUnobserved() {
+        let row = hostRow(id: "alpha", edges: [.healthy, .degraded, .unknown])
+        XCTAssertEqual(meshRowSummary(row), "mesh 1/3 · 1 incomplete · 1 unobserved")
+    }
+
+    func testMeshHostRowLookup() {
+        let mesh = FleetMesh(origin: "alpha",
+                             hosts: [hostRow(id: "alpha", edges: [.healthy]),
+                                     hostRow(id: "beta", edges: [.degraded])],
+                             edges: [],
+                             observedEdgeCount: 0,
+                             healthyEdgeCount: 0,
+                             headerSummary: "")
+        XCTAssertEqual(meshHostRow(for: "beta", in: mesh)?.id, "beta")
+        XCTAssertNil(meshHostRow(for: "zeta", in: mesh))
+        XCTAssertNil(meshHostRow(for: "beta", in: nil))
+    }
 }

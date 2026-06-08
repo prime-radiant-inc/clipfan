@@ -173,3 +173,27 @@ private func worstHealth(_ healths: [MeshEdgeHealth]) -> MeshEdgeHealth? {
     if healths.contains(.healthy) { return .healthy }
     return .unknown
 }
+
+// MARK: - Per-row mesh lookup (Settings → Fleet rows)
+
+/// The mesh row for a given host id, or nil when the fleet view is absent or doesn't
+/// include the host. Lets each fleet row pull its own incident-edge health.
+func meshHostRow(for hostID: String, in mesh: FleetMesh?) -> MeshHostRow? {
+    mesh?.hosts.first { $0.id == hostID }
+}
+
+/// A compact per-host mesh summary for a fleet row: "mesh 3/3 edges",
+/// "mesh 2/3 · 1 incomplete", "mesh 1/3 · 1 incomplete · 1 unobserved". The leading
+/// fraction is healthy-over-total incident edges; suffixes call out incomplete
+/// (degraded) and unobserved (unknown) edges so an unobserved edge never reads as broken.
+func meshRowSummary(_ row: MeshHostRow) -> String {
+    let total = row.edges.count
+    let healthy = row.edges.filter { $0.health == .healthy }.count
+    let degraded = row.edges.filter { $0.health == .degraded }.count
+    let unobserved = row.edges.filter { $0.health == .unknown }.count
+    var parts: [String] = []
+    if degraded > 0 { parts.append("\(degraded) incomplete") }
+    if unobserved > 0 { parts.append("\(unobserved) unobserved") }
+    let base = "mesh \(healthy)/\(total)"
+    return parts.isEmpty ? "\(base) edges" : "\(base) · " + parts.joined(separator: " · ")
+}

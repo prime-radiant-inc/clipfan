@@ -56,18 +56,38 @@ struct FleetTab: View {
     @State private var removePeer: Peer?
     @State private var removingHost: String?
     @State private var removeError: String?
+    @State private var repairing = false
+    @State private var repairResult: String?
+    @State private var expandedMeshHost: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Fleet").font(.headline)
+                if daemon.fleetMeshLoading {
+                    ProgressView().controlSize(.small)
+                }
                 Spacer()
+                if !daemon.peers.isEmpty {
+                    Button(repairing ? "Repairing…" : "Repair mesh") {
+                        repairMesh()
+                    }
+                    .disabled(repairing)
+                }
                 Button("Refresh") {
                     Task {
                         await daemon.refresh()
                         await daemon.refreshPeerVersions()
+                        await daemon.refreshFleet()
                     }
                 }
+            }
+            if let repairResult {
+                Text(repairResult)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             if shouldPromptLocalNetwork(peers: daemon.peers) {
                 LocalNetworkNudge()
@@ -83,42 +103,51 @@ struct FleetTab: View {
             }
             ScrollView {
                 VStack(spacing: 10) {
-                    if !daemon.peers.isEmpty {
-                        FleetMeshView()
-                    }
                     ForEach(fleetRows(origin: daemon.origin,
                                       connected: daemon.connected,
                                       peers: daemon.peers,
                                       safeMode: daemon.safeModeStatus,
                                       peerVersions: daemon.peerVersions)) { row in
-                        HStack(spacing: 8) {
-                            FleetRow(model: row)
-                            if let peer = row.peer {
-                                if let status = daemon.peerVersions[peer.hostname],
-                                   status.needsUpdate {
-                                    Label(status.label, systemImage: "exclamationmark.arrow.triangle.2.circlepath")
-                                        .labelStyle(.iconOnly)
-                                        .foregroundStyle(.orange)
-                                        .help(status.label)
-                                }
-                                Button {
-                                    updatePeer = peer
-                                } label: {
-                                    Label("Update peer", systemImage: "arrow.triangle.2.circlepath")
-                                        .labelStyle(.iconOnly)
-                                }
-                                .buttonStyle(.borderless)
-                                .help("Update clipfan on \(peer.hostname)")
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 8) {
+                                FleetRow(model: row)
+                                if let peer = row.peer {
+                                    if let status = daemon.peerVersions[peer.hostname],
+                                       status.needsUpdate {
+                                        Label(status.label, systemImage: "exclamationmark.arrow.triangle.2.circlepath")
+                                            .labelStyle(.iconOnly)
+                                            .foregroundStyle(.orange)
+                                            .help(status.label)
+                                    }
+                                    Button {
+                                        updatePeer = peer
+                                    } label: {
+                                        Label("Update peer", systemImage: "arrow.triangle.2.circlepath")
+                                            .labelStyle(.iconOnly)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .help("Update clipfan on \(peer.hostname)")
 
-                                Button(role: .destructive) {
-                                    removePeer = peer
-                                } label: {
-                                    Label("Remove host", systemImage: "trash")
-                                        .labelStyle(.iconOnly)
+                                    Button(role: .destructive) {
+                                        removePeer = peer
+                                    } label: {
+                                        Label("Remove host", systemImage: "trash")
+                                            .labelStyle(.iconOnly)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .disabled(removingHost == peer.hostname)
+                                    .help("Remove \(peer.hostname) from this Mac")
                                 }
-                                .buttonStyle(.borderless)
-                                .disabled(removingHost == peer.hostname)
-                                .help("Remove \(peer.hostname) from this Mac")
+                            }
+                            if let meshHost = meshHostRow(for: row.id, in: daemon.fleetMesh),
+                               !meshHost.edges.isEmpty {
+                                FleetRowMeshSection(
+                                    host: meshHost,
+                                    expanded: expandedMeshHost == row.id,
+                                    toggle: {
+                                        expandedMeshHost = expandedMeshHost == row.id ? nil : row.id
+                                    }
+                                )
                             }
                         }
                         .padding(12)
@@ -187,6 +216,7 @@ struct FleetTab: View {
         .onAppear {
             Task { await daemon.refreshPeerVersions() }
         }
+        .task { await daemon.refreshFleet() }
     }
 
     private func remove(_ peer: Peer) async {
@@ -197,6 +227,21 @@ struct FleetTab: View {
             _ = try await daemon.removeHost(hostID: peer.hostname)
         } catch {
             removeError = String(describing: error)
+        }
+    }
+
+    private func repairMesh() {
+        repairing = true
+        repairResult = nil
+        Task {
+            defer { repairing = false }
+            do {
+                let report = try await MeshHealClient.heal(regularKnownHosts: "~/.ssh/known_hosts")
+                repairResult = report.summary
+                await daemon.refreshFleet()
+            } catch {
+                repairResult = "Repair failed: \(error.localizedDescription)"
+            }
         }
     }
 }
