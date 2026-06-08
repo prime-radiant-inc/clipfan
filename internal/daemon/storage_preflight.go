@@ -40,7 +40,7 @@ func (e *StoragePreflightError) Unwrap() error {
 
 func DefaultStoragePreflightPolicy() StoragePreflightPolicy {
 	return StoragePreflightPolicy{
-		Required: releaseflags.PeerHTTPRuntimeDisabled || releaseflags.ConfigV2WriteEnabled,
+		Required: releaseflags.ConfigV2WriteEnabled,
 	}
 }
 

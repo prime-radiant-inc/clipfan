@@ -84,8 +84,8 @@ func TestSafeModePollOnceDoesNotStartPeerSync(t *testing.T) {
 	d.pollOnce(context.Background())
 	time.Sleep(50 * time.Millisecond)
 
-	if got := len(push.snapshot()); got != 0 {
-		t.Fatalf("safe-mode poll fanout count = %d, want 0", got)
+	if got := len(sshPublishSnapshot(push)); got != 0 {
+		t.Fatalf("safe-mode poll publish count = %d, want 0", got)
 	}
 	history, err := store.LoadHistory(10)
 	if err != nil {
@@ -108,7 +108,7 @@ func TestSafeModeOnReceiveDoesNotApplyOrRelayPeerClip(t *testing.T) {
 	d.onReceive(c, "peer")
 	time.Sleep(50 * time.Millisecond)
 
-	if got := len(push.snapshot()); got != 0 {
+	if got := len(sshPublishSnapshot(push)); got != 0 {
 		t.Fatalf("safe-mode receive relay count = %d, want 0", got)
 	}
 	cur, _ := cb.Read()
@@ -134,7 +134,7 @@ func TestSafeModeOnReceiveDoesNotApplyOrRelayPeerClip(t *testing.T) {
 	}
 }
 
-func TestSafeModeRestoreDoesNotFanout(t *testing.T) {
+func TestSafeModeRestoreDoesNotPublish(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	d, _, push := newTestDaemon(t)
@@ -142,7 +142,7 @@ func TestSafeModeRestoreDoesNotFanout(t *testing.T) {
 	c := clipboard.New(clipboard.KindText, []byte("restore-me"), fixedTime)
 	c.ID = "restore-safe-1"
 	d.onReceive(c, "peer")
-	waitForPushes(t, push, 1)
+	waitForPublishes(t, push, 1)
 	history, err := store.LoadHistory(10)
 	if err != nil {
 		t.Fatal(err)
@@ -152,13 +152,13 @@ func TestSafeModeRestoreDoesNotFanout(t *testing.T) {
 	}
 
 	d.listenerPlan.SafeMode = true
-	before := len(push.snapshot())
+	before := len(sshPublishSnapshot(push))
 	if err := d.Restore(history[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(50 * time.Millisecond)
-	if got := len(push.snapshot()); got != before {
-		t.Fatalf("safe-mode restore fanout count = %d, want %d", got, before)
+	if got := len(sshPublishSnapshot(push)); got != before {
+		t.Fatalf("safe-mode restore publish count = %d, want %d", got, before)
 	}
 }
 

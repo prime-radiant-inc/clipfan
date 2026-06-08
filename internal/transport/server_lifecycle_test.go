@@ -14,7 +14,7 @@ func TestServeListenerClosesListenerBeforeReturningOnCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 	addr := ln.Addr().String()
-	srv := NewServer(addr, testAuth(t), nil, nil)
+	srv := NewServer(addr, testAuth(t), nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ServeListener(ctx, ln) }()

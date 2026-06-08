@@ -144,7 +144,7 @@ is host-local state and never belongs in a dotfiles repo.
 uses it as the hostname list. `discovery: "tailscale"` shells out to
 `tailscale status --json`, but only syncs with online hosts whose short names
 are listed in `static_peers`. Empty `static_peers` with Tailscale discovery
-returns only the local host and does no non-self fanout.
+returns only the local host and does no non-self sync.
 `max_history` caps the clipboard history (default 200).
 
 ## Security model
@@ -159,24 +159,21 @@ What clipfan protects:
 
 - **Clipboard payload confidentiality on the wire.** Peer clipboard bytes are
   encrypted with AES-GCM using a key derived from `shared_key` before they are
-  sent over HTTP.
+  carried over the authenticated SSH sync stream.
 - **Request integrity and replay resistance.** Signed requests bind the method,
   request URI, timestamp, nonce, and body. Stale timestamps and repeated request
   nonces are rejected. Mixed-version fleets fail closed; upgrade all peers
   together.
 - **Recipient binding.** Peer clip envelopes include the intended recipient in
-  the signed body, so a captured clip push for one peer is rejected if replayed
-  to another peer.
+  the encrypted payload, so a captured clip payload for one peer is rejected if
+  replayed to another peer.
 - **Local control endpoints.** History, config, restore, and peer-status
   endpoints require a valid signature and are loopback-only. Successful local
   control responses are also signed and bound to the request nonce, so GUI
   clients can reject a spoofed loopback listener that does not know
   `shared_key`. The unauthenticated health endpoint returns only `ok`.
-- **Signed peer version probes.** `/v1/version` is intentionally reachable from
-  peers so the Mac app can detect stale remote installs. It still requires a
-  valid signed request, returns a signed response, and exposes only the daemon
-  version string. The daemon version is intentionally separate from the Mac app
-  version so UI-only app releases do not mark peers stale.
+- **Signed diagnostics.** `/v1/version` requires a valid signed request, returns
+  a signed response, and exposes only the daemon version string.
 - **Local file permissions.** Config, state, history, and image storage are kept
   under the current user's XDG config/state directories. clipfan creates and
   repairs those directories as `0700` and the files as `0600`.
@@ -184,7 +181,7 @@ What clipfan protects:
   macOS service is a LaunchAgent. The daemon is not intended to run as root.
 - **Concealed pasteboard items.** Password-manager-style concealed or transient
   pasteboard items are not synced or recorded.
-- **Peer timestamp bounds.** Peer envelopes are rejected if their clipboard
+- **Peer timestamp bounds.** Sync envelopes are rejected if their clipboard
   timestamp is more than two minutes ahead of the receiver's clock. This
   prevents a trusted peer from poisoning local ordering state with an arbitrary
   future clip.
@@ -269,7 +266,7 @@ manager pastes (concealed or transient clips) are never synced or recorded.
 
 Click the menubar icon for **Open Clipboard**, **Settings…**, **Quit**, and a
 **Fleet** section that shows each peer with a colored health dot (green synced /
-orange offline / gray idle) and its last **↑ push / ↓ recv** times — so you can
+orange offline / gray idle) and its last **↑ send / ↓ recv** times — so you can
 see at a glance whether your fleet is in sync. Click a peer to jump to its detail.
 
 ### Settings

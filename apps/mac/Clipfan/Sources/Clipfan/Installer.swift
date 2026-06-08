@@ -179,15 +179,13 @@ actor Installer {
         """
     }
 
-    static func generatedListenDefault(loopbackDefault: Bool = GeneratedSSHTransportGates.peerHTTPRuntimeDisabled &&
-                                       GeneratedSSHTransportGates.configV2WriteEnabled) -> String {
+    static func generatedListenDefault(loopbackDefault: Bool = true) -> String {
         loopbackDefault ? "127.0.0.1:7853" : ":7853"
     }
 
     static func remoteInstallConfigJSON(sharedKey: String,
                                         selfShort: String,
-                                        loopbackDefault: Bool = GeneratedSSHTransportGates.peerHTTPRuntimeDisabled &&
-                                            GeneratedSSHTransportGates.configV2WriteEnabled) -> String {
+                                        loopbackDefault: Bool = true) -> String {
         """
         {
           "listen": \(jsonString(generatedListenDefault(loopbackDefault: loopbackDefault))),
@@ -200,8 +198,7 @@ actor Installer {
     }
 
     static func privateDirectMeshInstallConfigJSON(hostID: String,
-                                                   loopbackDefault: Bool = GeneratedSSHTransportGates.peerHTTPRuntimeDisabled &&
-                                                       GeneratedSSHTransportGates.configV2WriteEnabled) -> String {
+                                                   loopbackDefault: Bool = true) -> String {
         """
         {
           "config_version": 2,
@@ -219,15 +216,14 @@ actor Installer {
     static func remoteUpdateCommand(stage: String) -> String {
         remoteUpdateCommand(stage: stage,
                             payloadBinaryName: nil,
-                            enforceStorageAbort: GeneratedSSHTransportGates.peerHTTPRuntimeDisabled ||
-                                GeneratedSSHTransportGates.configV2WriteEnabled,
-                            enforceDowngradeBlock: GeneratedSSHTransportGates.configV2WriteEnabled)
+                            enforceStorageAbort: ConfigV2ReleaseGate.writeEnabled,
+                            enforceDowngradeBlock: ConfigV2ReleaseGate.writeEnabled)
     }
 
     static func remoteUpdateCommand(stage: String,
                                     payloadBinaryName: String?,
                                     enforceStorageAbort: Bool,
-                                    enforceDowngradeBlock: Bool = GeneratedSSHTransportGates.configV2WriteEnabled) -> String {
+                                    enforceDowngradeBlock: Bool = ConfigV2ReleaseGate.writeEnabled) -> String {
         let quotedStage = shellSingleQuote(stage)
         if enforceStorageAbort, payloadBinaryName == nil {
             return """
@@ -537,7 +533,7 @@ actor Installer {
         guard trustKeyscan else {
             throw InstallError.configIO("trust_keyscan_required")
         }
-        guard GeneratedSSHTransportGates.configV2WriteEnabled else {
+        guard ConfigV2ReleaseGate.writeEnabled else {
             throw InstallError.configIO("config_v2_writes_disabled")
         }
         let knownHosts = expandHome(regularKnownHosts.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -1461,9 +1457,8 @@ actor Installer {
 
     static func uploadAndUpdateRemoteStage(target: String, sshArgs: [String], scpArgs: [String],
                                            stage: URL, stagedFiles: [String],
-                                           enforceStorageAbort: Bool = GeneratedSSHTransportGates.peerHTTPRuntimeDisabled ||
-                                               GeneratedSSHTransportGates.configV2WriteEnabled,
-                                           enforceDowngradeBlock: Bool = GeneratedSSHTransportGates.configV2WriteEnabled,
+                                           enforceStorageAbort: Bool = ConfigV2ReleaseGate.writeEnabled,
+                                           enforceDowngradeBlock: Bool = ConfigV2ReleaseGate.writeEnabled,
                                            runCommand: CommandRunner,
                                            onInstall: @MainActor @escaping () -> Void = {}) async throws -> String {
         let remoteStageOutput = try await runCommand("/usr/bin/ssh", sshArgs + [target, remoteStageCommand()])
@@ -1509,9 +1504,9 @@ actor Installer {
     }
 
     static func addPeerToLocalConfig(_ host: String,
-                                     configURL: URL? = nil,
-                                     scopedWriter: ScopedSSHPeerConfigWriter? = nil,
-                                     configV2WriteEnabled: Bool = GeneratedSSHTransportGates.configV2WriteEnabled) async throws {
+	                                     configURL: URL? = nil,
+	                                     scopedWriter: ScopedSSHPeerConfigWriter? = nil,
+	                                     configV2WriteEnabled: Bool = ConfigV2ReleaseGate.writeEnabled) async throws {
         let p = configURL ?? localConfigURL()
         var cfg = (try? await readLocalConfig(configURL: p)) ?? [:]
         if cfg.keys.contains("config_version") {

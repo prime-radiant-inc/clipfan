@@ -1,13 +1,6 @@
 import AppKit
 import SwiftUI
 
-func shouldDismissPeerUpdateSheet(_ result: PeerUpdateVerificationResult?) -> Bool {
-    if case .current = result?.status {
-        return true
-    }
-    return false
-}
-
 func isPeerUpdateButtonDisabled(host: String, updating: Bool, policy: SSHTransportGatePolicy = .current) -> Bool {
     host.isEmpty || updating || !policy.regularSSHUpdateEnabled
 }
@@ -113,43 +106,13 @@ struct UpdatePeerSheet: View {
                     log.recordSuccess(version: version)
                 }
                 await DaemonClient.shared.refresh()
-                if shouldVerifyPeerHTTPVersionAfterUpdate(expectedVersion: version) {
-                    await MainActor.run {
-                        progress = "\(targetHost): Updated to \(version). Verifying daemon…"
-                        log.record(.init(step: "Verify", detail: "probing signed /v1/version on \(peer.hostname)"))
-                    }
-                    let result = await DaemonClient.shared.verifyPeerVersion(hostname: peer.hostname,
-                                                                             expectedVersion: version,
-                                                                             attempts: 6,
-                                                                             delayNanoseconds: 1_000_000_000)
-                    let shouldDismiss = shouldDismissPeerUpdateSheet(result)
-                    await MainActor.run {
-                        if case .current = result?.status {
-                            log.record(.init(step: "Verify", detail: result?.detail ?? "\(peer.hostname) is running \(version)"))
-                            progress = "\(targetHost): Updated to \(version)."
-                        } else {
-                            log.record(.init(step: "Verify",
-                                             detail: result?.detail ?? "\(peer.hostname) did not answer with the current daemon version yet"))
-                            progress = "\(targetHost): Updated to \(version); daemon verification is still pending."
-                        }
-                    }
-                    if shouldDismiss {
-                        try? await Task.sleep(nanoseconds: 1_000_000_000)
-                        await MainActor.run {
-                            updating = false
-                            dismiss()
-                        }
-                    } else {
-                        await MainActor.run {
-                            updating = false
-                        }
-                    }
-                } else {
-                    await MainActor.run {
-                        log.record(.init(step: "Verify", detail: skippedPeerHTTPVersionVerification(host: peer.hostname).detail))
-                        progress = "\(targetHost): Updated to \(version)."
-                        updating = false
-                    }
+                await MainActor.run {
+                    progress = "\(targetHost): Updated to \(version)."
+                }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                await MainActor.run {
+                    updating = false
+                    dismiss()
                 }
             } catch {
                 await MainActor.run {

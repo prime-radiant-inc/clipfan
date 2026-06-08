@@ -9,8 +9,6 @@ import (
 
 func TestReadTransportGatesMapsBooleanValues(t *testing.T) {
 	gates, err := ReadTransportGates(strings.NewReader(`{
-		"PeerHTTPRuntimeDisabled": true,
-		"ConfigV2WriteEnabled": false,
 		"RemoteSecretWriteReleaseEnabled": true,
 		"ssh_public_add_peer_success_enabled": false
 	}`))
@@ -18,12 +16,6 @@ func TestReadTransportGatesMapsBooleanValues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !gates.PeerHTTPRuntimeDisabled {
-		t.Fatal("PeerHTTPRuntimeDisabled = false, want true")
-	}
-	if gates.ConfigV2WriteEnabled {
-		t.Fatal("ConfigV2WriteEnabled = true, want false")
-	}
 	if !gates.RemoteSecretWriteReleaseEnabled {
 		t.Fatal("RemoteSecretWriteReleaseEnabled = false, want true")
 	}
@@ -59,12 +51,10 @@ func TestReadRuntimeGatesMapsBooleanValues(t *testing.T) {
 
 func TestReadTransportGatesRejectsMissingAndUnexpectedKeys(t *testing.T) {
 	_, err := ReadTransportGates(strings.NewReader(`{
-		"PeerHTTPRuntimeDisabled": false,
-		"ConfigV2WriteEnabled": false,
 		"RemoteSecretWriteReleaseEnabled": false,
+		"ssh_public_add_peer_success_enabled": false,
 		"unexpected": false
 	}`))
-	assertErrorContains(t, err, "missing_gate")
 	assertErrorContains(t, err, "unexpected_gate")
 }
 
@@ -85,18 +75,14 @@ func TestReadTransportGatesRejectsNullAndNonBooleanValues(t *testing.T) {
 		{
 			name: "null",
 			json: `{
-				"PeerHTTPRuntimeDisabled": null,
-				"ConfigV2WriteEnabled": false,
-				"RemoteSecretWriteReleaseEnabled": false,
+				"RemoteSecretWriteReleaseEnabled": null,
 				"ssh_public_add_peer_success_enabled": false
 			}`,
 		},
 		{
 			name: "string",
 			json: `{
-				"PeerHTTPRuntimeDisabled": "false",
-				"ConfigV2WriteEnabled": false,
-				"RemoteSecretWriteReleaseEnabled": false,
+				"RemoteSecretWriteReleaseEnabled": "false",
 				"ssh_public_add_peer_success_enabled": false
 			}`,
 		},
@@ -123,8 +109,6 @@ func TestReadRuntimeGatesRejectsDuplicateKeys(t *testing.T) {
 
 func TestReadTransportGatesRejectsMalformedJSON(t *testing.T) {
 	_, err := ReadTransportGates(strings.NewReader(`{
-		"PeerHTTPRuntimeDisabled": false,
-		"ConfigV2WriteEnabled": false,
 		"RemoteSecretWriteReleaseEnabled": false,
 		"ssh_public_add_peer_success_enabled": false,
 	`))
@@ -147,19 +131,7 @@ func TestValidateGateBundleAcceptsAllFalseBundle(t *testing.T) {
 	}
 }
 
-func TestValidateGateBundleAccepts17d3aLocalCutoverBundle(t *testing.T) {
-	transport := TransportGates{
-		PeerHTTPRuntimeDisabled:         true,
-		ConfigV2WriteEnabled:            true,
-		RemoteSecretWriteReleaseEnabled: false,
-		SSHPublicAddPeerSuccessEnabled:  false,
-	}
-	if err := ValidateGateBundle(transport, RuntimeGates{}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestInternalTestLocalCutoverManifestEnablesOnlyConfigV2AndPeerHTTPGates(t *testing.T) {
+func TestInternalTestTransportManifestHasNoPeerHTTPGate(t *testing.T) {
 	transportFile, err := os.Open(filepath.Join("..", "..", "release", "internal-test", "ssh-transport-gates.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -182,9 +154,6 @@ func TestInternalTestLocalCutoverManifestEnablesOnlyConfigV2AndPeerHTTPGates(t *
 	if err := ValidateGateBundle(transport, runtime); err != nil {
 		t.Fatal(err)
 	}
-	if !transport.PeerHTTPRuntimeDisabled || !transport.ConfigV2WriteEnabled {
-		t.Fatalf("internal-test local gates = peerHTTP:%v configV2:%v, want both true", transport.PeerHTTPRuntimeDisabled, transport.ConfigV2WriteEnabled)
-	}
 	if transport.RemoteSecretWriteReleaseEnabled || transport.SSHPublicAddPeerSuccessEnabled {
 		t.Fatalf("internal-test exposed remote secret/add-peer gates: %+v", transport)
 	}
@@ -195,8 +164,6 @@ func TestInternalTestLocalCutoverManifestEnablesOnlyConfigV2AndPeerHTTPGates(t *
 
 func TestValidateGateBundleAccepts17d3bPublicAddPeerBundle(t *testing.T) {
 	transport := TransportGates{
-		PeerHTTPRuntimeDisabled:         true,
-		ConfigV2WriteEnabled:            true,
 		RemoteSecretWriteReleaseEnabled: true,
 		SSHPublicAddPeerSuccessEnabled:  true,
 	}
@@ -211,19 +178,8 @@ func TestValidateGateBundleAccepts17d3bPublicAddPeerBundle(t *testing.T) {
 	}
 }
 
-func TestValidateGateBundleRejectsInvalidPublicOrdering(t *testing.T) {
-	transport := TransportGates{
-		PeerHTTPRuntimeDisabled: true,
-		ConfigV2WriteEnabled:    false,
-	}
-	err := ValidateGateBundle(transport, RuntimeGates{})
-	assertErrorContains(t, err, "gate_order")
-}
-
 func TestValidateGateBundleRejectsRemoteSecretAndPublicAddPeerMismatch(t *testing.T) {
 	transport := TransportGates{
-		PeerHTTPRuntimeDisabled:         true,
-		ConfigV2WriteEnabled:            true,
 		RemoteSecretWriteReleaseEnabled: true,
 		SSHPublicAddPeerSuccessEnabled:  false,
 	}
@@ -233,8 +189,6 @@ func TestValidateGateBundleRejectsRemoteSecretAndPublicAddPeerMismatch(t *testin
 
 func TestValidateGateBundleRequiresRuntimeGatesForPublicAddPeerAndSecrets(t *testing.T) {
 	transport := TransportGates{
-		PeerHTTPRuntimeDisabled:         true,
-		ConfigV2WriteEnabled:            true,
 		RemoteSecretWriteReleaseEnabled: true,
 		SSHPublicAddPeerSuccessEnabled:  true,
 	}

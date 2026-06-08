@@ -52,8 +52,8 @@ enum SetupState: Equatable {
     }
 }
 
-/// True when at least one peer shows a real, failing push attempt — the symptom
-/// of macOS withholding Local Network access from the daemon. Idle peers (no push
+/// True when at least one peer shows a real, failing send attempt — the symptom
+/// of macOS withholding Local Network access from the daemon. Idle peers (no send
 /// attempted yet) and the unset-timestamp sentinel are not evidence of a block, so
 /// solo users and freshly-added peers don't see the nudge.
 func shouldPromptLocalNetwork(peers: [Peer]) -> Bool {

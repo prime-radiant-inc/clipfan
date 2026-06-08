@@ -49,9 +49,8 @@ func TestRunVersionJSONCommandPrintsConfigV2CapabilityWithoutConfigLoad(t *testi
 	var payload struct {
 		Version      string `json:"version"`
 		Capabilities struct {
-			ConfigV2            bool   `json:"config_v2"`
-			ConfigV2LocalAuth   string `json:"config_v2_local_auth"`
-			PeerHTTPRuntimeGate bool   `json:"peer_http_runtime_gate"`
+			ConfigV2          bool   `json:"config_v2"`
+			ConfigV2LocalAuth string `json:"config_v2_local_auth"`
 		} `json:"capabilities"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
@@ -65,9 +64,6 @@ func TestRunVersionJSONCommandPrintsConfigV2CapabilityWithoutConfigLoad(t *testi
 	}
 	if payload.Capabilities.ConfigV2LocalAuth != "clipfan-v1/request-hmac" {
 		t.Fatalf("config_v2_local_auth = %q, want clipfan-v1/request-hmac", payload.Capabilities.ConfigV2LocalAuth)
-	}
-	if !payload.Capabilities.PeerHTTPRuntimeGate {
-		t.Fatal("version --json did not advertise peer HTTP runtime gate capability")
 	}
 	_, err := os.Stat(filepath.Join(configRoot, "clipfan", "config.json"))
 	if !errors.Is(err, os.ErrNotExist) {

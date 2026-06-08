@@ -781,9 +781,6 @@ func TestInternalTestProfilePersistsConfigV2GeneratedListenMigration(t *testing.
 	if err := releaseflags.ValidateGateBundle(transport, runtime); err != nil {
 		t.Fatal(err)
 	}
-	if !transport.PeerHTTPRuntimeDisabled || !transport.ConfigV2WriteEnabled {
-		t.Fatalf("internal-test local gates = peerHTTP:%v configV2:%v, want both true", transport.PeerHTTPRuntimeDisabled, transport.ConfigV2WriteEnabled)
-	}
 	if transport.RemoteSecretWriteReleaseEnabled || transport.SSHPublicAddPeerSuccessEnabled {
 		t.Fatalf("internal-test remote gates enabled early: %+v", transport)
 	}
@@ -798,8 +795,8 @@ func TestInternalTestProfilePersistsConfigV2GeneratedListenMigration(t *testing.
 	}`)
 
 	cfg, err := loadForDaemonStart(path, ListenerMigrationPolicy{
-		GeneratedLoopbackListenEnabled: transport.PeerHTTPRuntimeDisabled && transport.ConfigV2WriteEnabled,
-		ConfigV2WriteEnabled:           transport.ConfigV2WriteEnabled,
+		GeneratedLoopbackListenEnabled: releaseflags.ConfigV2WriteEnabled,
+		ConfigV2WriteEnabled:           releaseflags.ConfigV2WriteEnabled,
 	})
 	if err != nil {
 		t.Fatal(err)

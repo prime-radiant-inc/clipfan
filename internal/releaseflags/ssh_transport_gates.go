@@ -3,8 +3,6 @@
 package releaseflags
 
 const (
-	PeerHTTPRuntimeDisabled         = true
-	ConfigV2WriteEnabled            = true
 	RemoteSecretWriteReleaseEnabled = false
 	SSHPublicAddPeerSuccessEnabled  = false
 )

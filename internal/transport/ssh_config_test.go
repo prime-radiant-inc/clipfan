@@ -5,13 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
 )
 
 func TestSSHPeerConfigRoutesRequireHKDFAndDispatch(t *testing.T) {
 	auth := fixtureAuth(t)
-	s := NewServer(":0", auth, func(clipboard.Content, string) {}, func() any { return nil })
+	s := NewServer(":0", auth, func() any { return nil })
 	setFixedServerTime(s)
 
 	var gotReadPeer string
@@ -207,7 +205,7 @@ func TestSSHPeerConfigRoutesRequireHKDFAndDispatch(t *testing.T) {
 
 func TestSSHPeerConfigRoutesRejectRemoteAndMapHandlerErrors(t *testing.T) {
 	auth := fixtureAuth(t)
-	s := NewServer(":0", auth, func(clipboard.Content, string) {}, func() any { return nil })
+	s := NewServer(":0", auth, func() any { return nil })
 	setFixedServerTime(s)
 	s.SetSSHPeerConfig(
 		func(peerID string) (any, *HandlerError) {

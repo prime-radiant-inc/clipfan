@@ -48,12 +48,12 @@
 
 ### Changed
 
-- Fleet rows now show SSH transport state and endpoint diagnostics instead of legacy peer HTTP port details for private SSH mesh hosts.
+- Fleet rows now show SSH transport state and endpoint diagnostics instead of legacy network-sync port details for private SSH mesh hosts.
 - Add Peer copy now better matches the automatic macOS/Linux detection and callback-address flow.
 
 ### Fixed
 
-- SSH peer health now reflects persistent SSH runtime activity instead of stale peer HTTP push status.
+- SSH peer health now reflects persistent SSH runtime activity instead of stale legacy push status.
 - Stale persistent SSH sessions can no longer overwrite current peer health after reconnects, including stale connect, pending, receive, ack, and error paths.
 
 ## [0.3.28] - 2026-06-06
@@ -193,19 +193,19 @@
 
 - Private direct SSH mesh provisioning for live three-host testing with macOS and Linux hosts.
 - Add Peer now exposes remote host rows for direct SSH mesh setup while keeping public Add Peer release gates closed.
-- The app can bootstrap remote daemon payloads, tmux setup, shared sync key material, and direct SSH mesh config without the old peer HTTP deploy path.
+- The app can bootstrap remote daemon payloads, tmux setup, shared sync key material, and direct SSH mesh config without the old HTTP deploy path.
 - Config v2 parsing, revision validation, gated scoped config updates, and safe-mode recovery plumbing for the SSH transport rollout.
 
 ### Changed
 
-- Peer HTTP fanout and version checks are skipped when the generated SSH runtime gates disable peer HTTP.
+- Legacy HTTP sync and version checks stay out of the SSH transport runtime while direct SSH mesh work continues.
 - Remote update and install paths now use stricter SSH host-key handling and safer staged payload installation.
 
 ## [0.3.9] - 2026-06-01
 
 ### Fixed
 
-- Peer update verification now probes signed remote daemon versions without macOS App Transport Security blocking cleartext peer HTTP.
+- Peer update verification now probes signed remote daemon versions without macOS App Transport Security blocking the request.
 - The release workflow now uses Node 24-based GitHub Actions for checkout and Go setup.
 
 ## [0.3.8] - 2026-06-01

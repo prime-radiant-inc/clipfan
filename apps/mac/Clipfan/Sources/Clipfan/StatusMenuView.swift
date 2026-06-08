@@ -53,8 +53,7 @@ struct StatusMenuView: View {
             .padding(.top, 6).padding(.bottom, 2)
         ForEach(fleetRows(origin: daemon.origin,
                           connected: daemon.connected,
-                          peers: daemon.peers,
-                          peerVersions: daemon.peerVersions)) { row in
+                          peers: daemon.peers)) { row in
             Button {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "settings")

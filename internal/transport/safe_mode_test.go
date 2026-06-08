@@ -10,12 +10,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
 )
 
 func TestSafeModeHealthRemainsUnsigned(t *testing.T) {
-	srv := NewServer(":0", testAuth(t), nil, nil)
+	srv := NewServer(":0", testAuth(t), nil)
 	srv.SetSafeMode(true)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
@@ -30,9 +28,7 @@ func TestSafeModeHealthRemainsUnsigned(t *testing.T) {
 
 func TestSafeModeRejectsNormalMutationAndClipboardRoutes(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, func(clipboard.Content, string) {
-		t.Fatal("safe mode invoked clip receive handler")
-	}, func() any {
+	srv := NewServer(":0", auth, func() any {
 		t.Fatal("safe mode invoked peers handler")
 		return nil
 	})
@@ -67,7 +63,7 @@ func TestSafeModeRejectsNormalMutationAndClipboardRoutes(t *testing.T) {
 		target string
 		body   []byte
 	}{
-		{name: "clip receive", method: http.MethodPost, target: "/v1/clip", body: []byte(`{}`)},
+		{name: "current apply", method: http.MethodPost, target: "/v1/current", body: []byte(`{}`)},
 		{name: "history read", method: http.MethodGet, target: "/v1/history?limit=10"},
 		{name: "history delete", method: http.MethodDelete, target: "/v1/history", body: []byte(`{}`)},
 		{name: "restore", method: http.MethodPost, target: "/v1/restore", body: []byte(`{"id":"x"}`)},
@@ -91,7 +87,7 @@ func TestSafeModeRejectsNormalMutationAndClipboardRoutes(t *testing.T) {
 
 func TestSafeModeVersionIsSignedLocalOnly(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, nil)
+	srv := NewServer(":0", auth, nil)
 	setFixedServerTime(srv)
 	srv.SetSafeMode(true)
 	cfgVersion := 2
@@ -122,7 +118,7 @@ func TestSafeModeVersionIsSignedLocalOnly(t *testing.T) {
 
 func TestSafeModeStatusAndLogFamiliesDoNotFallThroughToNormalPeers(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, func() any {
+	srv := NewServer(":0", auth, func() any {
 		t.Fatal("safe mode fell through to normal peers handler")
 		return nil
 	})
@@ -144,7 +140,7 @@ func TestSafeModeStatusAndLogFamiliesDoNotFallThroughToNormalPeers(t *testing.T)
 
 func TestSafeModeStatusAndPeersExposeMinimalSchema(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, func() any {
+	srv := NewServer(":0", auth, func() any {
 		t.Fatal("safe mode fell through to normal peers handler")
 		return nil
 	})
@@ -190,17 +186,17 @@ func TestSafeModeStatusAndPeersExposeMinimalSchema(t *testing.T) {
 	}
 	peerRows := peers["peers"].([]any)
 	if len(peerRows) != 1 {
-		t.Fatalf("safe-mode peers compatibility list = %#v, want one legacy row", peerRows)
+		t.Fatalf("safe-mode peers compatibility list = %#v, want one setup row", peerRows)
 	}
 	peerRow := peerRows[0].(map[string]any)
-	if peerRow["hostname"] != "old-box" || peerRow["port"] != float64(9000) || peerRow["last_push_ok"] != false || peerRow["source"] != "static_peers" || peerRow["status"] != "legacy_http" {
+	if peerRow["hostname"] != "old-box" || peerRow["port"] != float64(9000) || peerRow["last_push_ok"] != false || peerRow["source"] != "static_peers" || peerRow["status"] != "ssh_setup_required" {
 		t.Fatalf("safe-mode peer row = %#v", peerRow)
 	}
 }
 
 func TestSafeModeLogsExposeGlobalEntriesAndRejectPeerScopedLogs(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, nil)
+	srv := NewServer(":0", auth, nil)
 	setFixedServerTime(srv)
 	srv.SetSafeMode(true)
 	srv.SetSafeModeInfo(SafeModeInfo{
@@ -268,7 +264,7 @@ func TestSafeModeLogsExposeGlobalEntriesAndRejectPeerScopedLogs(t *testing.T) {
 
 func TestSafeModeListenerRepairRoutesAreUnavailableWhenUnwired(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, nil)
+	srv := NewServer(":0", auth, nil)
 	setFixedServerTime(srv)
 	srv.SetSafeMode(true)
 
@@ -288,7 +284,7 @@ func TestSafeModeListenerRepairRoutesAreUnavailableWhenUnwired(t *testing.T) {
 
 func TestSafeModeListenerRepairRoutesUseSignedHandlerSeam(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, nil)
+	srv := NewServer(":0", auth, nil)
 	setFixedServerTime(srv)
 	srv.SetSafeMode(true)
 	patchBody := []byte(`{"expected_revision_state":"versioned","expected_config_revision":7,"listen":"127.0.0.1:9000","port":9000}`)
@@ -357,7 +353,7 @@ func TestSafeModeListenerRepairRoutesUseSignedHandlerSeam(t *testing.T) {
 
 func TestSafeModeListenerRepairHandlerErrorsAreSigned(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, nil)
+	srv := NewServer(":0", auth, nil)
 	setFixedServerTime(srv)
 	srv.SetSafeMode(true)
 	srv.SetListenerRepair(
@@ -382,7 +378,7 @@ func TestSafeModeListenerRepairHandlerErrorsAreSigned(t *testing.T) {
 
 func TestSafeModeSignedEndpointsRequireHKDFAuthVersion(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, nil)
+	srv := NewServer(":0", auth, nil)
 	setFixedServerTime(srv)
 	srv.SetSafeMode(true)
 	srv.SetVersionFunc(func() any { return map[string]string{"version": "v1.2.3"} })
@@ -472,17 +468,17 @@ func assertMinimalSafeModeStatus(t *testing.T, payload map[string]any) {
 			t.Fatalf("safe-mode payload exposed forbidden field %s: %#v", forbidden, payload)
 		}
 	}
-	suggestions := payload["legacy_peer_suggestions"].([]any)
+	suggestions := payload["peer_setup_suggestions"].([]any)
 	if len(suggestions) != 1 {
-		t.Fatalf("legacy suggestions = %#v, want one", suggestions)
+		t.Fatalf("peer setup suggestions = %#v, want one", suggestions)
 	}
 	suggestion := suggestions[0].(map[string]any)
-	if suggestion["hostname"] != "old-box" || suggestion["source"] != "static_peers" || suggestion["status"] != "legacy_http" {
-		t.Fatalf("legacy suggestion = %#v", suggestion)
+	if suggestion["hostname"] != "old-box" || suggestion["source"] != "static_peers" || suggestion["status"] != "ssh_setup_required" {
+		t.Fatalf("peer setup suggestion = %#v", suggestion)
 	}
 	logIDs := payload["log_ids"].([]any)
 	if len(logIDs) < 2 {
-		t.Fatalf("log_ids = %#v, want listener and legacy peer IDs", logIDs)
+		t.Fatalf("log_ids = %#v, want listener and peer setup IDs", logIDs)
 	}
 }
 

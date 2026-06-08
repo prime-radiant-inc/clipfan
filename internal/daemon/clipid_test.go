@@ -17,9 +17,9 @@ func TestPollMintsClipID(t *testing.T) {
 	cb.current = clipboard.New(clipboard.KindText, []byte("hello world"), fixedTime)
 
 	d.pollOnce(context.Background())
-	waitForPushes(t, push, 1)
+	waitForPublishes(t, push, 1)
 
-	if id := push.snapshot()[0].id; id == "" {
+	if id := sshPublishSnapshot(push)[0].content.ID; id == "" {
 		t.Fatal("pollOnce broadcast a clip with an empty ID")
 	}
 }
@@ -33,9 +33,9 @@ func TestRelayPreservesClipID(t *testing.T) {
 	c.ID = "origin-assigned-id"
 
 	d.onReceive(c, "some-origin")
-	waitForPushes(t, push, 1)
+	waitForPublishes(t, push, 1)
 
-	if id := push.snapshot()[0].id; id != "origin-assigned-id" {
+	if id := sshPublishSnapshot(push)[0].content.ID; id != "origin-assigned-id" {
 		t.Fatalf("relay changed the clip ID to %q, want origin-assigned-id", id)
 	}
 }
@@ -50,16 +50,16 @@ func TestPollSuppressesImageBytesEcho(t *testing.T) {
 	img := clipboard.New(clipboard.KindImage, []byte("PNGDATA"), fixedTime)
 	img.ID = "img-1"
 	d.onReceive(img, "peer")
-	waitForPushes(t, push, 1) // the relay
-	relayed := len(push.snapshot())
+	waitForPublishes(t, push, 1) // the relay
+	relayed := len(sshPublishSnapshot(push))
 
 	// Clipboard now reads back the exact image bytes we applied.
 	cb.current = clipboard.New(clipboard.KindImage, []byte("PNGDATA"), fixedTime)
 	d.pollOnce(context.Background())
 	time.Sleep(50 * time.Millisecond)
 
-	if extra := len(push.snapshot()) - relayed; extra != 0 {
-		t.Fatalf("pollOnce re-broadcast the image echo: %d extra pushes", extra)
+	if extra := len(sshPublishSnapshot(push)) - relayed; extra != 0 {
+		t.Fatalf("pollOnce re-broadcast the image echo: %d extra publishes", extra)
 	}
 }
 
@@ -73,16 +73,16 @@ func TestPollBroadcastsGenuineNewCopy(t *testing.T) {
 	first := clipboard.New(clipboard.KindText, []byte("received text"), fixedTime)
 	first.ID = "txt-1"
 	d.onReceive(first, "peer")
-	waitForPushes(t, push, 1)
-	relayed := len(push.snapshot())
+	waitForPublishes(t, push, 1)
+	relayed := len(sshPublishSnapshot(push))
 
 	cb.current = clipboard.New(clipboard.KindText, []byte("brand new user copy"), fixedTime.Add(time.Second))
 	d.pollOnce(context.Background())
-	waitForPushes(t, push, relayed+1)
+	waitForPublishes(t, push, relayed+1)
 
-	got := push.snapshot()
+	got := sshPublishSnapshot(push)
 	last := got[len(got)-1]
-	if last.id == "" {
+	if last.content.ID == "" {
 		t.Fatal("new copy broadcast with empty ID")
 	}
 }
@@ -100,11 +100,11 @@ func TestReceiveDedupsByID(t *testing.T) {
 		return c
 	}
 	d.onReceive(mk("first bytes"), "peer-a")
-	waitForPushes(t, push, 1)
+	waitForPublishes(t, push, 1)
 	d.onReceive(mk("different bytes but same id"), "peer-b")
 	time.Sleep(50 * time.Millisecond)
 
-	if got := len(push.snapshot()); got != 1 {
+	if got := len(sshPublishSnapshot(push)); got != 1 {
 		t.Fatalf("same clip-ID applied/relayed %d times, want 1", got)
 	}
 }
@@ -121,7 +121,7 @@ func TestReceiveDropsEmptyID(t *testing.T) {
 	d.onReceive(c, "peer")
 	time.Sleep(50 * time.Millisecond)
 
-	if got := len(push.snapshot()); got != 0 {
+	if got := len(sshPublishSnapshot(push)); got != 0 {
 		t.Fatalf("ID-less envelope relayed %d times, want 0", got)
 	}
 	if cb.current.Kind != clipboard.KindText || string(cb.current.Bytes) != "SENTINEL" {
@@ -138,13 +138,13 @@ func TestPollDoesNotRebroadcastSameLocalClip(t *testing.T) {
 	cb.current = clipboard.New(clipboard.KindText, []byte("local copy"), fixedTime)
 
 	d.pollOnce(context.Background())
-	waitForPushes(t, push, 1)
+	waitForPublishes(t, push, 1)
 	// Same content still on the clipboard; a second poll must NOT re-broadcast.
 	d.pollOnce(context.Background())
 	time.Sleep(50 * time.Millisecond)
 
-	if got := len(push.snapshot()); got != 1 {
-		t.Fatalf("re-broadcast the same local clip: %d pushes, want 1", got)
+	if got := len(sshPublishSnapshot(push)); got != 1 {
+		t.Fatalf("re-broadcast the same local clip: %d publishes, want 1", got)
 	}
 }
 
@@ -159,8 +159,8 @@ func TestReceiveSuppressesReoriginatedText(t *testing.T) {
 	first := clipboard.New(clipboard.KindText, []byte("hello from tmux"), fixedTime)
 	first.ID = "id-1"
 	d.onReceive(first, "peer")
-	waitForPushes(t, push, 1)
-	relayed := len(push.snapshot())
+	waitForPublishes(t, push, 1)
+	relayed := len(sshPublishSnapshot(push))
 
 	// The hook re-POSTs identical bytes with a new id and a slightly later TS.
 	resub := clipboard.New(clipboard.KindText, []byte("hello from tmux"), fixedTime.Add(time.Millisecond))
@@ -168,7 +168,7 @@ func TestReceiveSuppressesReoriginatedText(t *testing.T) {
 	d.onReceive(resub, "self")
 	time.Sleep(50 * time.Millisecond)
 
-	if extra := len(push.snapshot()) - relayed; extra != 0 {
-		t.Fatalf("re-originated text was relayed again: %d extra pushes", extra)
+	if extra := len(sshPublishSnapshot(push)) - relayed; extra != 0 {
+		t.Fatalf("re-originated text was relayed again: %d extra publishes", extra)
 	}
 }

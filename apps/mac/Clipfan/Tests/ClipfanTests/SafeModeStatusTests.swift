@@ -46,7 +46,7 @@ final class SafeModeStatusTests: XCTestCase {
           "safe_mode_logs_available":true,
           "entries":[
             {"ts":"2026-06-02T12:34:56Z","source":"listener_repair","durable":false,"log_id":"safe-mode-listener","phase":"listener_safe_mode","code":"public_listen_requires_confirmation","message":"Configured listener requires local repair before peer sync can start."},
-            {"source":"remediation","durable":false,"log_id":"legacy-static-peer-0","phase":"legacy_static_peer","code":"ssh_setup_required","message":"Static peer requires SSH setup before sync."}
+            {"source":"remediation","durable":false,"log_id":"static-peer-setup-0","phase":"static_peer_setup","code":"ssh_setup_required","message":"Static peer requires SSH setup before sync."}
           ],
           "truncated":false
         }
@@ -56,7 +56,7 @@ final class SafeModeStatusTests: XCTestCase {
 
         XCTAssertEqual(response.formattedLog, """
         2026-06-02T12:34:56Z [listener_repair/listener_safe_mode] public_listen_requires_confirmation Configured listener requires local repair before peer sync can start.
-        [remediation/legacy_static_peer] ssh_setup_required Static peer requires SSH setup before sync.
+        [remediation/static_peer_setup] ssh_setup_required Static peer requires SSH setup before sync.
         """)
     }
 

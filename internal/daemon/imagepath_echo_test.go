@@ -34,8 +34,8 @@ func TestPollDoesNotBroadcastImageStorePath(t *testing.T) {
 	d.pollOnce(ctx)
 	time.Sleep(50 * time.Millisecond)
 
-	if got := len(push.snapshot()); got != 0 {
-		t.Fatalf("pollOnce broadcast an image-store path as text; expected 0 pushes, got %d", got)
+	if got := len(sshPublishSnapshot(push)); got != 0 {
+		t.Fatalf("pollOnce broadcast an image-store path as text; expected 0 publishes, got %d", got)
 	}
 }
 
@@ -66,7 +66,7 @@ func TestReceiveImageStorePathDoesNotClobber(t *testing.T) {
 	if cb.current.Kind == clipboard.KindText {
 		t.Fatalf("onReceive wrote the image-store path over the clipboard")
 	}
-	if got := len(push.snapshot()); got != 0 {
-		t.Fatalf("onReceive relayed an image-store path; expected 0 pushes, got %d", got)
+	if got := len(sshPublishSnapshot(push)); got != 0 {
+		t.Fatalf("onReceive relayed an image-store path; expected 0 publishes, got %d", got)
 	}
 }

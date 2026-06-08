@@ -24,7 +24,7 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  (no subcommand) — run the daemon (back-compat)")
 	fmt.Fprintln(w, "  daemon          — explicitly run the daemon")
 	fmt.Fprintln(w, "  copy [--osc52 /dev/tty] [--image] [--no-daemon] [--no-osc52]")
-	fmt.Fprintln(w, "                  — read stdin, push to local daemon and/or emit OSC 52")
+	fmt.Fprintln(w, "                  — read stdin, apply to local daemon and/or emit OSC 52")
 	fmt.Fprintln(w, "  paste [--raw]   — write current clipfan state to stdout")
 	fmt.Fprintln(w, "  storage-preflight — check local runtime storage and print offline repair guidance")
 	fmt.Fprintln(w, "  remove-host <host>")
@@ -153,13 +153,11 @@ func versionJSONPayload() map[string]any {
 	return map[string]any{
 		"version": version.Version,
 		"capabilities": map[string]any{
-			"config_v2":              true,
-			"config_v2_local_auth":   transport.AuthVersionRequestHMAC,
-			"peer_http_runtime_gate": true,
+			"config_v2":            true,
+			"config_v2_local_auth": transport.AuthVersionRequestHMAC,
 		},
 		"release_gates": map[string]any{
-			"config_v2_write_enabled":    releaseflags.ConfigV2WriteEnabled,
-			"peer_http_runtime_disabled": releaseflags.PeerHTTPRuntimeDisabled,
+			"config_v2_write_enabled": releaseflags.ConfigV2WriteEnabled,
 		},
 	}
 }

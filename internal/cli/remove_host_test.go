@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
 	"github.com/prime-radiant-inc/clipfan/internal/config"
 	"github.com/prime-radiant-inc/clipfan/internal/localdaemon"
 	"github.com/prime-radiant-inc/clipfan/internal/transport"
@@ -22,7 +21,7 @@ func TestRunRemoveHostReadsRevisionAndDeletesViaSignedDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := transport.NewServer(":0", auth, func(clipboard.Content, string) {}, func() any {
+	s := transport.NewServer(":0", auth, func() any {
 		revision := uint64(7)
 		version := 2
 		return map[string]any{
@@ -107,7 +106,7 @@ func TestRunRemoveHostReturnsSignedDaemonErrorCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := transport.NewServer(":0", auth, func(clipboard.Content, string) {}, func() any {
+	s := transport.NewServer(":0", auth, func() any {
 		revision := uint64(7)
 		return map[string]any{
 			"origin":          "m4",
@@ -148,7 +147,7 @@ func TestRunRemoveHostRequiresUsableRevisionBeforeDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := transport.NewServer(":0", auth, func(clipboard.Content, string) {}, func() any {
+	s := transport.NewServer(":0", auth, func() any {
 		return map[string]any{
 			"origin":         "m4",
 			"peers":          []any{},

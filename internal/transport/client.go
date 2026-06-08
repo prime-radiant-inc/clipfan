@@ -14,23 +14,16 @@ import (
 	"time"
 
 	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
-	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
 )
 
-var ErrPeerHTTPRuntimeDisabled = errors.New("peer_http_runtime_disabled")
+var ErrLoopbackRequired = errors.New("loopback_required")
 
 type Client struct {
-	http                    *http.Client
-	auth                    *Auth
-	origin                  string
-	peerHTTPRuntimeDisabled bool
+	http *http.Client
+	auth *Auth
 }
 
-func NewClient(auth *Auth, origin string) *Client {
-	return NewClientWithPeerHTTPRuntimeDisabled(auth, origin, releaseflags.PeerHTTPRuntimeDisabled)
-}
-
-func NewClientWithPeerHTTPRuntimeDisabled(auth *Auth, origin string, disabled bool) *Client {
+func NewClient(auth *Auth) *Client {
 	return &Client{
 		http: &http.Client{
 			Timeout: 5 * time.Second,
@@ -40,65 +33,13 @@ func NewClientWithPeerHTTPRuntimeDisabled(auth *Auth, origin string, disabled bo
 			// misbehaving/forged responder as a non-2xx error.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		auth:                    auth,
-		origin:                  origin,
-		peerHTTPRuntimeDisabled: disabled,
+		auth: auth,
 	}
-}
-
-func (c *Client) Push(ctx context.Context, host string, port int, content clipboard.Content) error {
-	return c.PushAs(ctx, host, port, content, c.origin)
-}
-
-// PushAs sends content but stamps the envelope with `origin` instead of the
-// client's own origin. Used by the relay path so the original copy source is
-// preserved end-to-end and receivers can short-circuit if they're the origin.
-func (c *Client) PushAs(ctx context.Context, host string, port int, content clipboard.Content, origin string) error {
-	if c.peerHTTPRuntimeDisabled && !isLoopbackHost(host) {
-		return fmt.Errorf("%w: %s", ErrPeerHTTPRuntimeDisabled, net.JoinHostPort(host, strconv.Itoa(port)))
-	}
-	return c.PushAsToRecipient(ctx, host, port, host, content, origin)
-}
-
-func (c *Client) PushAsToRecipient(ctx context.Context, host string, port int, recipient string, content clipboard.Content, origin string) error {
-	if c.peerHTTPRuntimeDisabled && !isLoopbackHost(host) {
-		return fmt.Errorf("%w: %s", ErrPeerHTTPRuntimeDisabled, net.JoinHostPort(host, strconv.Itoa(port)))
-	}
-	env, err := BuildEnvelope(c.auth, content, origin, recipient)
-	if err != nil {
-		return err
-	}
-	raw, err := json.Marshal(env)
-	if err != nil {
-		return err
-	}
-	url := fmt.Sprintf("http://%s/v1/clip", net.JoinHostPort(host, strconv.Itoa(port)))
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(raw))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	headers, err := c.auth.SignedRequestHeaders(req.Method, req.URL.RequestURI(), raw, SignedRequestOptions{})
-	if err != nil {
-		return err
-	}
-	for header, value := range headers {
-		req.Header.Set(header, value)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("push to %s: status %d", host, resp.StatusCode)
-	}
-	return nil
 }
 
 func (c *Client) Current(ctx context.Context, host string, port int) (CurrentPayload, error) {
 	if !isLoopbackHost(host) {
-		return CurrentPayload{}, fmt.Errorf("%w: %s", ErrPeerHTTPRuntimeDisabled, net.JoinHostPort(host, strconv.Itoa(port)))
+		return CurrentPayload{}, fmt.Errorf("%w: %s", ErrLoopbackRequired, net.JoinHostPort(host, strconv.Itoa(port)))
 	}
 	target := "/v1/current"
 	url := fmt.Sprintf("http://%s%s", net.JoinHostPort(host, strconv.Itoa(port)), target)
@@ -141,6 +82,49 @@ func (c *Client) Current(ctx context.Context, host string, port int) (CurrentPay
 	return payload, nil
 }
 
+func (c *Client) ApplyCurrent(ctx context.Context, host string, port int, content clipboard.Content, origin string) error {
+	if !isLoopbackHost(host) {
+		return fmt.Errorf("%w: %s", ErrLoopbackRequired, net.JoinHostPort(host, strconv.Itoa(port)))
+	}
+	target := "/v1/current"
+	body, err := json.Marshal(CurrentPayloadFromContent(content, origin))
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("http://%s%s", net.JoinHostPort(host, strconv.Itoa(port)), target)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	headers, err := c.auth.SignedRequestHeaders(req.Method, req.URL.RequestURI(), body, SignedRequestOptions{
+		AuthVersion: AuthVersionRequestHMAC,
+	})
+	if err != nil {
+		return err
+	}
+	for header, value := range headers {
+		req.Header.Set(header, value)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	responseBody, err := readLimitedBody(resp.Body, maxPeersResponseBytes, ErrSSHStreamFrameTooLarge)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("current apply to %s: status %d", host, resp.StatusCode)
+	}
+	authVersion := resp.Header.Get(HeaderAuthVersion)
+	if authVersion == "" {
+		authVersion = headers[HeaderAuthVersion]
+	}
+	return c.auth.VerifyResponseWithAuthVersion(headers[HeaderNonce], responseBody, resp.Header.Get("X-Clipfan-Response-Sig"), authVersion)
+}
+
 func readLimitedCurrentBody(reader io.Reader) ([]byte, error) {
 	return readLimitedBody(reader, MaxSSHStreamFrameBytes, ErrSSHStreamFrameTooLarge)
 }
@@ -161,7 +145,7 @@ func (c *Client) Peers(ctx context.Context, host string, port int) ([]byte, erro
 // without a bespoke typed method each.
 func (c *Client) signedLoopbackGet(ctx context.Context, host string, port int, target string, maxBytes int64) ([]byte, error) {
 	if !isLoopbackHost(host) {
-		return nil, fmt.Errorf("%w: %s", ErrPeerHTTPRuntimeDisabled, net.JoinHostPort(host, strconv.Itoa(port)))
+		return nil, fmt.Errorf("%w: %s", ErrLoopbackRequired, net.JoinHostPort(host, strconv.Itoa(port)))
 	}
 	url := fmt.Sprintf("http://%s%s", net.JoinHostPort(host, strconv.Itoa(port)), target)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

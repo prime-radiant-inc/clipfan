@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -19,8 +18,6 @@ const (
 	nonceRetention = 2 * signatureSkew
 )
 
-type ReceiveFunc func(c clipboard.Content, origin string)
-
 // PeersFunc returns a JSON-encodable snapshot of the daemon's peer state.
 // Returning `any` keeps daemon types out of the transport package.
 type PeersFunc func() any
@@ -31,6 +28,10 @@ type VersionFunc func() any
 // CurrentFunc returns the daemon-owned latest visible current state for local
 // SSH gateway publishing.
 type CurrentFunc func() CurrentPayload
+
+// CurrentApplyFunc applies a current-state update received from a trusted local
+// caller. It is exposed only through signed loopback HTTP.
+type CurrentApplyFunc func(content clipboard.Content, origin string) error
 
 // FleetFunc returns a JSON-encodable aggregated mesh view for the local Mac app.
 // Returning `any` keeps daemon types out of the transport package.
@@ -80,10 +81,10 @@ func (e *HandlerError) httpStatus() int {
 type Server struct {
 	auth                  *Auth
 	listen                string
-	onRecv                ReceiveFunc
 	peersFn               PeersFunc
 	versionFn             VersionFunc
 	currentFn             CurrentFunc
+	currentApplyFn        CurrentApplyFunc
 	fleetFn               FleetFunc
 	historyFn             HistoryFunc
 	restoreFn             RestoreFunc
@@ -104,7 +105,6 @@ type Server struct {
 	safeInfo              SafeModeInfo
 	nonces                *nonceCache
 	now                   func() time.Time
-	recipient             string
 }
 
 type SafeModeInfo struct {
@@ -127,21 +127,14 @@ type signedPayload struct {
 	receivedAt  time.Time
 }
 
-func NewServer(listen string, auth *Auth, onRecv ReceiveFunc, peersFn PeersFunc) *Server {
+func NewServer(listen string, auth *Auth, peersFn PeersFunc) *Server {
 	return &Server{
 		auth:    auth,
 		listen:  listen,
-		onRecv:  onRecv,
 		peersFn: peersFn,
 		nonces:  newNonceCache(nonceRetention),
 		now:     time.Now,
 	}
-}
-
-// SetRecipientIdentity enables recipient validation for signed peer clip posts.
-// Tests and local harnesses that do not configure it accept any recipient.
-func (s *Server) SetRecipientIdentity(recipient string) {
-	s.recipient = recipient
 }
 
 // SetHistory wires the history endpoints. Called by the daemon after construction.
@@ -157,6 +150,9 @@ func (s *Server) SetVersionFunc(fn VersionFunc) { s.versionFn = fn }
 
 // SetCurrentFunc wires the signed local current endpoint. Called by the daemon.
 func (s *Server) SetCurrentFunc(fn CurrentFunc) { s.currentFn = fn }
+
+// SetCurrentApply wires the signed local current-apply endpoint.
+func (s *Server) SetCurrentApply(fn CurrentApplyFunc) { s.currentApplyFn = fn }
 
 // SetFleetFunc wires the signed local fleet endpoint. Called by the daemon.
 func (s *Server) SetFleetFunc(fn FleetFunc) { s.fleetFn = fn }
@@ -209,11 +205,11 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/", s.safeModeRoute)
 		return mux
 	}
-	mux.HandleFunc("POST /v1/clip", s.postClip)
 	mux.HandleFunc("GET /v1/peers", s.getPeers)
 	mux.HandleFunc("GET /v1/fleet", s.getFleet)
 	mux.HandleFunc("GET /v1/version", s.getVersion)
 	mux.HandleFunc("GET /v1/current", s.getCurrent)
+	mux.HandleFunc("POST /v1/current", s.postCurrent)
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
@@ -311,7 +307,7 @@ func (s *Server) safeModeStatusPayload() map[string]any {
 		"peer_sync_started":       s.safeInfo.PeerSyncStarted,
 		"config_version":          s.safeInfo.ConfigVersion,
 		"config_revision":         s.safeInfo.ConfigRevision,
-		"legacy_peer_suggestions": s.safeModeLegacyPeerSuggestions(),
+		"peer_setup_suggestions":  s.safeModePeerSetupSuggestions(),
 		"log_ids":                 s.safeModeLogIDs(),
 	} {
 		payload[key] = value
@@ -323,7 +319,7 @@ func (s *Server) safeModePeersPayload() map[string]any {
 	payload := s.safeModeStatusPayload()
 	payload["origin"] = s.safeInfo.Origin
 	payload["version"] = s.safeModeVersionString()
-	payload["peers"] = s.safeModeLegacyPeerRows()
+	payload["peers"] = s.safeModePeerSetupRows()
 	return payload
 }
 
@@ -344,7 +340,7 @@ func (s *Server) safeModeVersionString() string {
 	return ""
 }
 
-func (s *Server) safeModeLegacyPeerSuggestions() []map[string]string {
+func (s *Server) safeModePeerSetupSuggestions() []map[string]string {
 	suggestions := make([]map[string]string, 0, len(s.safeInfo.StaticPeers))
 	for _, peer := range s.safeInfo.StaticPeers {
 		if peer == "" {
@@ -353,13 +349,13 @@ func (s *Server) safeModeLegacyPeerSuggestions() []map[string]string {
 		suggestions = append(suggestions, map[string]string{
 			"hostname": peer,
 			"source":   "static_peers",
-			"status":   "legacy_http",
+			"status":   "ssh_setup_required",
 		})
 	}
 	return suggestions
 }
 
-func (s *Server) safeModeLegacyPeerRows() []map[string]any {
+func (s *Server) safeModePeerSetupRows() []map[string]any {
 	rows := make([]map[string]any, 0, len(s.safeInfo.StaticPeers))
 	for _, peer := range s.safeInfo.StaticPeers {
 		if peer == "" {
@@ -370,7 +366,7 @@ func (s *Server) safeModeLegacyPeerRows() []map[string]any {
 			"port":         s.safeInfo.Port,
 			"last_push_ok": false,
 			"source":       "static_peers",
-			"status":       "legacy_http",
+			"status":       "ssh_setup_required",
 		})
 	}
 	return rows
@@ -391,7 +387,7 @@ func (s *Server) safeModeLogIDs() []string {
 		if peer == "" {
 			continue
 		}
-		ids = append(ids, "legacy-static-peer-"+strconv.Itoa(i))
+		ids = append(ids, "static-peer-setup-"+strconv.Itoa(i))
 	}
 	return ids
 }
@@ -446,8 +442,8 @@ func (s *Server) safeModeLogEntries() []map[string]any {
 			"ts":      s.now().UTC().Format(time.RFC3339),
 			"source":  "remediation",
 			"durable": false,
-			"log_id":  "legacy-static-peer-" + strconv.Itoa(i),
-			"phase":   "legacy_static_peer",
+			"log_id":  "static-peer-setup-" + strconv.Itoa(i),
+			"phase":   "static_peer_setup",
 			"code":    "ssh_setup_required",
 			"message": "Static peer requires SSH setup before sync.",
 		})
@@ -537,34 +533,6 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener) error {
 	}
 }
 
-func (s *Server) postClip(w http.ResponseWriter, r *http.Request) {
-	signed := s.readSigned(w, r, 64<<20)
-	if signed == nil {
-		return
-	}
-	var env Envelope
-	if err := json.Unmarshal(signed.body, &env); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	c, origin, err := OpenEnvelope(s.auth, env, s.recipient, signed.receivedAt)
-	if errors.Is(err, ErrWrongRecipient) {
-		http.Error(w, "wrong recipient", http.StatusForbidden)
-		return
-	}
-	if errors.Is(err, ErrFutureEnvelopeTimestamp) {
-		http.Error(w, "future envelope timestamp", http.StatusBadRequest)
-		return
-	}
-	if err != nil {
-		http.Error(w, "decrypt envelope body", http.StatusBadRequest)
-		return
-	}
-	slog.Debug("clip received", "id", env.ID, "origin", origin, "kind", env.Kind, "bytes", len(c.Bytes))
-	s.onRecv(c, origin)
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func (s *Server) getPeers(w http.ResponseWriter, r *http.Request) {
 	signed := s.readSignedLocal(w, r)
 	if signed == nil {
@@ -611,6 +579,32 @@ func (s *Server) getCurrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeSignedJSON(w, signed, s.currentFn())
+}
+
+func (s *Server) postCurrent(w http.ResponseWriter, r *http.Request) {
+	signed := s.readSignedLocalRequiredAuthVersion(w, r, AuthVersionRequestHMAC)
+	if signed == nil {
+		return
+	}
+	if s.currentApplyFn == nil {
+		s.writeSignedError(w, signed, http.StatusNotImplemented, "current_apply_not_wired")
+		return
+	}
+	var payload CurrentPayload
+	if err := json.Unmarshal(signed.body, &payload); err != nil {
+		s.writeSignedError(w, signed, http.StatusBadRequest, "bad_json")
+		return
+	}
+	content, ok, err := payload.Content()
+	if err != nil || !ok || payload.Origin == "" {
+		s.writeSignedError(w, signed, http.StatusBadRequest, "invalid_current_payload")
+		return
+	}
+	if err := s.currentApplyFn(content, payload.Origin); err != nil {
+		s.writeSignedError(w, signed, http.StatusConflict, "current_apply_failed")
+		return
+	}
+	s.writeSignedJSON(w, signed, map[string]string{"status": "ok"})
 }
 
 func (s *Server) getHistory(w http.ResponseWriter, r *http.Request) {

@@ -33,7 +33,7 @@ func TestSignedLoopbackGetDoesNotFollowRedirects(t *testing.T) {
 	}
 	port, _ := strconv.Atoi(portStr)
 
-	client := NewClientWithPeerHTTPRuntimeDisabled(auth, "x", true)
+	client := NewClient(auth)
 	if _, err := client.Peers(context.Background(), host, port); err == nil {
 		t.Fatal("expected an error (the redirect must not be followed), got nil")
 	}

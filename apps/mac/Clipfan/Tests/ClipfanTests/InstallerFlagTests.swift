@@ -625,8 +625,7 @@ final class InstallerFlagTests: XCTestCase {
     }
 
     func testRemoteInstallConfigUsesCurrentGeneratedLoopbackDefault() {
-        XCTAssertTrue(GeneratedSSHTransportGates.peerHTTPRuntimeDisabled)
-        XCTAssertTrue(GeneratedSSHTransportGates.configV2WriteEnabled)
+        XCTAssertTrue(ConfigV2ReleaseGate.writeEnabled)
         XCTAssertFalse(GeneratedSSHTransportGates.remoteSecretWriteReleaseEnabled)
         XCTAssertFalse(GeneratedSSHTransportGates.publicAddPeerSuccessEnabled)
 
@@ -716,18 +715,14 @@ final class InstallerFlagTests: XCTestCase {
     }
 
     func testGeneratedConfigV2WriteGateEnablesDefaultDowngradeBlock() throws {
-        guard GeneratedSSHTransportGates.configV2WriteEnabled else {
-            throw XCTSkip("requires internal/test generated config v2 write gate")
-        }
-        XCTAssertTrue(GeneratedSSHTransportGates.peerHTTPRuntimeDisabled)
+        XCTAssertTrue(ConfigV2ReleaseGate.writeEnabled)
         XCTAssertFalse(GeneratedSSHTransportGates.remoteSecretWriteReleaseEnabled)
         XCTAssertFalse(GeneratedSSHTransportGates.publicAddPeerSuccessEnabled)
 
         let command = Installer.remoteUpdateCommand(
             stage: "/tmp/clipfan-install.ABC123",
             payloadBinaryName: "clipfan-linux-arm64",
-            enforceStorageAbort: GeneratedSSHTransportGates.peerHTTPRuntimeDisabled ||
-                GeneratedSSHTransportGates.configV2WriteEnabled
+            enforceStorageAbort: ConfigV2ReleaseGate.writeEnabled
         )
 
         let storagePreflight = try XCTUnwrap(command.range(of: "\"$preflight_bin\" storage-preflight"))
@@ -1622,9 +1617,8 @@ final class InstallerFlagTests: XCTestCase {
         let expectedUpdateCommand = Installer.remoteUpdateCommand(
             stage: "/tmp/clipfan-install.ABC123",
             payloadBinaryName: "clipfan-linux-arm64",
-            enforceStorageAbort: GeneratedSSHTransportGates.peerHTTPRuntimeDisabled ||
-                GeneratedSSHTransportGates.configV2WriteEnabled,
-            enforceDowngradeBlock: GeneratedSSHTransportGates.configV2WriteEnabled
+            enforceStorageAbort: ConfigV2ReleaseGate.writeEnabled,
+            enforceDowngradeBlock: ConfigV2ReleaseGate.writeEnabled
         )
         let version = try await Installer.uploadAndUpdateRemoteStage(
             target: "remote.example",

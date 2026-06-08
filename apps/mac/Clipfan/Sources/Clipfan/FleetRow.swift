@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Outbound "last sent" time for the up-arrow. SSH transport never sets
-/// last_push_ts (that's the HTTP fanout path), so use the SSH ack time —
+/// Outbound "last sent" time for the up-arrow. SSH transport does not update
+/// last_push_ts, so use the SSH ack time —
 /// deliberately NOT ssh_last_connect_ts, since connecting is not sending.
 func fleetOutboundTS(_ p: Peer) -> Date? {
     p.isSSHTransport ? p.ssh_last_ack_ts : p.last_push_ts
@@ -21,39 +21,20 @@ enum FleetHealth {
     }
 }
 
-/// Map a peer's push state to FleetHealth, mirroring Peer.healthColor exactly
-/// (avoids fragile SwiftUI Color equality checks).
-private func health(for p: Peer, versionStatus: PeerVersionStatus?) -> FleetHealth {
+private func health(for p: Peer) -> FleetHealth {
     if p.isSSHTransport {
         return sshHealth(for: p)
-    }
-    switch versionStatus {
-    case .current:
-        return .healthy
-    case .needsUpdate, .unknown:
-        return .attention
-    case nil:
-        break
     }
     if p.last_push_ok { return .healthy }
     if let ts = p.last_push_ts, ts > Date.distantPast { return .attention }
     return .down
 }
 
-private func subtitle(for p: Peer, versionStatus: PeerVersionStatus?) -> String {
+private func subtitle(for p: Peer) -> String {
     if p.isSSHTransport {
         return sshSubtitle(for: p)
     }
-    switch versionStatus {
-    case .current:
-        return "port \(p.port) · current"
-    case .needsUpdate:
-        return "port \(p.port) · update available"
-    case .unknown:
-        return "port \(p.port) · update recommended"
-    case nil:
-        return p.last_push_ok ? "port \(p.port) · synced" : "port \(p.port)"
-    }
+    return p.last_push_ok ? "port \(p.port) · synced" : "port \(p.port)"
 }
 
 private func sshHealth(for p: Peer) -> FleetHealth {
@@ -83,7 +64,7 @@ private func sshSubtitle(for p: Peer) -> String {
     }
 }
 
-private func diagnostic(for p: Peer, versionStatus: PeerVersionStatus?) -> String? {
+private func diagnostic(for p: Peer) -> String? {
     if p.isSSHTransport {
         var parts = ["transport ssh", "status \(p.ssh_status ?? "waiting")"]
         if let host = p.ssh_host, !host.isEmpty {
@@ -108,16 +89,7 @@ private func diagnostic(for p: Peer, versionStatus: PeerVersionStatus?) -> Strin
         }
         return parts.joined(separator: "\n")
     }
-    switch versionStatus {
-    case .current(let version):
-        return "peer HTTP current \(version)"
-    case .needsUpdate(let version):
-        return "peer HTTP update available from \(version)"
-    case .unknown:
-        return "peer HTTP version unknown"
-    case nil:
-        return nil
-    }
+    return nil
 }
 
 /// One row in the unified fleet list — either the local host (isSelf) or a peer.
@@ -138,9 +110,7 @@ struct FleetRowModel: Identifiable {
 func fleetRows(origin: String,
                connected: Bool,
                peers: [Peer],
-               safeMode: LocalDaemonSafeModeStatus? = nil,
-               peerVersions: [String: PeerVersionStatus] = [:],
-               policy: SSHTransportGatePolicy = .current) -> [FleetRowModel] {
+               safeMode: LocalDaemonSafeModeStatus? = nil) -> [FleetRowModel] {
     let safeModeActive = safeMode?.active == true
     let selfRow = FleetRowModel(
         id: origin,
@@ -157,13 +127,12 @@ func fleetRows(origin: String,
         return [selfRow]
     }
     let peerRows = peers.map { p in
-        let versionStatus = policy.peerHTTPVersionProbeEnabled ? peerVersions[p.hostname] : nil
         return FleetRowModel(
             id: p.hostname,
             name: p.hostname,
-            subtitle: subtitle(for: p, versionStatus: versionStatus),
-            health: health(for: p, versionStatus: versionStatus),
-            diagnostic: diagnostic(for: p, versionStatus: versionStatus),
+            subtitle: subtitle(for: p),
+            health: health(for: p),
+            diagnostic: diagnostic(for: p),
             isSelf: false,
             pushTS: fleetOutboundTS(p),
             recvTS: p.last_recv_ts,

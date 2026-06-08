@@ -9,7 +9,7 @@ import (
 
 func TestVersionRequiresSignatureAndAllowsRemote(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, nil)
+	srv := NewServer(":0", auth, nil)
 	setFixedServerTime(srv)
 	srv.SetVersionFunc(func() any {
 		return map[string]string{"version": "v9.8.7"}

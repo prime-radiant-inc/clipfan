@@ -5,8 +5,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-
-	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
 )
 
 const (
@@ -30,7 +28,7 @@ type ListenerPlan struct {
 }
 
 func GeneratedLoopbackDefaultsEnabled() bool {
-	return releaseflags.PeerHTTPRuntimeDisabled && releaseflags.ConfigV2WriteEnabled
+	return true
 }
 
 func DefaultListen(loopbackDefault bool, port int) string {

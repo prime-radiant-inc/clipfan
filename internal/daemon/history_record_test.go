@@ -61,8 +61,8 @@ func TestPollOnceDoesNotFanoutConcealedClip(t *testing.T) {
 	if !d.isEcho(c) {
 		t.Fatal("concealed local clip was not adopted for echo suppression")
 	}
-	if got := len(push.snapshot()); got != 0 {
-		t.Fatalf("concealed local clip fanout count = %d, want 0", got)
+	if got := len(sshPublishSnapshot(push)); got != 0 {
+		t.Fatalf("concealed local clip publish count = %d, want 0", got)
 	}
 	got, err := store.LoadHistory(10)
 	if err != nil {
@@ -112,7 +112,7 @@ func TestOnReceiveDropsConcealedClip(t *testing.T) {
 	if _, ok := d.peerStatus["peer"]; ok {
 		t.Fatal("concealed peer clip should not record receive status")
 	}
-	if got := len(push.snapshot()); got != 0 {
+	if got := len(sshPublishSnapshot(push)); got != 0 {
 		t.Fatalf("concealed peer clip relayed %d times, want 0", got)
 	}
 }
@@ -130,7 +130,7 @@ func TestOnReceiveConcealedFutureTimestampDoesNotSuppressVisibleClip(t *testing.
 	visible := clipboard.New(clipboard.KindText, []byte("visible"), fixedTime)
 	visible.ID = "visible-earlier"
 	d.onReceive(visible, "peer")
-	waitForPushes(t, push, 1)
+	waitForPublishes(t, push, 1)
 
 	got, err := store.LoadHistory(10)
 	if err != nil {
@@ -143,7 +143,7 @@ func TestOnReceiveConcealedFutureTimestampDoesNotSuppressVisibleClip(t *testing.
 	if string(cur.Bytes) != "visible" {
 		t.Fatalf("clipboard = %q, want visible", cur.Bytes)
 	}
-	if got := len(push.snapshot()); got != 1 {
+	if got := len(sshPublishSnapshot(push)); got != 1 {
 		t.Fatalf("visible clip relay count = %d, want 1", got)
 	}
 }
@@ -169,7 +169,7 @@ func TestPollOnceRecordsHistory(t *testing.T) {
 	}
 }
 
-func TestRestoreWritesClipboardAndFanouts(t *testing.T) {
+func TestRestoreWritesClipboardAndPublishes(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	d, cb, push := newTestDaemon(t)
@@ -178,7 +178,7 @@ func TestRestoreWritesClipboardAndFanouts(t *testing.T) {
 	c := clipboard.New(clipboard.KindText, []byte("restore-me"), fixedTime)
 	c.ID = "restore-1"
 	d.onReceive(c, "m4")
-	waitForPushes(t, push, 1) // the relay from onReceive
+	waitForPublishes(t, push, 1) // the relay from onReceive
 
 	got, _ := store.LoadHistory(10)
 	if len(got) == 0 {
@@ -186,11 +186,11 @@ func TestRestoreWritesClipboardAndFanouts(t *testing.T) {
 	}
 	id := got[0].ID
 
-	before := len(push.snapshot())
+	before := len(sshPublishSnapshot(push))
 	if err := d.Restore(id); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
-	waitForPushes(t, push, before+1) // restore must fanout at least once
+	waitForPublishes(t, push, before+1)
 
 	// The local clipboard must now hold the restored text.
 	cur, _ := cb.Read()

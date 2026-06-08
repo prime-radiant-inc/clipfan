@@ -9,7 +9,7 @@ import (
 
 func TestFleetEndpointReturnsSignedLocalFleetView(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, func() any { return nil })
+	srv := NewServer(":0", auth, func() any { return nil })
 	setFixedServerTime(srv)
 	srv.SetRequiredLocalAuthVersion(AuthVersionRequestHMAC)
 	srv.SetFleetFunc(func() any {
@@ -43,7 +43,7 @@ func TestFleetEndpointReturnsSignedLocalFleetView(t *testing.T) {
 
 func TestFleetEndpointRequiresLoopbackSignature(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, func() any { return nil })
+	srv := NewServer(":0", auth, func() any { return nil })
 	setFixedServerTime(srv)
 	srv.SetFleetFunc(func() any { return map[string]any{} })
 
@@ -66,7 +66,7 @@ func TestFleetEndpointRequiresLoopbackSignature(t *testing.T) {
 
 func TestFleetEndpointNotWiredReturns501(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, func() any { return nil })
+	srv := NewServer(":0", auth, func() any { return nil })
 	setFixedServerTime(srv)
 
 	req := signedRequestWithNonce(t, auth, http.MethodGet, "/v1/fleet", "fleet-unwired", nil)

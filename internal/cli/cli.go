@@ -5,23 +5,29 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
 	"github.com/prime-radiant-inc/clipfan/internal/config"
 	"github.com/prime-radiant-inc/clipfan/internal/store"
 	"github.com/prime-radiant-inc/clipfan/internal/transport"
 )
 
-const localURL = "http://127.0.0.1:7853"
+const (
+	localDaemonHost    = "127.0.0.1"
+	defaultDaemonPort  = 7853
+	copyDaemonDeadline = 3 * time.Second
+)
 
 // RunCopy implements `clipfan copy [--osc52 /dev/ttysXXX] [--image]`.
 // Reads stdin and (a) POSTs it to the local clipfan daemon as a new
@@ -35,7 +41,7 @@ func RunCopy(args []string) error {
 	fs := flag.NewFlagSet("copy", flag.ContinueOnError)
 	oscTTY := fs.String("osc52", "", "tty path to emit OSC 52 sequence to (e.g. tmux's #{client_tty})")
 	forceImage := fs.Bool("image", false, "treat stdin as image bytes (default: auto-detect PNG)")
-	noDaemon := fs.Bool("no-daemon", false, "skip the daemon push (OSC-52-only mode)")
+	noDaemon := fs.Bool("no-daemon", false, "skip the daemon apply (OSC-52-only mode)")
 	noOSC := fs.Bool("no-osc52", false, "skip the OSC 52 emit even if --osc52 is given")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -49,16 +55,16 @@ func RunCopy(args []string) error {
 		return nil
 	}
 
-	kind := "text"
+	kind := clipboard.KindText
 	if *forceImage || looksLikePNG(body) {
-		kind = "image"
+		kind = clipboard.KindImage
 	}
 
 	var daemonErr, oscErr error
 	if !*noDaemon {
-		daemonErr = pushToDaemon(kind, body)
+		daemonErr = applyToDaemon(kind, body)
 	}
-	if *oscTTY != "" && !*noOSC && kind == "text" {
+	if *oscTTY != "" && !*noOSC && kind == clipboard.KindText {
 		oscErr = emitOSC52(*oscTTY, body)
 	}
 
@@ -66,7 +72,7 @@ func RunCopy(args []string) error {
 		return fmt.Errorf("both paths failed: daemon=%v osc52=%v", daemonErr, oscErr)
 	}
 	if daemonErr != nil && !*noDaemon {
-		fmt.Fprintln(os.Stderr, "clipfan copy: daemon push failed:", daemonErr)
+		fmt.Fprintln(os.Stderr, "clipfan copy: daemon apply failed:", daemonErr)
 	}
 	if oscErr != nil {
 		fmt.Fprintln(os.Stderr, "clipfan copy: osc52 emit failed:", oscErr)
@@ -108,7 +114,7 @@ func RunPaste(args []string) error {
 	return err
 }
 
-func pushToDaemon(kind string, body []byte) error {
+func applyToDaemon(kind clipboard.Kind, body []byte) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
@@ -122,40 +128,23 @@ func pushToDaemon(kind string, body []byte) error {
 		h, _ := os.Hostname()
 		origin = shortName(h)
 	}
-	sealedBody, bodyNonce, err := auth.SealBody(body)
-	if err != nil {
-		return err
-	}
-	env := transport.Envelope{
-		ID:        transport.NewClipID(),
-		Origin:    origin,
-		Recipient: origin,
-		TS:        time.Now().UTC(),
-		Kind:      kind,
-		Body:      sealedBody,
-		Nonce:     bodyNonce,
-	}
-	raw, _ := json.Marshal(env)
+	content := clipboard.New(kind, body, time.Now().UTC())
+	content.ID = transport.NewClipID()
+	ctx, cancel := context.WithTimeout(context.Background(), copyDaemonDeadline)
+	defer cancel()
+	return transport.NewClient(auth).ApplyCurrent(ctx, localDaemonHost, localDaemonPort(cfg), content, origin)
+}
 
-	req, _ := http.NewRequest("POST", localURL+"/v1/clip", bytes.NewReader(raw))
-	req.Header.Set("Content-Type", "application/json")
-	headers, err := auth.SignedRequestHeaders(req.Method, req.URL.RequestURI(), raw, transport.SignedRequestOptions{})
-	if err != nil {
-		return err
+func localDaemonPort(cfg *config.Config) int {
+	if cfg.Port != 0 {
+		return cfg.Port
 	}
-	for header, value := range headers {
-		req.Header.Set(header, value)
+	if _, portText, err := net.SplitHostPort(cfg.Listen); err == nil {
+		if port, err := strconv.Atoi(portText); err == nil && port > 0 {
+			return port
+		}
 	}
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("status %d", resp.StatusCode)
-	}
-	return nil
+	return defaultDaemonPort
 }
 
 func emitOSC52(ttyPath string, body []byte) error {

@@ -10,8 +10,6 @@ import (
 )
 
 type TransportGates struct {
-	PeerHTTPRuntimeDisabled         bool `json:"PeerHTTPRuntimeDisabled"`
-	ConfigV2WriteEnabled            bool `json:"ConfigV2WriteEnabled"`
 	RemoteSecretWriteReleaseEnabled bool `json:"RemoteSecretWriteReleaseEnabled"`
 	SSHPublicAddPeerSuccessEnabled  bool `json:"ssh_public_add_peer_success_enabled"`
 }
@@ -26,8 +24,6 @@ type RuntimeGates struct {
 func ReadTransportGates(r io.Reader) (TransportGates, error) {
 	var gates TransportGates
 	err := readExactJSON(r, []string{
-		"PeerHTTPRuntimeDisabled",
-		"ConfigV2WriteEnabled",
 		"RemoteSecretWriteReleaseEnabled",
 		"ssh_public_add_peer_success_enabled",
 	}, &gates)
@@ -46,17 +42,11 @@ func ReadRuntimeGates(r io.Reader) (RuntimeGates, error) {
 }
 
 func ValidateGateBundle(transport TransportGates, runtime RuntimeGates) error {
-	if transport.PeerHTTPRuntimeDisabled != transport.ConfigV2WriteEnabled {
-		return fmt.Errorf("gate_order: PeerHTTPRuntimeDisabled and ConfigV2WriteEnabled must match")
-	}
 	if transport.RemoteSecretWriteReleaseEnabled != transport.SSHPublicAddPeerSuccessEnabled {
 		return fmt.Errorf("gate_order: RemoteSecretWriteReleaseEnabled and ssh_public_add_peer_success_enabled must match")
 	}
 	if !transport.RemoteSecretWriteReleaseEnabled && !transport.SSHPublicAddPeerSuccessEnabled {
 		return nil
-	}
-	if !transport.PeerHTTPRuntimeDisabled || !transport.ConfigV2WriteEnabled {
-		return fmt.Errorf("gate_order: public gates require local cutover gates")
 	}
 	if !runtime.SSHReceivePrimitiveEnabled {
 		return fmt.Errorf("missing_runtime_gate: ssh_receive_primitive_enabled")

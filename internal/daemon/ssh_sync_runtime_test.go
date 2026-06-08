@@ -17,19 +17,14 @@ func TestSSHTransportPollOncePublishesToSSHRuntimeNotHTTP(t *testing.T) {
 	d.origin = "self"
 	d.cb = &fakeBackend{current: clipboard.New(clipboard.KindText, []byte("local-copy"), fixedTime)}
 	discoveryProbe := &countingDiscoverer{}
-	pushProbe := &fakePusher{}
 	sshRuntime := &fakeSSHSyncRuntime{}
 	d.disc = discoveryProbe
-	d.cl = pushProbe
 	d.sshSync = sshRuntime
 
 	d.pollOnce(context.Background())
 
 	if got := discoveryProbe.count(); got != 0 {
 		t.Fatalf("transport:ssh poll called discovery %d times", got)
-	}
-	if got := len(pushProbe.snapshot()); got != 0 {
-		t.Fatalf("transport:ssh poll pushed HTTP %d times", got)
 	}
 	calls := sshRuntime.waitForPublishes(t, 1)
 	if calls[0].origin != "self" || calls[0].skipOrigin != "" || calls[0].content.ID == "" || string(calls[0].content.Bytes) != "local-copy" {
@@ -69,10 +64,8 @@ func TestSSHTransportOnReceiveRelaysToSSHRuntimeNotHTTP(t *testing.T) {
 	d.origin = "self"
 	d.cb = &fakeBackend{}
 	discoveryProbe := &countingDiscoverer{}
-	pushProbe := &fakePusher{}
 	sshRuntime := &fakeSSHSyncRuntime{}
 	d.disc = discoveryProbe
-	d.cl = pushProbe
 	d.sshSync = sshRuntime
 
 	c := clipboard.New(clipboard.KindText, []byte("peer-copy"), fixedTime)
@@ -82,12 +75,20 @@ func TestSSHTransportOnReceiveRelaysToSSHRuntimeNotHTTP(t *testing.T) {
 	if got := discoveryProbe.count(); got != 0 {
 		t.Fatalf("transport:ssh receive called discovery %d times", got)
 	}
-	if got := len(pushProbe.snapshot()); got != 0 {
-		t.Fatalf("transport:ssh receive relayed HTTP %d times", got)
-	}
 	calls := sshRuntime.waitForPublishes(t, 1)
 	if calls[0].origin != "peer" || calls[0].skipOrigin != "peer" || calls[0].content.ID != "ssh-runtime-peer-copy" {
 		t.Fatalf("ssh relay publish = %#v", calls[0])
+	}
+}
+
+func newSSHTransportDaemonForTest(t *testing.T) *Daemon {
+	t.Helper()
+	cfg := sshSyncManagerTestConfig()
+	return &Daemon{
+		cfg:        cfg,
+		origin:     cfg.Hostname,
+		peerStatus: map[string]*PeerState{},
+		seen:       newSeenSet(),
 	}
 }
 

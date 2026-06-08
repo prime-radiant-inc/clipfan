@@ -145,7 +145,7 @@ func runDefaultSSHGatewaySyncStream(identity SSHGatewayIdentity, stdin io.Reader
 	if err != nil {
 		return err
 	}
-	client := transport.NewClientWithPeerHTTPRuntimeDisabled(auth, localID, true)
+	client := transport.NewClient(auth)
 	var writeMu sync.Mutex
 	writeFrame := func(fn func(context.Context) error) error {
 		writeMu.Lock()
@@ -220,7 +220,7 @@ func handleSSHGatewayState(ctx context.Context, writeFrame func(func(context.Con
 	}
 	status := "applied"
 	reason := ""
-	if err := pushSSHGatewayStateToLocalDaemon(ctx, client, localHost, localPort, localID, state.Content, state.Origin); err != nil {
+	if err := pushSSHGatewayStateToLocalDaemon(ctx, client, localHost, localPort, state.Content, state.Origin); err != nil {
 		status = "rejected"
 		reason = "local_apply_failed"
 		if writeErr := writeFrame(func(ctx context.Context) error {
@@ -273,10 +273,10 @@ func sshGatewayHostsMatch(a string, b string) bool {
 	return transport.HostsMatch(a, b)
 }
 
-func pushSSHGatewayStateToLocalDaemon(ctx context.Context, client *transport.Client, localHost string, localPort int, localID string, content clipboard.Content, origin string) error {
+func pushSSHGatewayStateToLocalDaemon(ctx context.Context, client *transport.Client, localHost string, localPort int, content clipboard.Content, origin string) error {
 	pushCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	return client.PushAsToRecipient(pushCtx, localHost, localPort, localID, content, origin)
+	return client.ApplyCurrent(pushCtx, localHost, localPort, content, origin)
 }
 
 func sshGatewayLocalDaemonTarget(cfg *config.Config) (string, int, error) {

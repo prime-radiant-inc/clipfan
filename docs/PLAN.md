@@ -15,7 +15,7 @@ Smallest end-to-end that proves the transport. No tmux yet, no images.
 - `internal/config` — TOML loader, defaults, shared-key gen on first run.
 - `internal/clipboard` — `Content` type, macOS `pbpaste` polling (250ms), Linux `xclip -o` polling.
 - `internal/discovery` — `Discoverer` interface, `static.New(hosts []string)`, `tailscale.New()` (shells out).
-- `internal/transport` — HTTP server with `POST /v1/clip` + `GET /v1/clip`; SSE on `/v1/watch`; HMAC auth.
+- `internal/transport` — historical HTTP sync server; this predated the SSH sync transport described in ARCHITECTURE.md.
 - `internal/daemon` — wire it together: on local change, push to peers; on SSE receive, write to local clipboard.
 - Build static darwin-arm64 + linux-amd64 binaries.
 

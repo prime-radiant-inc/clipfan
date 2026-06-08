@@ -178,13 +178,14 @@ func TestRunSSHGatewayDefaultSyncStreamBridgesStateToLocalDaemon(t *testing.T) {
 		content clipboard.Content
 		origin  string
 	}, 1)
-	srv := transport.NewServer("127.0.0.1:0", auth, func(c clipboard.Content, origin string) {
+	srv := transport.NewServer("127.0.0.1:0", auth, nil)
+	srv.SetCurrentApply(func(c clipboard.Content, origin string) error {
 		received <- struct {
 			content clipboard.Content
 			origin  string
 		}{content: c, origin: origin}
-	}, nil)
-	srv.SetRecipientIdentity("linux-b")
+		return nil
+	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -264,7 +265,7 @@ func TestRunSSHGatewayDefaultSyncStreamPublishesLocalCurrentToInitiator(t *testi
 	}
 	content := clipboard.New(clipboard.KindText, []byte("from accepted side"), time.Now().UTC())
 	content.ID = "clip-accepted-side"
-	srv := transport.NewServer("127.0.0.1:0", auth, nil, nil)
+	srv := transport.NewServer("127.0.0.1:0", auth, nil)
 	srv.SetCurrentFunc(func() transport.CurrentPayload {
 		return transport.CurrentPayloadFromContent(content, "linux-b")
 	})

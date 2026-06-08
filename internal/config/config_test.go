@@ -124,8 +124,8 @@ func TestLoadForDaemonStartCurrentGatesApplyLoopbackDefaultWithoutPreV2Rewrite(t
 }
 
 func TestGeneratedConfigV2WriteGatePersistsDaemonStartMigration(t *testing.T) {
-	if !releaseflags.PeerHTTPRuntimeDisabled || !releaseflags.ConfigV2WriteEnabled {
-		t.Skip("requires internal/test generated local cutover gates")
+	if !releaseflags.ConfigV2WriteEnabled {
+		t.Skip("requires config-v2 writes enabled")
 	}
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", root)

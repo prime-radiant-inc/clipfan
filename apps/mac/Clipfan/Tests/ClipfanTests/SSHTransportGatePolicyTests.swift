@@ -17,8 +17,6 @@ final class SSHTransportGatePolicyTests: XCTestCase {
 
     func testAddPeerProvisioningRequiresEveryTransportAndRuntimeGate() {
         let enabledPolicy = SSHTransportGatePolicy(
-            peerHTTPRuntimeDisabled: true,
-            configV2WriteEnabled: true,
             remoteSecretWriteReleaseEnabled: true,
             publicAddPeerSuccessEnabled: true,
             receivePrimitiveEnabled: true,
@@ -30,8 +28,6 @@ final class SSHTransportGatePolicyTests: XCTestCase {
         XCTAssertTrue(enabledPolicy.addPeerProvisioningEnabled)
 
         let requiredGates: [(String, WritableKeyPath<SSHTransportGatePolicy, Bool>)] = [
-            ("peerHTTPRuntimeDisabled", \.peerHTTPRuntimeDisabled),
-            ("configV2WriteEnabled", \.configV2WriteEnabled),
             ("remoteSecretWriteReleaseEnabled", \.remoteSecretWriteReleaseEnabled),
             ("publicAddPeerSuccessEnabled", \.publicAddPeerSuccessEnabled),
             ("receivePrimitiveEnabled", \.receivePrimitiveEnabled),
@@ -48,37 +44,11 @@ final class SSHTransportGatePolicyTests: XCTestCase {
         }
     }
 
-    func testPeerHTTPVersionProbeFollowsRuntimeDisableGate() {
-        XCTAssertTrue(SSHTransportGatePolicy(
-            peerHTTPRuntimeDisabled: false,
-            configV2WriteEnabled: false,
-            remoteSecretWriteReleaseEnabled: false,
-            publicAddPeerSuccessEnabled: false,
-            receivePrimitiveEnabled: false,
-            syncStreamEnabled: false,
-            persistentCurrentEnabled: false,
-            syncKeyRotationEnabled: false
-        ).peerHTTPVersionProbeEnabled)
-
-        XCTAssertFalse(SSHTransportGatePolicy(
-            peerHTTPRuntimeDisabled: true,
-            configV2WriteEnabled: false,
-            remoteSecretWriteReleaseEnabled: false,
-            publicAddPeerSuccessEnabled: false,
-            receivePrimitiveEnabled: false,
-            syncStreamEnabled: false,
-            persistentCurrentEnabled: false,
-            syncKeyRotationEnabled: false
-        ).peerHTTPVersionProbeEnabled)
-    }
-
     func testAddPeerInstallButtonDisabledUntilPublicProvisioningGateIsReady() {
         let disabled = SSHTransportGatePolicy.current
         XCTAssertTrue(isAddPeerInstallDisabled(installCount: 1, installing: false, policy: disabled))
 
         let enabled = SSHTransportGatePolicy(
-            peerHTTPRuntimeDisabled: true,
-            configV2WriteEnabled: true,
             remoteSecretWriteReleaseEnabled: true,
             publicAddPeerSuccessEnabled: true,
             receivePrimitiveEnabled: true,
@@ -91,8 +61,6 @@ final class SSHTransportGatePolicyTests: XCTestCase {
 
     func testPrivateDirectMeshInstallButtonUsesPrivateGate() {
         let privateEnabled = SSHTransportGatePolicy(
-            peerHTTPRuntimeDisabled: true,
-            configV2WriteEnabled: true,
             remoteSecretWriteReleaseEnabled: false,
             publicAddPeerSuccessEnabled: false,
             receivePrimitiveEnabled: true,
@@ -113,8 +81,6 @@ final class SSHTransportGatePolicyTests: XCTestCase {
 
     func testPrivateDirectMeshInstallButtonAllowsOneRemotePlusLocalSpec() {
         let privateEnabled = SSHTransportGatePolicy(
-            peerHTTPRuntimeDisabled: true,
-            configV2WriteEnabled: true,
             remoteSecretWriteReleaseEnabled: false,
             publicAddPeerSuccessEnabled: false,
             receivePrimitiveEnabled: true,
@@ -391,158 +357,5 @@ final class SSHTransportGatePolicyTests: XCTestCase {
         XCTAssertFalse(isPeerUpdateButtonDisabled(host: "fsck.com", updating: false, policy: .current))
         XCTAssertTrue(isPeerUpdateButtonDisabled(host: "", updating: false, policy: .current))
         XCTAssertTrue(isPeerUpdateButtonDisabled(host: "fsck.com", updating: true, policy: .current))
-    }
-
-    func testPeerHTTPVersionProbeGateControlsDaemonClientPolicy() {
-        XCTAssertFalse(shouldProbePeerHTTPVersions(policy: .current, localVersion: "v0.3.8", sharedKeyLoaded: true))
-        let legacyHTTPEnabled = SSHTransportGatePolicy(
-            peerHTTPRuntimeDisabled: false,
-            configV2WriteEnabled: false,
-            remoteSecretWriteReleaseEnabled: false,
-            publicAddPeerSuccessEnabled: false,
-            receivePrimitiveEnabled: true,
-            syncStreamEnabled: false,
-            persistentCurrentEnabled: true,
-            syncKeyRotationEnabled: false
-        )
-        XCTAssertTrue(shouldProbePeerHTTPVersions(policy: legacyHTTPEnabled, localVersion: "v0.3.8", sharedKeyLoaded: true))
-        XCTAssertTrue(shouldVerifyPeerHTTPVersionAfterUpdate(policy: legacyHTTPEnabled, expectedVersion: "v0.3.8"))
-        let disabled = SSHTransportGatePolicy(
-            peerHTTPRuntimeDisabled: true,
-            configV2WriteEnabled: true,
-            remoteSecretWriteReleaseEnabled: false,
-            publicAddPeerSuccessEnabled: false,
-            receivePrimitiveEnabled: false,
-            syncStreamEnabled: false,
-            persistentCurrentEnabled: false,
-            syncKeyRotationEnabled: false
-        )
-        XCTAssertFalse(shouldProbePeerHTTPVersions(policy: disabled, localVersion: "v0.3.8", sharedKeyLoaded: true))
-        XCTAssertFalse(shouldVerifyPeerHTTPVersionAfterUpdate(policy: disabled, expectedVersion: "v0.3.8"))
-    }
-
-    func testVerifyPeerVersionResultIsSkippedWhenPeerHTTPRuntimeIsDisabled() {
-        let result = skippedPeerHTTPVersionVerification(host: "fsck.com")
-        XCTAssertNil(result.status)
-        XCTAssertEqual(result.detail, "fsck.com peer HTTP version verification is disabled by SSH transport gates")
-    }
-
-    @MainActor
-    func testDaemonClientVerifyPeerVersionSkipsHTTPFetchWhenDisabled() async {
-        let daemon = DaemonClient.shared
-        let oldPolicy = daemon.transportGatePolicy
-        let oldFetch = daemon.peerVersionFetch
-        let oldPeers = daemon.peers
-        let oldVersions = daemon.peerVersions
-        defer {
-            daemon.transportGatePolicy = oldPolicy
-            daemon.peerVersionFetch = oldFetch
-            daemon.peers = oldPeers
-            daemon.peerVersions = oldVersions
-        }
-
-        daemon.transportGatePolicy = SSHTransportGatePolicy(
-            peerHTTPRuntimeDisabled: true,
-            configV2WriteEnabled: true,
-            remoteSecretWriteReleaseEnabled: false,
-            publicAddPeerSuccessEnabled: false,
-            receivePrimitiveEnabled: false,
-            syncStreamEnabled: false,
-            persistentCurrentEnabled: false,
-            syncKeyRotationEnabled: false
-        )
-        daemon.peers = [Peer(hostname: "fsck.com",
-                             port: 7853,
-                             last_push_ts: nil,
-                             last_push_ok: false,
-                             last_push_err: nil,
-                             last_recv_ts: nil)]
-        daemon.peerVersions = ["fsck.com": .current("v0.3.8")]
-        var fetchCalled = false
-        daemon.peerVersionFetch = { _, _, _ in
-            fetchCalled = true
-            return "v0.3.8"
-        }
-
-        let result = await daemon.verifyPeerVersion(hostname: "fsck.com",
-                                                    expectedVersion: "v0.3.8")
-
-        XCTAssertFalse(fetchCalled)
-        XCTAssertNil(result?.status)
-        XCTAssertNil(daemon.peerVersions["fsck.com"])
-    }
-
-    @MainActor
-    func testDaemonClientRefreshPeerVersionsClearsWithoutHTTPFetchWhenDisabled() async {
-        let daemon = DaemonClient.shared
-        let oldPolicy = daemon.transportGatePolicy
-        let oldFetch = daemon.peerVersionFetch
-        let oldVersion = daemon.version
-        let oldPeers = daemon.peers
-        let oldVersions = daemon.peerVersions
-        defer {
-            daemon.transportGatePolicy = oldPolicy
-            daemon.peerVersionFetch = oldFetch
-            daemon.version = oldVersion
-            daemon.peers = oldPeers
-            daemon.peerVersions = oldVersions
-        }
-
-        daemon.transportGatePolicy = SSHTransportGatePolicy(
-            peerHTTPRuntimeDisabled: true,
-            configV2WriteEnabled: true,
-            remoteSecretWriteReleaseEnabled: false,
-            publicAddPeerSuccessEnabled: false,
-            receivePrimitiveEnabled: false,
-            syncStreamEnabled: false,
-            persistentCurrentEnabled: false,
-            syncKeyRotationEnabled: false
-        )
-        daemon.version = "v0.3.8"
-        daemon.peers = [Peer(hostname: "fsck.com",
-                             port: 7853,
-                             last_push_ts: nil,
-                             last_push_ok: false,
-                             last_push_err: nil,
-                             last_recv_ts: nil)]
-        daemon.peerVersions = ["fsck.com": .needsUpdate("v0.3.7")]
-        var fetchCalled = false
-        daemon.peerVersionFetch = { _, _, _ in
-            fetchCalled = true
-            return "v0.3.8"
-        }
-
-        await daemon.refreshPeerVersions()
-
-        XCTAssertFalse(fetchCalled)
-        XCTAssertTrue(daemon.peerVersions.isEmpty)
-    }
-
-    func testFleetRowsIgnoreHTTPVersionHealthWhenPeerHTTPRuntimeIsDisabled() {
-        let disabled = SSHTransportGatePolicy(
-            peerHTTPRuntimeDisabled: true,
-            configV2WriteEnabled: true,
-            remoteSecretWriteReleaseEnabled: false,
-            publicAddPeerSuccessEnabled: false,
-            receivePrimitiveEnabled: false,
-            syncStreamEnabled: false,
-            persistentCurrentEnabled: false,
-            syncKeyRotationEnabled: false
-        )
-        let peer = Peer(hostname: "fsck.com",
-                        port: 7853,
-                        last_push_ts: nil,
-                        last_push_ok: false,
-                        last_push_err: nil,
-                        last_recv_ts: nil)
-
-        let rows = fleetRows(origin: "m4",
-                             connected: true,
-                             peers: [peer],
-                             peerVersions: ["fsck.com": .current("v0.3.8")],
-                             policy: disabled)
-
-        XCTAssertEqual(rows[1].health, .down)
-        XCTAssertEqual(rows[1].subtitle, "port 7853")
     }
 }

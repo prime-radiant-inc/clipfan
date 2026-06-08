@@ -55,12 +55,6 @@ type SSHPeerRuntimeState struct {
 	LastErrorTS   time.Time
 }
 
-// pusher sends clipboard content to a peer host. *transport.Client satisfies
-// it; the interface exists so fanout can be exercised with a fake in tests.
-type pusher interface {
-	PushAs(ctx context.Context, host string, port int, content clipboard.Content, origin string) error
-}
-
 // SSHSyncRuntime owns persistent SSH sync sessions for transport:"ssh".
 // The daemon publishes only already-accepted current-state events through this
 // interface so polling, receive, history, echo, and tmux rules stay centralized.
@@ -76,7 +70,6 @@ type Daemon struct {
 	cb               clipboard.Backend
 	disc             discovery.Discoverer
 	auth             *transport.Auth
-	cl               pusher
 	sv               *transport.Server
 	serve            func(context.Context) error
 	serveListener    func(context.Context, net.Listener) error
@@ -85,7 +78,6 @@ type Daemon struct {
 	listenerPlan     config.ListenerPlan
 	stateDir         string
 	configPath       string
-	peerHTTPDisabled bool
 	sshSync          SSHSyncRuntime
 	sshSyncMu        sync.RWMutex
 	discMu           sync.RWMutex
@@ -125,7 +117,6 @@ func New(cfg *config.Config) (*Daemon, error) {
 type Options struct {
 	StoragePreflight        StoragePreflightPolicy
 	ListenerBoundaryEnabled *bool
-	PeerHTTPRuntimeDisabled *bool
 	SSHSyncRuntime          SSHSyncRuntime
 }
 
@@ -137,13 +128,6 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 	listenerBoundaryEnabled := config.GeneratedLoopbackDefaultsEnabled()
 	if opts.ListenerBoundaryEnabled != nil {
 		listenerBoundaryEnabled = *opts.ListenerBoundaryEnabled
-	}
-	peerHTTPDisabled := releaseflags.PeerHTTPRuntimeDisabled
-	if opts.PeerHTTPRuntimeDisabled != nil {
-		peerHTTPDisabled = *opts.PeerHTTPRuntimeDisabled
-	}
-	if cfg.Transport == config.TransportSSH {
-		peerHTTPDisabled = true
 	}
 	if err := config.ValidateSSHTransportConfig(*cfg); err != nil {
 		return nil, err
@@ -176,19 +160,17 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 		listenerPlan:     listenerPlan,
 		stateDir:         stateDir,
 		configPath:       config.Path(),
-		peerHTTPDisabled: peerHTTPDisabled,
 		sshSync:          opts.SSHSyncRuntime,
 		peerStatus:       map[string]*PeerState{},
 		seen:             newSeenSet(),
 	}
-	d.cl = transport.NewClientWithPeerHTTPRuntimeDisabled(auth, origin, peerHTTPDisabled)
 	if d.sshSync == nil && runtimeCfg.Transport == config.TransportSSH && releaseflags.SSHPersistentCurrentEnabled {
 		manager := newSSHSyncManager(&runtimeCfg, auth, origin, d.onReceive, nil)
 		if len(manager.peers) > 0 {
 			d.sshSync = manager
 		}
 	}
-	d.sv = transport.NewServer(listenerPlan.BindListen, auth, d.onReceive, d.peersHandler)
+	d.sv = transport.NewServer(listenerPlan.BindListen, auth, d.peersHandler)
 	if runtimeCfg.ConfigVersion != nil && *runtimeCfg.ConfigVersion >= 2 {
 		d.sv.SetRequiredLocalAuthVersion(transport.AuthVersionRequestHMAC)
 	}
@@ -205,9 +187,12 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 		Port:                  runtimeCfg.Port,
 		StaticPeers:           runtimeCfg.StaticPeers,
 	})
-	d.sv.SetRecipientIdentity(origin)
 	d.sv.SetVersionFunc(d.versionHandler)
 	d.sv.SetCurrentFunc(d.currentHandler)
+	d.sv.SetCurrentApply(func(c clipboard.Content, origin string) error {
+		d.onReceive(c, origin)
+		return nil
+	})
 	d.sv.SetFleetFunc(d.fleetHandler)
 	d.sv.SetHistory(
 		func(limit int) (any, error) { return store.LoadHistory(limit) },
@@ -631,7 +616,6 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 		slog.Debug("concealed local clip skipped", "id", c.ID, "kind", c.Kind)
 		return
 	}
-	d.fanout(ctx, c, "" /* skipOrigin = none */)
 	d.publishSSH(ctx, c, d.origin, "" /* skipOrigin = none */)
 }
 
@@ -763,48 +747,7 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 		slog.Debug("tmux load-buffer", "err", err)
 	}
 
-	// Relay: re-broadcast to every peer except the origin so disjoint peers
-	// (e.g. flower-garden on LAN, paradise-park on tailnet) still converge
-	// through the Mac hub. Relay-loop prevention uses clip-ID dedup (seen set)
-	// and our-own-write echo suppression (d.current / isEcho).
-	go d.fanout(context.Background(), c, origin)
 	go d.publishSSH(context.Background(), c, origin, origin)
-}
-
-// fanout pushes content to every discovered peer except `skipOrigin`. When
-// skipOrigin is empty this is a fresh broadcast (stamps our own origin).
-// When non-empty this is a relay (stamps the original origin).
-func (d *Daemon) fanout(ctx context.Context, c clipboard.Content, skipOrigin string) {
-	if d.listenerPlan.SafeMode || d.peerHTTPDisabled {
-		return
-	}
-	peers, err := d.discoveredPeers(ctx)
-	if err != nil {
-		slog.Warn("discovery", "err", err)
-		return
-	}
-	originStamp := d.origin
-	if skipOrigin != "" {
-		originStamp = skipOrigin
-	}
-	for _, p := range peers {
-		if p.Self {
-			continue
-		}
-		if skipOrigin != "" && hostsMatch(p.Hostname, skipOrigin) {
-			continue
-		}
-		p := p
-		go func() {
-			pushCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
-			err := d.cl.PushAs(pushCtx, p.Hostname, p.Port, c, originStamp)
-			d.recordPush(p, err)
-			if err != nil {
-				slog.Debug("push", "host", p.Hostname, "err", err)
-			}
-		}()
-	}
 }
 
 func (d *Daemon) publishSSH(ctx context.Context, c clipboard.Content, origin string, skipOrigin string) {
@@ -841,27 +784,9 @@ func (d *Daemon) currentSSHSyncRuntime() SSHSyncRuntime {
 	return runtime
 }
 
-func (d *Daemon) recordPush(p discovery.Peer, err error) {
-	d.peersMu.Lock()
-	defer d.peersMu.Unlock()
-	s, ok := d.peerStatus[p.Hostname]
-	if !ok {
-		s = &PeerState{Hostname: p.Hostname, Port: p.Port}
-		d.peerStatus[p.Hostname] = s
-	}
-	s.LastPushTS = time.Now().UTC()
-	if err != nil {
-		s.LastPushOK = false
-		s.LastPushErr = err.Error()
-	} else {
-		s.LastPushOK = true
-		s.LastPushErr = ""
-	}
-}
-
 // Restore makes the history entry with the given id the current clipboard:
 // it writes the local OS clipboard, re-records it in history (floating it to
-// the top), and fanouts to peers so the fleet converges.
+// the top), and publishes through SSH sync so the fleet converges.
 func (d *Daemon) Restore(id string) error {
 	e, ok, err := store.EntryByID(id)
 	if err != nil {
@@ -922,7 +847,6 @@ func (d *Daemon) Restore(id string) error {
 		slog.Debug("restore append history", "err", err)
 	}
 
-	d.fanout(context.Background(), c, "")
 	d.publishSSH(context.Background(), c, d.origin, "")
 	return nil
 }

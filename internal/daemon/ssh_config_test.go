@@ -178,6 +178,7 @@ func TestSSHPeerConfigTransitionRefreshesSnapshotConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.configPath = configPath
+	d.disc = nil
 	sshRuntime := &fakeSSHSyncRuntime{}
 	d.sshSync = sshRuntime
 
@@ -189,6 +190,7 @@ func TestSSHPeerConfigTransitionRefreshesSnapshotConfig(t *testing.T) {
 	if _, handlerErr := d.sshPeerConfigTransitionHandler("fsck", body); handlerErr != nil {
 		t.Fatalf("transition handler error = %#v", handlerErr)
 	}
+	d.disc = nil
 
 	got := d.Snapshot(context.Background())
 	if len(got) != 1 || got[0].Hostname != "fsck" {
@@ -217,6 +219,7 @@ func TestHostRemoveRefreshesDiscoverySnapshotConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.configPath = configPath
+	d.disc = nil
 	d.peerStatus["magic-kingdom"] = &PeerState{
 		Hostname:   "magic-kingdom",
 		Port:       7853,
@@ -232,6 +235,7 @@ func TestHostRemoveRefreshesDiscoverySnapshotConfig(t *testing.T) {
 	if _, handlerErr := d.hostRemoveHandler("magic-kingdom", body); handlerErr != nil {
 		t.Fatalf("host remove handler error = %#v", handlerErr)
 	}
+	d.disc = nil
 
 	if got := d.Snapshot(context.Background()); len(got) != 0 {
 		t.Fatalf("snapshot after remove = %#v, want removed host hidden", got)
@@ -253,12 +257,14 @@ func TestSSHPeerConfigTransitionAwayFromReadyPrunesActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.configPath = configPath
+	d.disc = nil
 	d.sshSync = &fakeSSHSyncRuntime{}
 
 	readyBody := []byte(`{"expected_config_revision":7,"from_state":"ssh_material_staged","to_state":"ssh_keys_ready","reason":"ssh_material_verified","log_id":"peer-log-1780257600"}`)
 	if _, handlerErr := d.sshPeerConfigTransitionHandler("fsck", readyBody); handlerErr != nil {
 		t.Fatalf("ready transition handler error = %#v", handlerErr)
 	}
+	d.disc = nil
 	d.peerStatus["fsck"] = &PeerState{
 		Hostname:   "fsck",
 		Port:       7853,
@@ -273,6 +279,7 @@ func TestSSHPeerConfigTransitionAwayFromReadyPrunesActivity(t *testing.T) {
 	if _, handlerErr := d.sshPeerConfigTransitionHandler("fsck", resetBody); handlerErr != nil {
 		t.Fatalf("reset transition handler error = %#v", handlerErr)
 	}
+	d.disc = nil
 	if got := d.Snapshot(context.Background()); len(got) != 0 {
 		t.Fatalf("snapshot after reset = %#v, want hidden peer and pruned activity", got)
 	}

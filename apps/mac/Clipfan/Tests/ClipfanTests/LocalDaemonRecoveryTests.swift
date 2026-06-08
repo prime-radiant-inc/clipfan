@@ -99,30 +99,8 @@ final class LocalDaemonRecoveryTests: XCTestCase {
         }
     }
 
-    func testPublicProfileBlocksConfirmedLocalFleetResetBeforeConfigV2Writes() throws {
-        guard !GeneratedSSHTransportGates.configV2WriteEnabled else {
-            throw XCTSkip("requires public generated ConfigV2WriteEnabled=false profile")
-        }
-        let plan = LocalDaemonRecovery.plan(
-            configData: data(#"{"config_version":2,"listen":"127.0.0.1:7853","shared_key":"","static_peers":["old"]}"#),
-            clientSupportsHKDF: false,
-            capabilities: LocalDaemonRecoveryCapabilities(
-                offlineListenerRepairAvailable: true,
-                localFleetResetAvailable: GeneratedSSHTransportGates.configV2WriteEnabled
-            )
-        )
-
-        XCTAssertEqual(plan.diagnostic, .configV2RequiresHKDFClient)
-        XCTAssertFalse(plan.permitsWholeConfigRawKeyWrites)
-        XCTAssertEqual(plan.disposition, .blocked)
-        XCTAssertEqual(plan.recoveryPath, .none)
-    }
-
     func testGeneratedConfigV2WriteGateEnablesConfirmedLocalFleetResetPlan() throws {
-        guard GeneratedSSHTransportGates.configV2WriteEnabled else {
-            throw XCTSkip("requires internal/test generated ConfigV2WriteEnabled=true profile")
-        }
-        XCTAssertTrue(GeneratedSSHTransportGates.peerHTTPRuntimeDisabled)
+        XCTAssertTrue(ConfigV2ReleaseGate.writeEnabled)
         XCTAssertFalse(GeneratedSSHTransportGates.remoteSecretWriteReleaseEnabled)
         XCTAssertFalse(GeneratedSSHTransportGates.publicAddPeerSuccessEnabled)
 
@@ -131,7 +109,7 @@ final class LocalDaemonRecoveryTests: XCTestCase {
             clientSupportsHKDF: false,
             capabilities: LocalDaemonRecoveryCapabilities(
                 offlineListenerRepairAvailable: true,
-                localFleetResetAvailable: GeneratedSSHTransportGates.configV2WriteEnabled
+                localFleetResetAvailable: ConfigV2ReleaseGate.writeEnabled
             )
         )
 

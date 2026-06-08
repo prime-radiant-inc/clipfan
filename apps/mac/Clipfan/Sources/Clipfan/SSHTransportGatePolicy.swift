@@ -1,6 +1,4 @@
 struct SSHTransportGatePolicy {
-    var peerHTTPRuntimeDisabled: Bool
-    var configV2WriteEnabled: Bool
     var remoteSecretWriteReleaseEnabled: Bool
     var publicAddPeerSuccessEnabled: Bool
     var receivePrimitiveEnabled: Bool
@@ -10,8 +8,6 @@ struct SSHTransportGatePolicy {
 
     static var current: SSHTransportGatePolicy {
         SSHTransportGatePolicy(
-            peerHTTPRuntimeDisabled: GeneratedSSHTransportGates.peerHTTPRuntimeDisabled,
-            configV2WriteEnabled: GeneratedSSHTransportGates.configV2WriteEnabled,
             remoteSecretWriteReleaseEnabled: GeneratedSSHTransportGates.remoteSecretWriteReleaseEnabled,
             publicAddPeerSuccessEnabled: GeneratedSSHTransportGates.publicAddPeerSuccessEnabled,
             receivePrimitiveEnabled: GeneratedSSHRuntimeGates.receivePrimitiveEnabled,
@@ -22,9 +18,7 @@ struct SSHTransportGatePolicy {
     }
 
     var addPeerProvisioningEnabled: Bool {
-        peerHTTPRuntimeDisabled
-            && configV2WriteEnabled
-            && remoteSecretWriteReleaseEnabled
+        remoteSecretWriteReleaseEnabled
             && publicAddPeerSuccessEnabled
             && receivePrimitiveEnabled
             && syncStreamEnabled
@@ -33,14 +27,10 @@ struct SSHTransportGatePolicy {
     }
 
     var privateDirectMeshProvisioningEnabled: Bool {
-        peerHTTPRuntimeDisabled
-            && configV2WriteEnabled
-            && receivePrimitiveEnabled
+        receivePrimitiveEnabled
             && syncStreamEnabled
             && persistentCurrentEnabled
     }
 
     var regularSSHUpdateEnabled: Bool { true }
-
-    var peerHTTPVersionProbeEnabled: Bool { !peerHTTPRuntimeDisabled }
 }

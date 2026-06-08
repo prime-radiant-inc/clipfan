@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
-	"github.com/prime-radiant-inc/clipfan/internal/discovery"
 	"github.com/prime-radiant-inc/clipfan/internal/store"
 )
 
@@ -31,12 +30,11 @@ func TestImagePathWritebackDedupedHeadless(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	push := &fakePusher{}
+	sshRuntime := &fakeSSHSyncRuntime{}
 	d := &Daemon{
 		cb:         headlessFake{},
-		disc:       discovery.NewStatic([]string{"peer-host"}, 9999),
-		cl:         push,
 		origin:     "self",
+		sshSync:    sshRuntime,
 		peerStatus: map[string]*PeerState{},
 		seen:       newSeenSet(),
 	}
@@ -44,7 +42,7 @@ func TestImagePathWritebackDedupedHeadless(t *testing.T) {
 	img := clipboard.New(clipboard.KindImage, []byte("\x89PNG\r\n\x1a\nDATA"), fixedTime)
 	img.ID = "img-1"
 	d.onReceive(img, "m4")
-	waitForPushes(t, push, 1) // the image relays to the static peer
+	waitForPublishes(t, sshRuntime, 1)
 
 	entries, err := store.LoadHistory(10)
 	if err != nil || len(entries) == 0 || entries[0].ImagePath == "" {
@@ -52,7 +50,7 @@ func TestImagePathWritebackDedupedHeadless(t *testing.T) {
 	}
 	path := entries[0].ImagePath
 
-	before := len(push.snapshot())
+	before := len(sshPublishSnapshot(sshRuntime))
 	// Exactly what an after-load-buffer hook would submit: the loaded path text,
 	// stamped with a fresh ID (clipfan copy mints one). The IsImageStorePath
 	// guard — not ID dedup — must drop it.
@@ -61,7 +59,7 @@ func TestImagePathWritebackDedupedHeadless(t *testing.T) {
 	d.onReceive(pathClip, "self")
 	time.Sleep(50 * time.Millisecond)
 
-	if after := len(push.snapshot()); after != before {
+	if after := len(sshPublishSnapshot(sshRuntime)); after != before {
 		t.Fatalf("image-path writeback re-broadcast %d clip(s); expected dedup (echo loop)", after-before)
 	}
 }

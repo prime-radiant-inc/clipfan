@@ -28,24 +28,26 @@ internal/
     store.go           images/<sha>.png write + history-aware image GC
     state.go           state.json + current.txt (the shim's view of the clipboard)
     history.go         history.json: append/load, pin/delete, retention GC
-  transport/           HTTP server + client; HMAC-signed, encrypted JSON envelopes
-    server.go          POST /v1/clip, GET /v1/peers, GET /v1/version, GET /v1/health, history endpoints
-    client.go          push (PushAs stamps a chosen origin for relay)
-    envelope.go        the wire envelope
+  transport/           signed local HTTP APIs + SSH sync stream framing
+    server.go          GET/POST /v1/current, GET /v1/peers, GET /v1/fleet, GET /v1/version,
+                       GET /v1/health, history/config endpoints
+    client.go          signed loopback client used by app, CLI, and SSH gateway
+    envelope.go        encrypted clip payload carried by SSH stream state frames
     auth.go            shared-key request HMAC (SHA-256)
-    crypto.go          AES-GCM envelope body encryption
+    crypto.go          AES-GCM clip body encryption
   tmux/                load-buffer-all: enumerate /tmp/tmux-$UID/* and call tmux -S sock load-buffer -
   daemon/              wires everything together: poll local clipboard, broadcast on change, write on receive
-    daemon.go          poll / onReceive / fanout / relay + peer-status tracking;
+    daemon.go          poll / onReceive / SSH publish + peer-status tracking;
                        currentClip + isEcho for our-own-write echo suppression
     seen.go            bounded clip-ID set used for mesh dedup
 apps/
   mac/Clipfan/         SwiftUI menubar app (Clipfan.app); supervises the daemon
 ```
 
-## Wire format
+## SSH sync payload
 
-A clipboard event is sent as a JSON envelope:
+A clipboard event carried over the authenticated SSH sync stream is encoded as a
+JSON envelope:
 
 ```json
 {
@@ -67,16 +69,20 @@ the mesh dedups on (see Recirculation prevention). `kind` is `"text"` or
 is derived from `shared_key`, and `nonce` is the base64 nonce needed to decrypt
 that body. `concealed` marks password-manager or transient pasteboard items so
 receivers drop them without writing clipboard, state, history, or relay output.
-`recipient` is the daemon identity the push was intended for. It is inside the
-signed JSON body, and a configured daemon rejects `/v1/clip` envelopes whose
-recipient does not match its local identity after short-name normalization
-(`.local` and FQDN forms normalize to the same short host). Suffix aliases are
-not accepted at this security boundary. A clip request captured for one peer
-therefore fails closed when replayed to another peer, even when both peers share
-the same `shared_key`.
+`recipient` is the daemon identity the SSH stream payload is intended for. It is
+inside the encrypted clip envelope so stream handlers can reject payloads that do
+not match the local identity after short-name normalization (`.local` and FQDN
+forms normalize to the same short host). Suffix aliases are not accepted at this
+security boundary. A clip payload captured for one peer therefore fails closed
+when replayed to another peer, even when both peers share the same `shared_key`.
 The envelope does not carry a payload `sha256`; content hashes are computed from
 raw payload bytes inside the daemon where needed for echo suppression, history
 identity, and image filenames.
+
+The SSH sync stream wraps envelopes in newline-delimited JSON frames. A signed
+hello frame authenticates the stream purpose and host IDs; state frames carry the
+current encrypted clip envelope or an explicit null reason; ack/error frames
+report per-frame status.
 
 Every signed request carries `X-Clipfan-Ts`, `X-Clipfan-Nonce`, and
 `X-Clipfan-Sig`. The signature is
@@ -86,26 +92,29 @@ The server rejects missing or bad signatures, stale timestamps, and replayed
 request nonces. There is no legacy body-only HMAC compatibility path, so
 mixed-version fleets fail closed.
 
-## HTTP API
+## Local HTTP API
 
 The daemon listens on `:7853` by default and serves these endpoints:
 
 | Method & path        | Auth          | Purpose |
 |----------------------|---------------|---------|
-| `POST /v1/clip`      | signed request | Accept a clipboard envelope from a peer (or from `clipfan copy`) and apply it locally. Returns `204 No Content`. |
+| `GET /v1/current`    | signed request, loopback only | Return the latest visible current clipboard payload for the local SSH gateway. |
+| `POST /v1/current`   | signed request, loopback only | Apply a local current clipboard payload from `clipfan copy` or the SSH gateway. Returns `204 No Content`. |
 | `GET /v1/peers`      | signed request, loopback only | Return `{ "origin": "<this host>", "peers": [PeerState, ...] }` for the menubar app. |
-| `GET /v1/version`    | signed request | Return `{ "version": "<daemon version>" }` so trusted peers can detect stale installs. |
+| `GET /v1/fleet`      | signed request, loopback only | Return the app's aggregated SSH fleet view. |
+| `GET /v1/version`    | signed request | Return `{ "version": "<daemon version>" }` for signed diagnostics and local callers. |
 | `GET /v1/health`     | none          | Liveness check. Returns `200` with body `ok`. |
 | `GET /v1/history`    | signed request, loopback only | Return `{ "entries": [HistoryEntry, ...] }`; `?limit=<n>` caps the count. |
-| `POST /v1/restore`   | signed request, loopback only | Re-copy a history entry as the current clipboard and fan it out to the fleet. |
+| `POST /v1/restore`   | signed request, loopback only | Re-copy a history entry as the current clipboard and publish it through SSH sync. |
 | `POST /v1/history/pin` | signed request, loopback only | Pin or unpin a history entry. |
 | `DELETE /v1/history` | signed request, loopback only | Delete one entry, or all unpinned entries. |
 | `POST /v1/config`    | signed request, loopback only | Update local daemon configuration currently exposed through the app, such as `max_history`. |
+| `GET/PUT/DELETE/PATCH /v1/config/ssh/...` | signed request, loopback only | Read and update SSH peer config from the app. |
 
-`PeerState` carries the hostname, port, last push timestamp + outcome, last push
-error, and last receive timestamp. The menubar app polls `GET /v1/peers` over
-loopback (loopback is exempt from the Local Network privacy gate, so the app
-needs no special permission to read it).
+`PeerState` carries hostname, port, SSH runtime state, endpoint diagnostics, and
+last receive timestamp. The menubar app polls the local endpoints over loopback
+(loopback is exempt from the Local Network privacy gate, so the app needs no
+special permission to read them).
 
 ## Discovery
 
@@ -124,9 +133,9 @@ type Discoverer interface {
 `static_peers` is the explicit Clipfan fleet allowlist. `static.Discoverer`
 reads it directly as the hostname list. `tailscale.Discoverer` shells out to
 `tailscale status --json`, but filters online tailnet peers through the same
-short-name allowlist before fanout. An empty `static_peers` list in Tailscale
-mode returns only the local host and produces no non-self fanout. The active
-discoverer is chosen by the config's `discovery` field; the default is
+short-name allowlist before SSH publish. An empty `static_peers` list in
+Tailscale mode returns only the local host and produces no non-self sync. The
+active discoverer is chosen by the config's `discovery` field; the default is
 `tailscale`.
 
 ## Recirculation prevention
@@ -158,10 +167,10 @@ looping the mesh, with a third content-based guard beneath them:
   image-store paths (`store.IsImageStorePath`) is never broadcast as text and
   never written over a real image, on either the poll or the receive path.
 
-The Mac is the hub: a received clip is relayed to every peer except its origin, so
-peers that can't see each other directly (one on the LAN, one on the tailnet) still
-converge through the Mac. Clip-ID dedup — not origin filtering — is what keeps
-relay from looping.
+The Mac is the hub: a received clip is published over SSH to every configured
+peer except its origin, so peers that can't see each other directly still
+converge through the Mac. Clip-ID dedup, not origin filtering, is what keeps
+publish loops from applying the same logical clip twice.
 
 ## Image flow on receive (the load-bearing trick)
 
@@ -196,8 +205,9 @@ The daemon keeps the OS clipboard in sync on its own. Capturing a copy made
 *inside tmux on a remote* and getting it onto the fleet is the job of the tmux
 snippet (`dist/tmux.conf.snippet`), installed by `dist/install.sh` to
 `~/.config/clipfan/tmux.conf` and sourced from `~/.tmux.conf`. It pipes tmux
-copies through `clipfan copy`, which posts them to the local daemon (and emits
-OSC 52 to the client tty as a fallback).
+copies through `clipfan copy`, which applies them through the signed loopback
+current endpoint on the local daemon (and emits OSC 52 to the client tty as a
+fallback).
 
 tmux exposes a copy through more than one path, so the snippet covers all of
 them:
@@ -256,7 +266,7 @@ newest-first history. Because the Mac is the relay hub, its history naturally
 sees nearly every clip on the fleet, each tagged with the host it originated on.
 History is local per-host; no new sync protocol is introduced — the daemon
 appends to history at the same two points it already persists the current clip
-(a clip copied locally, and a clip pushed by a peer).
+(a clip copied locally, and a clip received from SSH sync).
 
 ### Data model
 
@@ -295,8 +305,8 @@ history entry. The reference set is computed from `history.json` before trimming
 
 The daemon does not record or sync concealed clips. macOS password managers mark
 pasteboard items with concealed or transient pasteboard types; the macOS
-clipboard backend detects those types, local fanout skips the clip, and receivers
-drop any peer envelope marked `concealed` before writing peer state, history, the
+clipboard backend detects those types, SSH publish skips the clip, and receivers
+drop any sync payload marked `concealed` before writing peer state, history, the
 clipboard, tmux, or relay output.
 
 ### History API
@@ -308,8 +318,8 @@ loopback:
   Pinned floated to the top, then newest first. `limit` caps the count; without
   it, the full retained history is returned (itself bounded by the retention cap).
 - `POST /v1/restore` `{ "id": "<sha>" }` → loads that entry, makes it the current
-  clipboard (text → pbcopy; image → the pasteboard helper), fans it out to peers
-  so the fleet converges, and moves the entry to the top of history.
+  clipboard (text → pbcopy; image → the pasteboard helper), publishes it over
+  SSH so the fleet converges, and moves the entry to the top of history.
 - `POST /v1/history/pin` `{ "id": "<sha>", "pinned": <bool> }`.
 - `DELETE /v1/history` `{ "id": "<sha>" }` (one) or `{ "all_unpinned": true }`
   (clear unpinned).
@@ -330,11 +340,11 @@ private paths, and avoid following unsafe symlinked temporary or final paths.
 ## Auth model
 
 Single shared key per fleet, in `config.json`. The daemon derives the envelope
-encryption key from it and also uses it for canonical request HMAC signatures.
-Peer clip pushes and peer version probes require valid signed requests. Local
-admin endpoints (`/v1/peers`, history, restore, pin/delete, and config) also
-require valid signatures and loopback source addresses. `GET /v1/health`
-remains unauthenticated for liveness checks.
+encryption key from it and also uses it for canonical request HMAC signatures
+and SSH stream hello signatures. Local admin endpoints (`/v1/current`,
+`/v1/peers`, `/v1/fleet`, history, restore, pin/delete, and config) require
+valid signatures and loopback source addresses. `GET /v1/health` remains
+unauthenticated for liveness checks.
 
 ## Non-goals
 

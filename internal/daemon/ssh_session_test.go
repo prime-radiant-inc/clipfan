@@ -69,7 +69,6 @@ func TestSSHTransportAutostartsSyncManagerForReadySSHConfig(t *testing.T) {
 
 	d, err := NewWithOptions(cfg, Options{
 		ListenerBoundaryEnabled: boolPtr(true),
-		PeerHTTPRuntimeDisabled: boolPtr(false),
 	})
 	if err != nil {
 		t.Fatal(err)

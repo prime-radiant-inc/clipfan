@@ -77,7 +77,6 @@ struct FleetTab: View {
                 Button("Refresh") {
                     Task {
                         await daemon.refresh()
-                        await daemon.refreshPeerVersions()
                         await daemon.refreshFleet()
                     }
                 }
@@ -106,19 +105,11 @@ struct FleetTab: View {
                     ForEach(fleetRows(origin: daemon.origin,
                                       connected: daemon.connected,
                                       peers: daemon.peers,
-                                      safeMode: daemon.safeModeStatus,
-                                      peerVersions: daemon.peerVersions)) { row in
+                                      safeMode: daemon.safeModeStatus)) { row in
                         VStack(alignment: .leading, spacing: 8) {
                             HStack(spacing: 8) {
                                 FleetRow(model: row)
                                 if let peer = row.peer {
-                                    if let status = daemon.peerVersions[peer.hostname],
-                                       status.needsUpdate {
-                                        Label(status.label, systemImage: "exclamationmark.arrow.triangle.2.circlepath")
-                                            .labelStyle(.iconOnly)
-                                            .foregroundStyle(.orange)
-                                            .help(status.label)
-                                    }
                                     Button {
                                         updatePeer = peer
                                     } label: {
@@ -212,9 +203,6 @@ struct FleetTab: View {
             Button("OK", role: .cancel) { daemon.hostRemoveWarning = nil }
         } message: {
             Text(daemon.hostRemoveWarning ?? "")
-        }
-        .onAppear {
-            Task { await daemon.refreshPeerVersions() }
         }
         .task { await daemon.refreshFleet() }
     }
@@ -340,7 +328,7 @@ struct GeneralTab: View {
     }
 }
 
-/// Shown in the Fleet tab when a peer's pushes are failing — the usual cause on
+/// Shown in the Fleet tab when peer sends are failing — the usual cause on
 /// macOS Sequoia is the daemon lacking Local Network permission. Heuristic (no
 /// public API reports the grant), so it's worded as a likely cause, not a verdict.
 struct LocalNetworkNudge: View {

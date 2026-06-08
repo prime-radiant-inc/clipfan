@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
 	"github.com/prime-radiant-inc/clipfan/internal/config"
 	"github.com/prime-radiant-inc/clipfan/internal/daemon"
 	"github.com/prime-radiant-inc/clipfan/internal/sshprovision"
@@ -160,8 +159,7 @@ func TestRunSSHGatewayDefaultFleetSnapshotEmitsRedactedSnapshot(t *testing.T) {
 			LastRecvTS: recvTS,
 		}},
 	}
-	srv := transport.NewServer("127.0.0.1:0", auth, func(clipboard.Content, string) {}, func() any { return peersPayload })
-	srv.SetRecipientIdentity("linux-b")
+	srv := transport.NewServer("127.0.0.1:0", auth, func() any { return peersPayload })
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

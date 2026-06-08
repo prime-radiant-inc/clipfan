@@ -42,7 +42,7 @@ func runDefaultSSHGatewayFleetSnapshot(identity SSHGatewayIdentity, stdout io.Wr
 	if err != nil {
 		return err
 	}
-	client := transport.NewClientWithPeerHTTPRuntimeDisabled(auth, cfg.Hostname, true)
+	client := transport.NewClient(auth)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	body, err := client.Peers(ctx, localHost, localPort)

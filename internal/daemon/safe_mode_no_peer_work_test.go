@@ -34,10 +34,10 @@ func TestSafeModeStatusAndLogsDoNotStartPeerOrClipboardWork(t *testing.T) {
 	}
 	discoveryProbe := &countingDiscoverer{}
 	clipboardProbe := &countingClipboardBackend{}
-	pushProbe := &fakePusher{}
+	sshRuntime := &fakeSSHSyncRuntime{}
 	d.disc = discoveryProbe
 	d.cb = clipboardProbe
-	d.cl = pushProbe
+	d.sshSync = sshRuntime
 	d.peerStatus["runtime-peer"] = &PeerState{Hostname: "runtime-peer", Port: 9999, LastPushOK: true}
 	d.current = currentClip{id: "runtime-current-clip", kind: clipboard.KindText, imagePath: "/tmp/runtime-current-image"}
 
@@ -80,8 +80,8 @@ func TestSafeModeStatusAndLogsDoNotStartPeerOrClipboardWork(t *testing.T) {
 	if got := clipboardProbe.count(); got != 0 {
 		t.Fatalf("safe-mode status/logs called clipboard backend %d times", got)
 	}
-	if got := len(pushProbe.snapshot()); got != 0 {
-		t.Fatalf("safe-mode status/logs started fanout/push work %d times", got)
+	if got := len(sshPublishSnapshot(sshRuntime)); got != 0 {
+		t.Fatalf("safe-mode status/logs started publish work %d times", got)
 	}
 }
 

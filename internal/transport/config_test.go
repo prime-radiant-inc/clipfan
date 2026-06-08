@@ -7,8 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
 )
 
 func TestPostConfigDispatchesMaxHistory(t *testing.T) {
@@ -16,7 +14,7 @@ func TestPostConfigDispatchesMaxHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewServer(":0", auth, func(clipboard.Content, string) {}, func() any { return nil })
+	s := NewServer(":0", auth, func() any { return nil })
 	setFixedServerTime(s)
 	var got int
 	s.SetConfigFunc(func(n int) error { got = n; return nil })
@@ -46,7 +44,7 @@ func TestPostConfigPropagatesConfigErrorCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewServer(":0", auth, func(clipboard.Content, string) {}, func() any { return nil })
+	s := NewServer(":0", auth, func() any { return nil })
 	setFixedServerTime(s)
 	s.SetConfigFunc(func(int) error { return errors.New("config_v2_writes_disabled") })
 

@@ -14,7 +14,7 @@ import (
 
 func TestCurrentEndpointReturnsSignedLocalVisibleCurrent(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, func() any { return nil })
+	srv := NewServer(":0", auth, func() any { return nil })
 	setFixedServerTime(srv)
 	srv.SetRequiredLocalAuthVersion(AuthVersionRequestHMAC)
 	content := clipboard.New(clipboard.KindText, []byte("latest"), time.Unix(1780257600, 0).UTC())
@@ -45,7 +45,7 @@ func TestCurrentEndpointReturnsSignedLocalVisibleCurrent(t *testing.T) {
 
 func TestCurrentEndpointRequiresLoopbackSignature(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, func() any { return nil })
+	srv := NewServer(":0", auth, func() any { return nil })
 	setFixedServerTime(srv)
 	srv.SetCurrentFunc(func() CurrentPayload { return NoCurrentPayload("no_visible_current") })
 
@@ -63,6 +63,47 @@ func TestCurrentEndpointRequiresLoopbackSignature(t *testing.T) {
 	srv.Handler().ServeHTTP(remoteRec, remote)
 	if remoteRec.Code != http.StatusForbidden {
 		t.Fatalf("remote current status = %d, want 403", remoteRec.Code)
+	}
+}
+
+func TestCurrentApplyEndpointRequiresSignedLoopbackAndAppliesContent(t *testing.T) {
+	auth := testAuth(t)
+	srv := NewServer(":0", auth, func() any { return nil })
+	srv.SetRequiredLocalAuthVersion(AuthVersionRequestHMAC)
+	setFixedServerTime(srv)
+	var gotContent clipboard.Content
+	var gotOrigin string
+	srv.SetCurrentApply(func(content clipboard.Content, origin string) error {
+		gotContent = content
+		gotOrigin = origin
+		return nil
+	})
+	content := clipboard.New(clipboard.KindText, []byte("from ssh stream"), time.Unix(1780257600, 0).UTC())
+	content.ID = "clip-ssh-apply"
+	payload := CurrentPayloadFromContent(content, "linux-a")
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodPost, "/v1/current", "1780257600", "current-apply", body, AuthVersionRequestHMAC)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("current apply status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	requireVersionedSignedResponse(t, auth, rec, "current-apply")
+	if gotOrigin != "linux-a" || gotContent.ID != "clip-ssh-apply" || string(gotContent.Bytes) != "from ssh stream" {
+		t.Fatalf("applied origin/content = %q/%#v", gotOrigin, gotContent)
+	}
+
+	remote := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodPost, "/v1/current", "1780257600", "current-remote", body, AuthVersionRequestHMAC)
+	remote.RemoteAddr = "192.0.2.1:1234"
+	remoteRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(remoteRec, remote)
+	if remoteRec.Code != http.StatusForbidden {
+		t.Fatalf("remote current apply status = %d, want 403", remoteRec.Code)
 	}
 }
 

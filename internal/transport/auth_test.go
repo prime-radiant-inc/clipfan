@@ -10,8 +10,6 @@ import (
 	"strconv"
 	"testing"
 	"time"
-
-	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
 )
 
 func TestAuthRoundTrip(t *testing.T) {
@@ -21,14 +19,14 @@ func TestAuthRoundTrip(t *testing.T) {
 		t.Fatalf("NewAuth: %v", err)
 	}
 	body := []byte(`{"hello":"world"}`)
-	sig := a.SignRequest(http.MethodPost, "/v1/clip", "1780257600", "nonce-1", body)
-	if err := a.VerifyRequest(http.MethodPost, "/v1/clip", "1780257600", "nonce-1", body, sig); err != nil {
+	sig := a.SignRequest(http.MethodPost, "/v1/current", "1780257600", "nonce-1", body)
+	if err := a.VerifyRequest(http.MethodPost, "/v1/current", "1780257600", "nonce-1", body, sig); err != nil {
 		t.Fatalf("Verify good sig: %v", err)
 	}
-	if err := a.VerifyRequest(http.MethodPost, "/v1/clip", "1780257600", "nonce-1", []byte("tampered"), sig); err == nil {
+	if err := a.VerifyRequest(http.MethodPost, "/v1/current", "1780257600", "nonce-1", []byte("tampered"), sig); err == nil {
 		t.Fatal("expected error on tampered body")
 	}
-	if err := a.VerifyRequest(http.MethodPost, "/v1/clip", "1780257600", "nonce-1", body, "deadbeef"); err == nil {
+	if err := a.VerifyRequest(http.MethodPost, "/v1/current", "1780257600", "nonce-1", body, "deadbeef"); err == nil {
 		t.Fatal("expected error on wrong sig length")
 	}
 }
@@ -185,7 +183,7 @@ func TestRequiredAuthVersionAcceptsNewClientAndRejectsOldRawClient(t *testing.T)
 
 func TestServerAcceptsHKDFRequestAuthWithoutRejectingRawKeyClients(t *testing.T) {
 	auth := fixtureAuth(t)
-	s := NewServer(":0", auth, func(c clipboard.Content, origin string) {}, func() any {
+	s := NewServer(":0", auth, func() any {
 		return map[string]any{"origin": "m4"}
 	})
 	setFixedServerTime(s)
@@ -219,7 +217,7 @@ func TestServerAcceptsHKDFRequestAuthWithoutRejectingRawKeyClients(t *testing.T)
 
 func TestServerRequiredLocalAuthVersionRejectsRawKeyClients(t *testing.T) {
 	auth := fixtureAuth(t)
-	s := NewServer(":0", auth, func(c clipboard.Content, origin string) {}, func() any {
+	s := NewServer(":0", auth, func() any {
 		return map[string]any{"origin": "m4"}
 	})
 	s.SetVersionFunc(func() any { return map[string]string{"version": "test"} })

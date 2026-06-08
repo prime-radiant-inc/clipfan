@@ -80,7 +80,7 @@ func TestValidateSSHConfigRejectsInvalidTransportAndPeers(t *testing.T) {
 		{
 			name: "invalid migration state",
 			cfg: Config{ConfigVersion: intPtr(2), Transport: TransportSSH, SSH: &SSHConfig{
-				Peers: []SSHPeer{{ID: "fsck", MigrationState: "legacy_http"}},
+				Peers: []SSHPeer{{ID: "fsck", MigrationState: "removed_http_sync"}},
 			}},
 			code: "invalid_migration_state",
 		},

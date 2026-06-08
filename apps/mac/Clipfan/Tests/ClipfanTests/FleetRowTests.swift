@@ -165,35 +165,6 @@ extension FleetRowTests {
         XCTAssertFalse(rows[1].isSelf)
     }
 
-    func testCurrentVersionProbeMakesPeerHealthy() {
-        let stalePush = Peer(hostname: "flower-garden", port: 7853,
-                             last_push_ts: Date(), last_push_ok: false,
-                             last_push_err: "service restarted",
-                             last_recv_ts: Date.distantPast)
-
-        let rows = fleetRows(origin: "me",
-                             connected: true,
-                             peers: [stalePush],
-                             peerVersions: ["flower-garden": .current("v0.3.5")],
-                             policy: legacyPeerHTTPProbePolicy())
-
-        XCTAssertEqual(rows[1].health, .healthy)
-        XCTAssertEqual(rows[1].subtitle, "port 7853 · current")
-    }
-
-    func testVersionNeedingUpdateMakesPeerAttention() {
-        let pushedOK = peer("old-box")
-
-        let rows = fleetRows(origin: "me",
-                             connected: true,
-                             peers: [pushedOK],
-                             peerVersions: ["old-box": .needsUpdate("v0.3.4")],
-                             policy: legacyPeerHTTPProbePolicy())
-
-        XCTAssertEqual(rows[1].health, .attention)
-        XCTAssertEqual(rows[1].subtitle, "port 7853 · update available")
-    }
-
     func testSSHPeerRowsUseSSHRuntimeHealthAndHideHTTPPort() {
         let peer = Peer(hostname: "flower-garden",
                         port: 7853,
@@ -213,9 +184,7 @@ extension FleetRowTests {
 
         let rows = fleetRows(origin: "m4",
                              connected: true,
-                             peers: [peer],
-                             peerVersions: ["flower-garden": .needsUpdate("v0.3.1")],
-                             policy: legacyPeerHTTPProbePolicy())
+                             peers: [peer])
 
         XCTAssertEqual(rows[1].health, .healthy)
         XCTAssertEqual(rows[1].subtitle, "SSH · live")
@@ -287,23 +256,11 @@ extension FleetRowTests {
         XCTAssertNil(fleetOutboundTS(p))
     }
 
-    func testHTTPPeerOutboundUsesPushTimestamp() {
+    func testNonSSHPeerOutboundUsesPushTimestamp() {
         let push = Date(timeIntervalSince1970: 2_000_000)
         let p = Peer(hostname: "linux-b", port: 7853, last_push_ts: push, last_push_ok: true,
                      last_push_err: nil, last_recv_ts: nil)
         XCTAssertEqual(fleetOutboundTS(p), push)
     }
 
-    private func legacyPeerHTTPProbePolicy() -> SSHTransportGatePolicy {
-        SSHTransportGatePolicy(
-            peerHTTPRuntimeDisabled: false,
-            configV2WriteEnabled: false,
-            remoteSecretWriteReleaseEnabled: false,
-            publicAddPeerSuccessEnabled: false,
-            receivePrimitiveEnabled: true,
-            syncStreamEnabled: false,
-            persistentCurrentEnabled: true,
-            syncKeyRotationEnabled: false
-        )
-    }
 }

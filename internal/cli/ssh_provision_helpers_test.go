@@ -180,7 +180,8 @@ func TestLoadOrCreateSyncKeyReloadsAfterConcurrentCreateWins(t *testing.T) {
 		return config.SyncKeyCreateResult{}, config.ErrSyncKeyExists
 	}
 
-	result, changed, err := loadOrCreateSyncKeyWithOps(created.PrivateKeyPath, "linux-b", localProvisionChecker(), nil, load, create)
+	generator := func(config.SyncKeyGenerateRequest) error { return nil }
+	result, changed, err := loadOrCreateSyncKeyWithOps(created.PrivateKeyPath, "linux-b", localProvisionChecker(), generator, load, create)
 	if err != nil {
 		t.Fatalf("loadOrCreateSyncKeyWithOps() error = %v", err)
 	}

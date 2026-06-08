@@ -128,7 +128,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 WelcomeWindowController.shared.show(startInstall: false)
             }
             await DaemonClient.shared.refresh()
-            await RemoteUpdateOfferController.shared.maybeOffer()
         }
     }
 }

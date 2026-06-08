@@ -5,11 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"testing"
-	"time"
-
-	"github.com/prime-radiant-inc/clipfan/internal/clipboard"
 )
 
 func testAuth(t *testing.T) *Auth {
@@ -26,13 +22,11 @@ func testAuth(t *testing.T) *Auth {
 // the shared-key signature: a signed request succeeds, an unsigned one is denied.
 func TestHistoryGETRequiresSignature(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, func() any { return nil })
+	srv := NewServer(":0", auth, func() any { return nil })
 	setFixedServerTime(srv)
 	called := false
 	srv.SetHistory(
-		func(limit int) (any, error) { called = true; return []string{"x"}, nil },
-		nil, nil, nil,
-	)
+		func(limit int) (any, error) { called = true; return []string{"x"}, nil }, nil, nil, nil)
 
 	// Signed GET → 200
 	req := signedRequestWithNonce(t, auth, http.MethodGet, "/v1/history?limit=10", "history-get", nil)
@@ -58,7 +52,7 @@ func TestHistoryGETRequiresSignature(t *testing.T) {
 
 func TestRestoreRequiresSignature(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, func() any { return nil })
+	srv := NewServer(":0", auth, func() any { return nil })
 	setFixedServerTime(srv)
 	restored := ""
 	srv.SetHistory(
@@ -91,7 +85,7 @@ func TestRestoreRequiresSignature(t *testing.T) {
 
 func TestPinAndDeleteSigned(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, func() any { return nil })
+	srv := NewServer(":0", auth, func() any { return nil })
 	setFixedServerTime(srv)
 	var pinnedID string
 	var deletedAll bool
@@ -121,12 +115,10 @@ func TestPinAndDeleteSigned(t *testing.T) {
 
 func TestHistoryRejectsValidRemoteSignature(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, func() any { return nil })
+	srv := NewServer(":0", auth, func() any { return nil })
 	setFixedServerTime(srv)
 	srv.SetHistory(
-		func(limit int) (any, error) { return []string{"x"}, nil },
-		nil, nil, nil,
-	)
+		func(limit int) (any, error) { return []string{"x"}, nil }, nil, nil, nil)
 
 	req := signedRequestWithNonce(t, auth, http.MethodGet, "/v1/history?limit=10", "remote-history", nil)
 	req.RemoteAddr = "192.0.2.1:1234"
@@ -139,7 +131,7 @@ func TestHistoryRejectsValidRemoteSignature(t *testing.T) {
 
 func TestPeersRequiresSignatureAndLoopback(t *testing.T) {
 	auth := testAuth(t)
-	srv := NewServer(":0", auth, nil, func() any {
+	srv := NewServer(":0", auth, func() any {
 		return map[string]any{"origin": "local", "peers": []string{}}
 	})
 	setFixedServerTime(srv)
@@ -169,157 +161,6 @@ func TestPeersRequiresSignatureAndLoopback(t *testing.T) {
 	requireSignedResponse(t, auth, rec, "local-peers")
 }
 
-func TestFutureTimestampReplayRejectedUntilSkewWindowExpires(t *testing.T) {
-	auth := testAuth(t)
-	now := time.Unix(1780257600, 0)
-	received := 0
-	srv := NewServer(":0", auth, func(clipboard.Content, string) {
-		received++
-	}, nil)
-	srv.now = func() time.Time { return now }
-
-	sealedBody, bodyNonce, err := auth.SealBody([]byte("hello"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := json.Marshal(Envelope{
-		ID:     "clip-1",
-		Origin: "sender",
-		TS:     now.UTC(),
-		Kind:   "text",
-		Body:   sealedBody,
-		Nonce:  bodyNonce,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ts := strconv.FormatInt(now.Add(119*time.Second).Unix(), 10)
-	req := signedRequestWithTimestampAndNonce(t, auth, http.MethodPost, "/v1/clip", ts, "future-replay", body)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("first signed clip status = %d, want 204", rec.Code)
-	}
-
-	now = now.Add(121 * time.Second)
-	req = signedRequestWithTimestampAndNonce(t, auth, http.MethodPost, "/v1/clip", ts, "future-replay", body)
-	rec = httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("replayed future-skew clip status = %d, want 401", rec.Code)
-	}
-	if received != 1 {
-		t.Fatalf("received clips = %d, want 1", received)
-	}
-}
-
-func TestPostClipRejectsEnvelopeTimestampBeyondRequestSkew(t *testing.T) {
-	auth := testAuth(t)
-	now := time.Unix(1780257600, 0)
-	received := 0
-	srv := NewServer(":0", auth, func(clipboard.Content, string) {
-		received++
-	}, nil)
-	srv.now = func() time.Time { return now }
-
-	sealedBody, bodyNonce, err := auth.SealBody([]byte("hello"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := json.Marshal(Envelope{
-		ID:     "clip-future-envelope",
-		Origin: "sender",
-		TS:     now.Add(signatureSkew + time.Second).UTC(),
-		Kind:   "text",
-		Body:   sealedBody,
-		Nonce:  bodyNonce,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := signedRequestWithTimestampAndNonce(t, auth, http.MethodPost, "/v1/clip", strconv.FormatInt(now.Unix(), 10), "future-envelope", body)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("future envelope timestamp status = %d, want 400", rec.Code)
-	}
-	if received != 0 {
-		t.Fatalf("received clips = %d, want 0", received)
-	}
-}
-
-func TestPostClipRejectsEnvelopeTimestampBeyondReceiverSkew(t *testing.T) {
-	auth := testAuth(t)
-	now := time.Unix(1780257600, 0)
-	received := 0
-	srv := NewServer(":0", auth, func(clipboard.Content, string) {
-		received++
-	}, nil)
-	srv.now = func() time.Time { return now }
-
-	sealedBody, bodyNonce, err := auth.SealBody([]byte("hello"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := json.Marshal(Envelope{
-		ID:     "clip-future-receiver",
-		Origin: "sender",
-		TS:     now.Add(signatureSkew + time.Second).UTC(),
-		Kind:   "text",
-		Body:   sealedBody,
-		Nonce:  bodyNonce,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	requestTS := strconv.FormatInt(now.Add(signatureSkew-time.Second).Unix(), 10)
-	req := signedRequestWithTimestampAndNonce(t, auth, http.MethodPost, "/v1/clip", requestTS, "future-receiver", body)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("future envelope timestamp status = %d, want 400", rec.Code)
-	}
-	if received != 0 {
-		t.Fatalf("received clips = %d, want 0", received)
-	}
-}
-
-func TestPostClipRejectsWrongLengthBodyNonce(t *testing.T) {
-	auth := testAuth(t)
-	received := 0
-	srv := NewServer(":0", auth, func(clipboard.Content, string) {
-		received++
-	}, nil)
-	setFixedServerTime(srv)
-
-	body, err := json.Marshal(Envelope{
-		ID:     "clip-bad-nonce",
-		Origin: "sender",
-		TS:     time.Unix(1780257600, 0).UTC(),
-		Kind:   "text",
-		Body:   "AA==",
-		Nonce:  "AA==",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := signedRequestWithNonce(t, auth, http.MethodPost, "/v1/clip", "bad-body-nonce", body)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("wrong-length nonce status = %d, want 400", rec.Code)
-	}
-	if rec.Body.String() != "decrypt envelope body\n" {
-		t.Fatalf("wrong-length nonce response = %q", rec.Body.String())
-	}
-	if received != 0 {
-		t.Fatalf("received clips = %d, want 0", received)
-	}
-}
-
 func requireSignedResponse(t *testing.T, auth *Auth, rec *httptest.ResponseRecorder, requestNonce string) {
 	t.Helper()
 	sig := rec.Header().Get("X-Clipfan-Response-Sig")
@@ -328,43 +169,5 @@ func requireSignedResponse(t *testing.T, auth *Auth, rec *httptest.ResponseRecor
 	}
 	if err := auth.VerifyResponse(requestNonce, rec.Body.Bytes(), sig); err != nil {
 		t.Fatalf("response signature: %v", err)
-	}
-}
-
-func TestPostClipRejectsMalformedCiphertext(t *testing.T) {
-	auth := testAuth(t)
-	received := 0
-	srv := NewServer(":0", auth, func(clipboard.Content, string) {
-		received++
-	}, nil)
-	setFixedServerTime(srv)
-
-	_, nonce, err := auth.SealBody([]byte("hello"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := json.Marshal(Envelope{
-		ID:     "clip-bad-body",
-		Origin: "sender",
-		TS:     time.Unix(1780257600, 0).UTC(),
-		Kind:   "text",
-		Body:   EncodeBody([]byte("bad ciphertext")),
-		Nonce:  nonce,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := signedRequestWithNonce(t, auth, http.MethodPost, "/v1/clip", "bad-body-ciphertext", body)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("malformed ciphertext status = %d, want 400", rec.Code)
-	}
-	if rec.Body.String() != "decrypt envelope body\n" {
-		t.Fatalf("malformed ciphertext response = %q", rec.Body.String())
-	}
-	if received != 0 {
-		t.Fatalf("received clips = %d, want 0", received)
 	}
 }
