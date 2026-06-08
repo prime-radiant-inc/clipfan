@@ -30,7 +30,7 @@ swiftc -O -target "$(uname -m)-apple-macos13.0" \
 echo "[3/5] assemble bundle"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$here/Info.plist" "$app/Contents/Info.plist"
+cp "$swiftpkg/Info.plist" "$app/Contents/Info.plist"
 cp "$swiftbin" "$app/Contents/MacOS/Clipfan"
 cp "$out/clipfand" "$app/Contents/MacOS/clipfand"
 cp "$out/clipfan-pasteboard-helper" "$app/Contents/MacOS/clipfan-pasteboard-helper"
