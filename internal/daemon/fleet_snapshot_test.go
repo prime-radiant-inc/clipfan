@@ -46,7 +46,7 @@ func TestBuildFleetSnapshotRedactsSecrets(t *testing.T) {
 		},
 	}
 
-	encoded, err := json.Marshal(BuildFleetSnapshot(cfg, nil))
+	encoded, err := json.Marshal(BuildFleetSnapshot(cfg, "alpha", nil))
 	if err != nil {
 		t.Fatalf("marshal snapshot: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestBuildFleetSnapshotMergesConfigAndLiveStatus(t *testing.T) {
 		SSHLastConnectTS: connectTS,
 	}}
 
-	snapshot := BuildFleetSnapshot(cfg, peers)
+	snapshot := BuildFleetSnapshot(cfg, "alpha", peers)
 	if len(snapshot.Peers) != 1 {
 		t.Fatalf("want 1 peer, got %d", len(snapshot.Peers))
 	}
@@ -131,7 +131,7 @@ func TestBuildFleetSnapshotIncludesConfiguredPeerWithoutLiveRow(t *testing.T) {
 		},
 	}
 
-	snapshot := BuildFleetSnapshot(cfg, nil)
+	snapshot := BuildFleetSnapshot(cfg, "alpha", nil)
 	if len(snapshot.Peers) != 1 {
 		t.Fatalf("want 1 peer, got %d", len(snapshot.Peers))
 	}
@@ -146,11 +146,14 @@ func TestBuildFleetSnapshotIncludesConfiguredPeerWithoutLiveRow(t *testing.T) {
 
 // TestBuildFleetSnapshotOriginVersionAndNilSSH covers the envelope fields and the
 // nil-SSH guard: peers is a non-nil empty slice so the JSON renders "peers": [].
+// The origin is the caller-supplied argument, not cfg.Hostname (which is unreliable
+// — the daemon passes its authoritative origin, and an unprovisioned host's config
+// may have an empty hostname), so it must win even when cfg.Hostname differs.
 func TestBuildFleetSnapshotOriginVersionAndNilSSH(t *testing.T) {
-	cfg := &config.Config{Hostname: "alpha"}
-	snapshot := BuildFleetSnapshot(cfg, nil)
+	cfg := &config.Config{Hostname: "config-hostname-ignored"}
+	snapshot := BuildFleetSnapshot(cfg, "alpha", nil)
 	if snapshot.Origin != "alpha" {
-		t.Errorf("origin = %q, want alpha", snapshot.Origin)
+		t.Errorf("origin = %q, want alpha (caller arg, not cfg.Hostname)", snapshot.Origin)
 	}
 	if snapshot.Version != version.Version {
 		t.Errorf("version = %q, want %q", snapshot.Version, version.Version)

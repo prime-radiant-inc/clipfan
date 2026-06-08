@@ -26,6 +26,10 @@ func runDefaultSSHGatewayFleetSnapshot(identity SSHGatewayIdentity, stdout io.Wr
 	if err != nil {
 		return err
 	}
+	origin, err := sshGatewayLocalID(cfg)
+	if err != nil {
+		return err
+	}
 	if err := validateSSHGatewayFleetSnapshotPeer(cfg, identity); err != nil {
 		return err
 	}
@@ -50,7 +54,7 @@ func runDefaultSSHGatewayFleetSnapshot(identity SSHGatewayIdentity, stdout io.Wr
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return err
 	}
-	return json.NewEncoder(stdout).Encode(daemon.BuildFleetSnapshot(cfg, payload.Peers))
+	return json.NewEncoder(stdout).Encode(daemon.BuildFleetSnapshot(cfg, origin, payload.Peers))
 }
 
 // validateSSHGatewayFleetSnapshotPeer authorizes a peer to read this host's fleet

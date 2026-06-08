@@ -21,7 +21,10 @@ type FleetSnapshot struct {
 // FleetSnapshotPeer is the reporting host's view of one edge: the static edge
 // description from config plus the live session status the running daemon tracks.
 // migration_state and ssh_active always serialize (a false/empty value is
-// meaningful to the fleet view); the rest are omitempty decoration.
+// meaningful to the fleet view). ssh_host/port/user are omitempty (an accept-only
+// edge carries none). The timestamps are zero-valued ("never") when a session has
+// not reached that milestone; omitempty is a no-op on time.Time, so they serialize
+// as the zero time, matching the PeerState convention the Mac already decodes.
 type FleetSnapshotPeer struct {
 	ID               string    `json:"id"`
 	SSHHost          string    `json:"ssh_host,omitempty"`
@@ -39,16 +42,18 @@ type FleetSnapshotPeer struct {
 // roster: edge identity + migration state) overlaid with the live PeerState rows
 // the daemon tracks (matched by id, since PeerState.Hostname is the peer id for SSH
 // peers). A configured peer with no live row still appears, so an edge that has not
-// connected yet is visible rather than silently absent.
-func BuildFleetSnapshot(cfg *config.Config, peers []PeerState) FleetSnapshot {
+// connected yet is visible rather than silently absent. origin is supplied by the
+// caller (the daemon's resolved origin, or the gateway handler's validated local id)
+// rather than read from cfg.Hostname, which an unprovisioned config may leave empty.
+func BuildFleetSnapshot(cfg *config.Config, origin string, peers []PeerState) FleetSnapshot {
 	snapshot := FleetSnapshot{
+		Origin:  origin,
 		Version: version.Version,
 		Peers:   []FleetSnapshotPeer{},
 	}
 	if cfg == nil {
 		return snapshot
 	}
-	snapshot.Origin = cfg.Hostname
 
 	live := make(map[string]PeerState, len(peers))
 	for _, p := range peers {

@@ -116,14 +116,9 @@ func runDefaultSSHGatewaySyncStream(identity SSHGatewayIdentity, stdin io.Reader
 	if err != nil {
 		return err
 	}
-	localID := cfg.Hostname
-	if localID == "" {
-		if host, err := os.Hostname(); err == nil {
-			localID = strings.TrimSuffix(strings.SplitN(host, ".", 2)[0], ".local")
-		}
-	}
-	if err := config.ValidateHostID(localID); err != nil {
-		return fmt.Errorf("invalid local host id: %w", err)
+	localID, err := sshGatewayLocalID(cfg)
+	if err != nil {
+		return err
 	}
 	if err := validateSSHGatewaySyncPeer(cfg, identity); err != nil {
 		return err
@@ -328,6 +323,26 @@ func writeSSHGatewayFrame(ctx context.Context, fn func(context.Context) error) e
 	case <-writeCtx.Done():
 		return writeCtx.Err()
 	}
+}
+
+// sshGatewayLocalID resolves this host's own id for a gateway handler: the
+// configured hostname, or a short name derived from os.Hostname() when the config
+// has none (an unprovisioned config may leave it empty). It rejects an id that
+// cannot be validated, so a handler never proceeds with a blank or unsafe local id.
+func sshGatewayLocalID(cfg *config.Config) (string, error) {
+	if cfg == nil {
+		return "", ErrSSHGatewayCommandRejected
+	}
+	localID := cfg.Hostname
+	if localID == "" {
+		if host, err := os.Hostname(); err == nil {
+			localID = strings.TrimSuffix(strings.SplitN(host, ".", 2)[0], ".local")
+		}
+	}
+	if err := config.ValidateHostID(localID); err != nil {
+		return "", fmt.Errorf("invalid local host id: %w", err)
+	}
+	return localID, nil
 }
 
 func validateSSHGatewaySyncPeer(cfg *config.Config, identity SSHGatewayIdentity) error {
