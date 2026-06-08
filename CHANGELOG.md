@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.2] - 2026-06-07
+
+### Changed
+
+- About is now a pane in Settings instead of a separate window; the menubar "About clipfan…" opens it there.
+- Mesh health appears inline on each fleet row, with an expandable per-edge breakdown, instead of a separate card; "Repair mesh" is now a fleet-level button next to Refresh.
+- Removed the redundant "Set up clipfan…" menubar entry; re-running setup lives on the Diagnostics pane.
+
 ## [0.4.1] - 2026-06-07
 
 ### Security
