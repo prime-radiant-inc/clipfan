@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1] - 2026-06-07
+
+### Security
+
+- The local API client no longer follows HTTP redirects, so a request's nonce-bound signed headers can never be forwarded to a redirect target.
+- The SSH gateway's `fleet-snapshot` and `sync-stream` verbs no longer return the config file path to the calling peer when local config is missing — the error is now opaque.
+
 ## [0.4.0] - 2026-06-07
 
 ### Added
