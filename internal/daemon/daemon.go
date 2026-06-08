@@ -99,6 +99,10 @@ type Daemon struct {
 
 	peersMu    sync.RWMutex
 	peerStatus map[string]*PeerState
+
+	fleetMu        sync.Mutex
+	fleetCached    FleetView
+	fleetFetchedAt time.Time
 }
 
 // currentClip is the daemon's record of what it last wrote to the local
@@ -204,6 +208,7 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Daemon, error) {
 	d.sv.SetRecipientIdentity(origin)
 	d.sv.SetVersionFunc(d.versionHandler)
 	d.sv.SetCurrentFunc(d.currentHandler)
+	d.sv.SetFleetFunc(d.fleetHandler)
 	d.sv.SetHistory(
 		func(limit int) (any, error) { return store.LoadHistory(limit) },
 		d.Restore,

@@ -32,6 +32,10 @@ type VersionFunc func() any
 // SSH gateway publishing.
 type CurrentFunc func() CurrentPayload
 
+// FleetFunc returns a JSON-encodable aggregated mesh view for the local Mac app.
+// Returning `any` keeps daemon types out of the transport package.
+type FleetFunc func() any
+
 // HistoryFunc returns a JSON-encodable snapshot of the clipboard history.
 type HistoryFunc func(limit int) (any, error)
 
@@ -80,6 +84,7 @@ type Server struct {
 	peersFn               PeersFunc
 	versionFn             VersionFunc
 	currentFn             CurrentFunc
+	fleetFn               FleetFunc
 	historyFn             HistoryFunc
 	restoreFn             RestoreFunc
 	pinFn                 PinFunc
@@ -153,6 +158,9 @@ func (s *Server) SetVersionFunc(fn VersionFunc) { s.versionFn = fn }
 // SetCurrentFunc wires the signed local current endpoint. Called by the daemon.
 func (s *Server) SetCurrentFunc(fn CurrentFunc) { s.currentFn = fn }
 
+// SetFleetFunc wires the signed local fleet endpoint. Called by the daemon.
+func (s *Server) SetFleetFunc(fn FleetFunc) { s.fleetFn = fn }
+
 func (s *Server) SetListenerRepair(readFn ListenerRepairReadFunc, patchFn ListenerRepairPatchFunc) {
 	s.listenerRepairReadFn = readFn
 	s.listenerRepairPatchFn = patchFn
@@ -203,6 +211,7 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux.HandleFunc("POST /v1/clip", s.postClip)
 	mux.HandleFunc("GET /v1/peers", s.getPeers)
+	mux.HandleFunc("GET /v1/fleet", s.getFleet)
 	mux.HandleFunc("GET /v1/version", s.getVersion)
 	mux.HandleFunc("GET /v1/current", s.getCurrent)
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -566,6 +575,18 @@ func (s *Server) getPeers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeSignedJSON(w, signed, s.peersFn())
+}
+
+func (s *Server) getFleet(w http.ResponseWriter, r *http.Request) {
+	signed := s.readSignedLocal(w, r)
+	if signed == nil {
+		return
+	}
+	if s.fleetFn == nil {
+		http.Error(w, "fleet endpoint not wired", http.StatusNotImplemented)
+		return
+	}
+	s.writeSignedJSON(w, signed, s.fleetFn())
 }
 
 func (s *Server) getVersion(w http.ResponseWriter, r *http.Request) {
