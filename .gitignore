@@ -30,6 +30,9 @@ clipfan.config.toml
 # SwiftPM build output
 apps/mac/Clipfan/.build/
 
+# build-app.sh packaged bundle output
+apps/mac/build/
+
 # Visual brainstorm companion scratch
 .superpowers/
 
