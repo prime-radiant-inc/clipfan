@@ -32,7 +32,14 @@ func NewClient(auth *Auth, origin string) *Client {
 
 func NewClientWithPeerHTTPRuntimeDisabled(auth *Auth, origin string, disabled bool) *Client {
 	return &Client{
-		http:                    &http.Client{Timeout: 5 * time.Second},
+		http: &http.Client{
+			Timeout: 5 * time.Second,
+			// Never follow redirects: the request carries nonce-bound signed headers,
+			// and Go's redirect handling would forward them to the redirect target. The
+			// daemon never redirects, so returning the 3xx as-is only ever surfaces a
+			// misbehaving/forged responder as a non-2xx error.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 		auth:                    auth,
 		origin:                  origin,
 		peerHTTPRuntimeDisabled: disabled,

@@ -216,6 +216,31 @@ func TestRunSSHGatewayDefaultFleetSnapshotEmitsRedactedSnapshot(t *testing.T) {
 	}
 }
 
+func TestRunSSHGatewayFleetSnapshotMissingConfigIsOpaque(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	err := runSSHGateway(
+		[]string{"--authorized-peer", "m4", "--authorized-key-id", "key-123456"},
+		strings.NewReader(""),
+		&stdout,
+		&stderr,
+		func(key string) string {
+			if key == "SSH_ORIGINAL_COMMAND" {
+				return sshprovision.SSHGatewayFleetSnapshotCommand
+			}
+			return ""
+		},
+	)
+	if !errors.Is(err, ErrSSHGatewayCommandRejected) {
+		t.Fatalf("error = %v, want opaque ErrSSHGatewayCommandRejected", err)
+	}
+	if strings.Contains(err.Error(), "/") {
+		t.Fatalf("error leaked a filesystem path to the peer: %v", err)
+	}
+}
+
 func TestRunSSHGatewayDefaultFleetSnapshotRejectsAcceptOnlyPeer(t *testing.T) {
 	configRoot := t.TempDir()
 	stateRoot := t.TempDir()

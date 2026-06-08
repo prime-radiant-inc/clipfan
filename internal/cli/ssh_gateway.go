@@ -110,7 +110,9 @@ func defaultSSHGatewayHandlers() SSHGatewayHandlers {
 
 func runDefaultSSHGatewaySyncStream(identity SSHGatewayIdentity, stdin io.Reader, stdout io.Writer) error {
 	if _, err := os.Stat(config.Path()); err != nil {
-		return fmt.Errorf("ssh gateway config unavailable: %w", err)
+		// Opaque to the peer: this runs as an sshd forced command, so the error reaches
+		// the caller's stderr — don't leak the config path or stat details.
+		return ErrSSHGatewayCommandRejected
 	}
 	cfg, err := config.Load()
 	if err != nil {
