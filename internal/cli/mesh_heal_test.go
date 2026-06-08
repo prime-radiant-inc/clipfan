@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -154,20 +155,21 @@ func healthyMeshPeer(id, user, host, install string) RosterReadPeer {
 	}
 }
 
-func meshHealTestOptions(t *testing.T, runner sshprovision.CommandRunner, cfg *config.Config, env rosterReadEnv) ([]string, meshHealOptions) {
+func meshHealTestOptions(t *testing.T, runner sshprovision.CommandRunner, cfg *config.Config, env rosterReadEnv) ([]string, meshHealOptions, string) {
 	t.Helper()
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"--trust-keyscan", "--regular-known-hosts", dir + "/regular_known_hosts"}
+	knownHosts := dir + "/regular_known_hosts"
+	args := []string{"--trust-keyscan", "--regular-known-hosts", knownHosts}
 	return args, meshHealOptions{
 		Runner:            runner,
 		ConfigV2WriteGate: func() bool { return true },
 		SharedKey:         func() (string, error) { return testDirectProvisionSharedKey, nil },
 		LoadConfig:        func() (*config.Config, error) { return cfg, nil },
 		SelfEnv:           func() rosterReadEnv { return env },
-	}
+	}, knownHosts
 }
 
 func TestRunMeshHealSkipsHealthyMeshAndReportsNoFailures(t *testing.T) {
@@ -192,7 +194,7 @@ func TestRunMeshHealSkipsHealthyMeshAndReportsNoFailures(t *testing.T) {
 	runner := &fakeMeshRunner{reports: map[string]string{"rhost": string(rReport)}, selfAddr: "100.114.54.38"}
 	env := rosterReadEnv{GOOS: "darwin", UID: 501, SelfBinaryPath: "/l/clipfan", ConfigPath: "/l/config.json"}
 
-	args, opts := meshHealTestOptions(t, runner, cfg, env)
+	args, opts, _ := meshHealTestOptions(t, runner, cfg, env)
 	var out, errBuf strings.Builder
 	if err := runMeshHeal(args, &out, &errBuf, opts); err != nil {
 		t.Fatalf("runMeshHeal: %v (stderr=%s)", err, errBuf.String())
@@ -207,6 +209,10 @@ func TestRunMeshHealSkipsHealthyMeshAndReportsNoFailures(t *testing.T) {
 	}
 	if len(report.Healed) != 0 || len(report.Failed) != 0 || len(report.Restarted) != 0 || len(report.Unreachable) != 0 {
 		t.Fatalf("expected a clean healthy-mesh report, got %+v", report)
+	}
+	// Empty buckets serialize as [], not null (stable schema for the fleet consumer).
+	if !strings.Contains(out.String(), `"unreachable":[]`) {
+		t.Fatalf("unreachable should serialize as [] when empty: %s", out.String())
 	}
 }
 
@@ -230,7 +236,7 @@ func TestRunMeshHealReportsUnreachablePeer(t *testing.T) {
 	}
 	env := rosterReadEnv{GOOS: "darwin", UID: 501, SelfBinaryPath: "/l/clipfan", ConfigPath: "/l/config.json"}
 
-	args, opts := meshHealTestOptions(t, runner, cfg, env)
+	args, opts, _ := meshHealTestOptions(t, runner, cfg, env)
 	var out, errBuf strings.Builder
 	if err := runMeshHeal(args, &out, &errBuf, opts); err != nil {
 		t.Fatalf("runMeshHeal: %v (stderr=%s)", err, errBuf.String())
@@ -246,6 +252,10 @@ func TestRunMeshHealReportsUnreachablePeer(t *testing.T) {
 	// Only L remains in the roster, so there are no edges to heal or skip.
 	if len(report.Healed) != 0 || len(report.Skipped) != 0 || len(report.Failed) != 0 {
 		t.Fatalf("expected no edges, got %+v", report)
+	}
+	// Unreachable entries use lowercase json keys, like the rest of the report.
+	if !strings.Contains(out.String(), `"id":"R"`) {
+		t.Fatalf("unreachable entry should use lowercase json keys: %s", out.String())
 	}
 }
 
@@ -314,7 +324,7 @@ func TestRunMeshHealProvisionsUnhealthyEdgeAndRestartsBothEnds(t *testing.T) {
 	runner := &fakeMeshRunner{reports: map[string]string{"rhost": string(rReport)}, selfAddr: "100.114.54.38"}
 	env := rosterReadEnv{GOOS: "darwin", UID: 501, SelfBinaryPath: "/l/clipfan", ConfigPath: "/l/config.json"}
 
-	args, opts := meshHealTestOptions(t, runner, cfg, env)
+	args, opts, knownHosts := meshHealTestOptions(t, runner, cfg, env)
 	driver := &fakeMeshDriver{}
 	opts.Driver = driver
 	var out, errBuf strings.Builder
@@ -341,5 +351,15 @@ func TestRunMeshHealProvisionsUnhealthyEdgeAndRestartsBothEnds(t *testing.T) {
 	// Both ends were restarted over SSH.
 	if len(runner.restarts) != 2 {
 		t.Fatalf("expected two restart SSHs, got %+v", runner.restarts)
+	}
+	// The local host's own key at its observed self-address MUST be trusted into
+	// the regular known_hosts — provisioning the local edge and restarting the
+	// local daemon both SSH there under StrictHostKeyChecking=yes.
+	kh, err := os.ReadFile(knownHosts)
+	if err != nil {
+		t.Fatalf("read known_hosts: %v", err)
+	}
+	if !strings.Contains(string(kh), "100.114.54.38") {
+		t.Fatalf("local self-address was not trusted into known_hosts:\n%s", kh)
 	}
 }

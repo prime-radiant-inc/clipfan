@@ -20,8 +20,8 @@ type rosterReader func(context.Context, rosterEndpoint) (RosterReadReport, error
 // unreachableHost records a host mesh-heal could not trust or read, so the run
 // can report it rather than aborting the whole heal.
 type unreachableHost struct {
-	ID     string
-	Reason string
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
 }
 
 // rosterDiscovery is the closed roster: every host mesh-heal could reach, its

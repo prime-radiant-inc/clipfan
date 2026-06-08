@@ -220,15 +220,21 @@ func runMeshHeal(args []string, stdout io.Writer, stderr io.Writer, opts meshHea
 		Skipped:     []string{},
 		Failed:      []meshHealFailure{},
 		Restarted:   []string{},
-		Unreachable: discovery.Unreachable,
+		Unreachable: append([]unreachableHost{}, discovery.Unreachable...),
 	}
 
 	// Observe the local host's own address from its peers so local<->remote edges
-	// can be provisioned. If unobservable, local edges needing repair surface as
-	// failures below rather than aborting the whole heal.
+	// can be provisioned, and trust the local host's key at that address into the
+	// regular known_hosts — provisioning a local edge and restarting the local
+	// daemon both SSH there under StrictHostKeyChecking=yes, exactly like any
+	// remote host. If the self-address is unobservable or its key can't be
+	// trusted, leave the local endpoint unset so local edges needing repair
+	// surface as per-edge failures rather than aborting the whole heal.
 	if selfAddr, selfErr := discoverSelfAddress(ctx, runner, observerEndpoints(discovery.Endpoints, localID), *regularKnownHosts); selfErr == nil {
 		if ep, ok := localEndpoint(discovery.Reports, localID, selfAddr, localReport.InstallPath); ok {
-			discovery.Endpoints[localID] = ep
+			if trustEndpoint(ctx, runner, ep, *regularKnownHosts) == nil {
+				discovery.Endpoints[localID] = ep
+			}
 		}
 	}
 
