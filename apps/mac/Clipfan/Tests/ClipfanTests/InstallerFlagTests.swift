@@ -1063,6 +1063,77 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertEqual(localRestarts, 1)
     }
 
+    private func provisionAndHealFixtureSpecs() -> [String] {
+        [
+            "id=mac-a,ssh=mac-a.tailnet,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+            "id=linux-b,ssh=linux-b.tailnet,user=jesse,port=22,install=/home/jesse/.local/bin/clipfan,config=/home/jesse/.config/clipfan/config.json,known_hosts=/home/jesse/.config/clipfan/ssh/known_hosts,sync_key=/home/jesse/.config/clipfan/ssh/sync_ed25519"
+        ]
+    }
+
+    func testProvisionAndHealRunsProvisionThenHealsFullMesh() async throws {
+        var commands: [(String, [String])] = []
+        var healedKnownHosts: String?
+        var healRanAfterProvision = false
+        let knownHostsRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-heal-known-hosts-\(UUID().uuidString)")
+        let regularKnownHosts = knownHostsRoot.appendingPathComponent("known_hosts").path
+        defer { try? FileManager.default.removeItem(at: knownHostsRoot) }
+
+        let report = try await Installer.provisionPrivateDirectMeshAndHeal(
+            hostSpecs: provisionAndHealFixtureSpecs(),
+            regularKnownHosts: regularKnownHosts,
+            trustKeyscan: true,
+            localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
+            bootstrapInstall: false,
+            runCommand: { exe, args in
+                commands.append((exe, args))
+                if exe == "/usr/bin/ssh-keyscan" { return self.keyscanFixtureOutput(args) }
+                return #"{"status":"ok"}"#
+            },
+            meshHeal: { knownHosts in
+                healedKnownHosts = knownHosts
+                healRanAfterProvision = commands.contains { $0.0 == "/Users/jesse/.local/bin/clipfan" && $0.1.first == "ssh-provision-direct" }
+                return MeshHealReport(healed: ["mac-a<->linux-b"], restarted: ["mac-a"])
+            },
+            readLocalHostID: { nil },
+            restartLocalDaemon: { },
+            onProgress: { _ in }
+        )
+
+        XCTAssertTrue(healRanAfterProvision, "mesh-heal must run after ssh-provision-direct")
+        XCTAssertEqual(healedKnownHosts, regularKnownHosts)
+        XCTAssertEqual(report?.healed, ["mac-a<->linux-b"])
+        XCTAssertEqual(report?.restarted, ["mac-a"])
+    }
+
+    func testProvisionAndHealIsNonFatalWhenHealFails() async throws {
+        var provisioned = false
+        let knownHostsRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-heal-known-hosts-\(UUID().uuidString)")
+        let regularKnownHosts = knownHostsRoot.appendingPathComponent("known_hosts").path
+        defer { try? FileManager.default.removeItem(at: knownHostsRoot) }
+
+        let report = try await Installer.provisionPrivateDirectMeshAndHeal(
+            hostSpecs: provisionAndHealFixtureSpecs(),
+            regularKnownHosts: regularKnownHosts,
+            trustKeyscan: true,
+            localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
+            bootstrapInstall: false,
+            runCommand: { exe, args in
+                if exe == "/usr/bin/ssh-keyscan" { return self.keyscanFixtureOutput(args) }
+                if exe == "/Users/jesse/.local/bin/clipfan", args.first == "ssh-provision-direct" { provisioned = true }
+                return #"{"status":"ok"}"#
+            },
+            meshHeal: { _ in throw InstallError.configIO("mesh_heal_boom") },
+            readLocalHostID: { nil },
+            restartLocalDaemon: { },
+            onProgress: { _ in }
+        )
+
+        XCTAssertTrue(provisioned, "the explicit pair must still be provisioned")
+        XCTAssertNil(report, "a heal failure is non-fatal and yields no report")
+    }
+
     func testProvisionPrivateDirectMeshUsesRemoteObservedCallbackHostForLocalSpec() async throws {
         var commands: [(String, [String])] = []
         var localRestarts = 0

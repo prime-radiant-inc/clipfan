@@ -645,6 +645,69 @@ actor Installer {
         }
     }
 
+    /// provisionPrivateDirectMeshAndHeal provisions the explicitly-added pair(s) and
+    /// then heals the rest of the fleet into a full mesh. The pairwise primitive only
+    /// wires the hosts named in `hostSpecs`, so a host added to an existing mesh ends
+    /// up missing its edges to the *other* established peers; mesh-heal discovers the
+    /// now-complete roster from config and provisions those cross-edges, restarting the
+    /// daemons it changes. A heal failure is non-fatal — the explicit pair is already
+    /// committed — and surfaces as a nil report so the caller can offer "Repair mesh".
+    @discardableResult
+    static func provisionPrivateDirectMeshAndHeal(
+        hostSpecs: [String],
+        regularKnownHosts: String,
+        trustKeyscan: Bool,
+        withTmux: Bool = false,
+        localProvisioningBinary: LocalProvisioningBinaryResolver = { try trustedLocalProvisioningBinaryPath() },
+        bootstrapInstall: Bool = true,
+        bootstrapRemoteHost: ((String, Bool) async throws -> Void)? = nil,
+        runCommand: CommandRunner = run,
+        meshHeal: ((String) async throws -> MeshHealReport)? = nil,
+        readLocalHostID: @escaping LocalHostIDReader = {
+            let config = try? await readLocalConfig()
+            return config?["hostname"] as? String
+        },
+        restartLocalDaemon: @escaping LocalDaemonRestarter = {
+            try await MainActor.run {
+                guard DaemonClient.shared.restartDaemon() else {
+                    throw InstallError.configIO("local_daemon_restart_failed")
+                }
+            }
+        },
+        onProgress: @MainActor @escaping (InstallProgress) -> Void
+    ) async throws -> MeshHealReport? {
+        try await provisionPrivateDirectMesh(
+            hostSpecs: hostSpecs,
+            regularKnownHosts: regularKnownHosts,
+            trustKeyscan: trustKeyscan,
+            withTmux: withTmux,
+            localProvisioningBinary: localProvisioningBinary,
+            bootstrapInstall: bootstrapInstall,
+            bootstrapRemoteHost: bootstrapRemoteHost,
+            runCommand: runCommand,
+            readLocalHostID: readLocalHostID,
+            restartLocalDaemon: restartLocalDaemon,
+            onProgress: onProgress
+        )
+
+        await MainActor.run { onProgress(.init(step: "Heal", detail: "healing full mesh")) }
+        do {
+            let report: MeshHealReport
+            if let meshHeal {
+                report = try await meshHeal(regularKnownHosts)
+            } else {
+                report = try await MeshHealClient.heal(regularKnownHosts: regularKnownHosts,
+                                                       localProvisioningBinary: localProvisioningBinary,
+                                                       runCommand: runCommand)
+            }
+            await MainActor.run { onProgress(.init(step: "Heal", detail: report.summary)) }
+            return report
+        } catch {
+            await MainActor.run { onProgress(.init(step: "Heal", detail: "mesh heal failed — run Repair mesh to retry")) }
+            return nil
+        }
+    }
+
     private static func installPrivateDirectMeshHost(_ host: PrivateDirectMeshHost,
                                                      regularKnownHosts: String,
                                                      withTmux: Bool,

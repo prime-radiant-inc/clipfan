@@ -620,7 +620,7 @@ struct AddPeerSheet: View {
                 }
                 do {
                     try await ensureCurrentLocalHelperForPrivateMesh()
-                    try await Installer.provisionPrivateDirectMesh(
+                    let healReport = try await Installer.provisionPrivateDirectMeshAndHeal(
                         hostSpecs: directSpecs,
                         regularKnownHosts: directMeshRegularKnownHosts,
                         trustKeyscan: trustKeyscanConfirmed,
@@ -635,7 +635,8 @@ struct AddPeerSheet: View {
                         }
                     )
                     await MainActor.run {
-                        progress = "Provisioned private SSH mesh."
+                        progress = healReport.map { "Provisioned private SSH mesh · \($0.summary)." }
+                            ?? "Provisioned private SSH mesh."
                         lastInstalledHost = "private SSH mesh"
                         installing = false
                         installSuccess = true
