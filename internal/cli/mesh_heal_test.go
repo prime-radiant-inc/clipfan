@@ -104,6 +104,10 @@ type fakeMeshRunner struct {
 	failRead    map[string]bool // ssh target host -> roster-read errors
 	restarts    []string        // ssh target hosts asked to restart
 	rosterReads []string        // ssh target hosts roster-read
+	// keyscanFromPeer[peerHost][candidate] is the ssh-keyscan stdout a peer returns
+	// when mesh-heal probes a candidate address from it ("" = unreachable). nil means
+	// the wrapped keyscan is unexpected (so selection keeps the primary).
+	keyscanFromPeer map[string]map[string]string
 }
 
 func targetHost(args []string) string {
@@ -132,6 +136,14 @@ func (r *fakeMeshRunner) Run(_ context.Context, command sshprovision.SSHCommand)
 	host := targetHost(args)
 	remote := args[len(args)-1]
 	switch {
+	case strings.Contains(remote, "ssh-keyscan"):
+		// mesh-heal probing a candidate address from `host` (ssh -> sh -c ssh-keyscan).
+		if r.keyscanFromPeer == nil {
+			return sshprovision.CommandOutput{}, errors.New("unexpected keyscan from " + host)
+		}
+		fields := strings.Fields(remote)
+		candidate := strings.Trim(fields[len(fields)-1], "'\"")
+		return sshprovision.CommandOutput{Stdout: []byte(r.keyscanFromPeer[host][candidate])}, nil
 	case strings.Contains(remote, "roster-read"):
 		r.rosterReads = append(r.rosterReads, host)
 		if r.failRead[host] {
@@ -263,10 +275,12 @@ func TestRunMeshHealReportsUnreachablePeer(t *testing.T) {
 // recording which directed pair each Provision wrote, so the orchestrator's
 // heal+restart path can be tested without real provisioning SSH.
 type fakeMeshDriver struct {
-	provisioned []string
+	provisioned    []string
+	confirmedHosts []string // host.ID@host.SSHHost — the connect address Provision used
 }
 
 func (d *fakeMeshDriver) ConfirmHostKey(_ context.Context, host sshprovision.DirectPairHost) (string, error) {
+	d.confirmedHosts = append(d.confirmedHosts, host.ID+"@"+host.SSHHost)
 	pin, err := sshprovision.NewKnownHostPin(host.SSHHost, host.SSHPort, "ssh-ed25519", testDirectProvisionPublicKey(host.ID))
 	if err != nil {
 		return "", err

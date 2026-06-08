@@ -242,6 +242,31 @@ func runMeshHeal(args []string, stdout io.Writer, stderr io.Writer, opts meshHea
 	hosts, configPaths := buildProvisionHosts(discovery.Reports, discovery.Endpoints)
 	preps, prepErrs := prepHosts(ctx, runner, hosts)
 
+	// Partition edges: skip the already-healthy, collect the rest, and record each
+	// to-heal host's reachable unhealthy-edge peers (whom its address is probed from).
+	var toHeal []meshEdge
+	unhealthyPeers := map[string][]rosterEndpoint{}
+	for _, edge := range enumerateMeshEdges(discovery.Reports) {
+		label := edge.A + "<->" + edge.B
+		if edgeHealthyFromReports(discovery.Reports, edge.A, edge.B) {
+			report.Skipped = append(report.Skipped, label)
+			continue
+		}
+		toHeal = append(toHeal, edge)
+		if _, ok := preps[edge.B]; ok {
+			unhealthyPeers[edge.A] = append(unhealthyPeers[edge.A], discovery.Endpoints[edge.B])
+		}
+		if _, ok := preps[edge.A]; ok {
+			unhealthyPeers[edge.B] = append(unhealthyPeers[edge.B], discovery.Endpoints[edge.A])
+		}
+	}
+
+	// Cross-tailnet LAN fallback: when a host's primary address is unreachable from
+	// the peers it must mesh with, switch its connect address to a LAN one those peers
+	// can reach (host-key verified). Mutates preps; admin SSH stays on the primary
+	// (AdminHost), so only the peer-to-peer dial address changes.
+	selectMeshConnectAddresses(ctx, runner, preps, discovery.Reports, unhealthyPeers, *regularKnownHosts)
+
 	driver := opts.Driver
 	if driver == nil {
 		driver = sshprovision.RegularSSHProvisionDriver{
@@ -254,14 +279,10 @@ func runMeshHeal(args []string, stdout io.Writer, stderr io.Writer, opts meshHea
 	}
 	provisioner := sshprovision.NewDirectPairProvisionerWithConfigV2WriteGate(driver, opts.ConfigV2WriteGate)
 
-	// Heal each edge: skip the healthy, provision the rest, capture failures.
+	// Heal each collected edge; capture failures.
 	changed := map[string]bool{}
-	for _, edge := range enumerateMeshEdges(discovery.Reports) {
+	for _, edge := range toHeal {
 		label := edge.A + "<->" + edge.B
-		if edgeHealthyFromReports(discovery.Reports, edge.A, edge.B) {
-			report.Skipped = append(report.Skipped, label)
-			continue
-		}
 		localPrep, okA := preps[edge.A]
 		remotePrep, okB := preps[edge.B]
 		if !okA || !okB {
