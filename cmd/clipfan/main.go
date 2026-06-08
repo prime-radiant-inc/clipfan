@@ -121,6 +121,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 				return 1
 			}
 			return 0
+		case "mesh-heal":
+			if err := cli.RunMeshHeal(args[1:], stdout, stderr); err != nil {
+				fmt.Fprintln(stderr, "clipfan mesh-heal:", err)
+				return 1
+			}
+			return 0
 		case "help", "-h", "--help":
 			usage(stderr)
 			return 0
