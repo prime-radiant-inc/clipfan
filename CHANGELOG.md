@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.4.0] - 2026-06-07
+
+### Added
+
+- Self-healing mesh provisioning: adding a host now heals the whole fleet into a full mesh — it provisions the new host's edges to every existing peer (not just the pair you added) and restarts only the daemons it changed. Exposed as `clipfan mesh-heal` and run automatically from Add Peer, with a one-click "Repair mesh" action.
+- Mesh-state visibility in the macOS app: the daemon aggregates a redacted per-host fleet view (`GET /v1/fleet`, gathered over each peer's pinned SSH) and the Fleet settings tab shows per-host edge health, with unobserved edges distinguished from down ones.
+- First-run onboarding wizard: welcome → local setup → add a device → done, reusable from the menubar ("Set up clipfan…").
+- About screen.
+- `clipfan roster-read` self-report and a `fleet-snapshot` SSH gateway verb (redacted; no secrets leave the host).
+
+### Changed
+
+- Rewrote the README to be user-focused and moved developer documentation under `docs/`.
+- Add Peer now dismisses automatically after a successful install and reports the mesh-heal summary.
+
+### Fixed
+
+- Fixed Mac→host paste.
+
+### Known limitations
+
+- A peer on a different tailnet that shares only a LAN with the others can't be reached by its Tailscale address; mesh-heal surfaces the unreachable edges but does not yet fall back to a LAN address for cross-tailnet peers.
+
 ## [0.3.29] - 2026-06-06
 
 ### Changed
