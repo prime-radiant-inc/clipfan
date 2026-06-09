@@ -48,7 +48,7 @@ private struct MenuBarLabel: View {
     }
 
     var body: some View {
-        ClipfanMenuBarIcon(isAnimatingCopy: isAnimatingCopy)
+        ClipfanMenuBarIcon(isAnimatingCopy: isAnimatingCopy, animationGeneration: animationGeneration)
             .task { WindowOpener.shared.openWindow = openWindow }
             .onAppear {
                 if daemon.historyLoaded {
@@ -69,16 +69,12 @@ private struct MenuBarLabel: View {
     private func triggerCopyAnimation() {
         animationGeneration += 1
         let generation = animationGeneration
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.72)) {
-            isAnimatingCopy = true
-        }
+        isAnimatingCopy = true
         Task {
-            try? await Task.sleep(nanoseconds: 520_000_000)
+            try? await Task.sleep(nanoseconds: MenuBarFanInsertTiming.quickMenuBar.dismissDelayNanoseconds)
             await MainActor.run {
                 guard generation == animationGeneration else { return }
-                withAnimation(.easeOut(duration: 0.12)) {
-                    isAnimatingCopy = false
-                }
+                isAnimatingCopy = false
             }
         }
     }

@@ -10,6 +10,28 @@ final class MenuBarCopyAnimationTests: XCTestCase {
         XCTAssertGreaterThan(image.size.height, 0)
     }
 
+    func testFanInsertAnimationUsesQuickMenuBarTiming() {
+        let timing = MenuBarFanInsertTiming.quickMenuBar
+
+        XCTAssertEqual(timing.duration, 0.82, accuracy: 0.001)
+        XCTAssertEqual(timing.frontDelay, 0.13, accuracy: 0.001)
+        XCTAssertEqual(timing.middleDelay, 0.26, accuracy: 0.001)
+        XCTAssertEqual(timing.backDelay, 0.43, accuracy: 0.001)
+    }
+
+    func testFanInsertCardsShareTopEdge() {
+        let topEdges = [
+            MenuBarFanCardSlot.incoming,
+            MenuBarFanCardSlot.back,
+            MenuBarFanCardSlot.middle,
+            MenuBarFanCardSlot.front,
+            MenuBarFanCardSlot.discarded,
+        ].map(\.topY)
+
+        XCTAssertEqual(Set(topEdges).count, 1)
+        XCTAssertEqual(topEdges.first, MenuBarFanCardSlot.topY)
+    }
+
     func testInitialLoadedHistoryDoesNotAnimate() {
         var tracker = MenuBarCopyAnimationTracker()
 
