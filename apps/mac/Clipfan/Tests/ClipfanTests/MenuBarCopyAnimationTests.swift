@@ -10,6 +10,18 @@ final class MenuBarCopyAnimationTests: XCTestCase {
         XCTAssertGreaterThan(image.size.height, 0)
     }
 
+    func testAppIconArtworkUsesMenuBarFanCardSlots() {
+        XCTAssertEqual(ClipfanMenuBarIconArtwork.appIconCardSlots, MenuBarFanCardSlot.steady)
+    }
+
+    func testAppIconArtworkIsNonTemplateImage() {
+        let image = ClipfanMenuBarIconArtwork.appIconImage(size: 128)
+
+        XCTAssertFalse(image.isTemplate)
+        XCTAssertEqual(image.size.width, 128)
+        XCTAssertEqual(image.size.height, 128)
+    }
+
     func testFanInsertAnimationUsesQuickMenuBarTiming() {
         let timing = MenuBarFanInsertTiming.quickMenuBar
 

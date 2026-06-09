@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Renders the clipfan app icon (graphite cards fanned out, one accent card) at all
-# required sizes and packs them into Resources/AppIcon.icns via iconutil.
+# Renders the clipfan app icon from the same fan-card artwork used by the menu
+# bar icon, then packs all required sizes into Resources/AppIcon.icns.
 #
 # Must run in a logged-in GUI session: the master is drawn with NSImage.lockFocus,
 # which needs a window-server connection (it can fail on headless CI runners). The
@@ -13,49 +13,24 @@ trap 'rm -rf "$work"' EXIT
 iconset="$work/AppIcon.iconset"
 mkdir -p "$iconset" Resources
 
-# Draw a 1024px master with Swift + CoreGraphics, then downscale with sips.
+# Draw a 1024px master with the shared Swift artwork, then downscale with sips.
 cat > "$work/draw.swift" <<'SWIFT'
 import AppKit
 
-let size = 1024
-let img = NSImage(size: NSSize(width: size, height: size))
-img.lockFocus()
-let ctx = NSGraphicsContext.current!.cgContext
-
-let rect = CGRect(x: 0, y: 0, width: size, height: size)
-let bgPath = CGPath(roundedRect: rect.insetBy(dx: 80, dy: 80),
-                    cornerWidth: 180, cornerHeight: 180, transform: nil)
-ctx.addPath(bgPath)
-let colors = [NSColor(calibratedWhite: 0.22, alpha: 1).cgColor,
-              NSColor(calibratedWhite: 0.12, alpha: 1).cgColor] as CFArray
-let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1])!
-ctx.saveGState(); ctx.clip()
-ctx.drawLinearGradient(grad, start: CGPoint(x: 0, y: size), end: CGPoint(x: size, y: 0), options: [])
-ctx.restoreGState()
-
-func card(cx: CGFloat, cy: CGFloat, angle: CGFloat, fill: NSColor) {
-    ctx.saveGState()
-    ctx.translateBy(x: cx, y: cy)
-    ctx.rotate(by: angle * .pi / 180)
-    let w: CGFloat = 300, h: CGFloat = 380
-    let r = CGRect(x: -w/2, y: -h/2, width: w, height: h)
-    let p = CGPath(roundedRect: r, cornerWidth: 40, cornerHeight: 40, transform: nil)
-    ctx.addPath(p); ctx.setFillColor(fill.cgColor); ctx.fillPath()
-    ctx.restoreGState()
+@main
+struct DrawClipfanAppIcon {
+    static func main() throws {
+        let image = ClipfanMenuBarIconArtwork.appIconImage(size: 1024)
+        let rep = NSBitmapImageRep(data: image.tiffRepresentation!)!
+        let png = rep.representation(using: .png, properties: [:])!
+        try png.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
+    }
 }
-card(cx: 430, cy: 520, angle: 14, fill: NSColor(calibratedWhite: 0.80, alpha: 1))
-card(cx: 512, cy: 512, angle: 0,  fill: NSColor(calibratedWhite: 0.92, alpha: 1))
-card(cx: 594, cy: 504, angle: -14, fill: NSColor.systemBlue)
-
-img.unlockFocus()
-let tiff = img.tiffRepresentation!
-let rep = NSBitmapImageRep(data: tiff)!
-let png = rep.representation(using: .png, properties: [:])!
-try! png.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
 SWIFT
 
 master="$work/master.png"
-swift "$work/draw.swift" "$master"
+swiftc "$work/draw.swift" Sources/Clipfan/MenuBarIcon.swift -o "$work/draw-icon"
+"$work/draw-icon" "$master"
 
 gen() { sips -z "$2" "$2" "$master" --out "$iconset/icon_$1.png" >/dev/null; }
 gen 16x16        16

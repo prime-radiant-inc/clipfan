@@ -27,49 +27,149 @@ struct MenuBarCopyAnimationTracker {
 
 enum ClipfanMenuBarIconArtwork {
     private static let iconSize = NSSize(width: 22, height: 18)
+    static let appIconCardSlots = MenuBarFanCardSlot.steady
 
     static func stackImage() -> NSImage {
         makeImage { context in
-            MenuBarFanCardSlot.steady.forEach { drawCard(context, slot: $0) }
+            MenuBarFanCardSlot.steady.forEach { drawMenuBarCard(context, slot: $0) }
         }
     }
 
     static func frontCardImage() -> NSImage {
         makeImage { context in
-            drawCard(context, slot: .front)
+            drawMenuBarCard(context, slot: .front)
         }
     }
 
-    private static func makeImage(_ draw: @escaping (CGContext) -> Void) -> NSImage {
-        let image = NSImage(size: iconSize, flipped: false) { _ in
+    static func appIconImage(size: CGFloat) -> NSImage {
+        makeImage(size: NSSize(width: size, height: size), isTemplate: false) { context in
+            drawAppIconBackground(context, size: size)
+            drawAppIconCards(context, size: size)
+        }
+    }
+
+    private static func makeImage(
+        size: NSSize = iconSize,
+        isTemplate: Bool = true,
+        _ draw: @escaping (CGContext) -> Void
+    ) -> NSImage {
+        let image = NSImage(size: size, flipped: false) { _ in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
             draw(context)
             return true
         }
-        image.isTemplate = true
+        image.isTemplate = isTemplate
         return image
     }
 
-    private static func drawCard(_ context: CGContext, slot: MenuBarFanCardSlot) {
+    private static func drawMenuBarCard(_ context: CGContext, slot: MenuBarFanCardSlot) {
+        let topCenter = CGPoint(
+            x: iconSize.width / 2 + slot.offsetX,
+            y: iconSize.height - slot.topY
+        )
+        drawCard(
+            context,
+            slot: slot,
+            topCenter: topCenter,
+            size: MenuBarFanCardSlot.size,
+            cornerRadius: MenuBarFanCardSlot.cornerRadius,
+            fillColor: NSColor.black.withAlphaComponent(slot.opacity),
+            strokeColor: NSColor.black.withAlphaComponent(0.88),
+            strokeWidth: MenuBarFanCardSlot.strokeWidth
+        )
+    }
+
+    private static func drawAppIconBackground(_ context: CGContext, size: CGFloat) {
+        let rect = CGRect(x: 0, y: 0, width: size, height: size)
+        let scale = size / 1024
+        let backgroundPath = CGPath(
+            roundedRect: rect.insetBy(dx: 80 * scale, dy: 80 * scale),
+            cornerWidth: 180 * scale,
+            cornerHeight: 180 * scale,
+            transform: nil
+        )
+        context.addPath(backgroundPath)
+        let colors = [
+            NSColor(calibratedWhite: 0.22, alpha: 1).cgColor,
+            NSColor(calibratedWhite: 0.12, alpha: 1).cgColor,
+        ] as CFArray
+        let gradient = CGGradient(
+            colorsSpace: CGColorSpaceCreateDeviceRGB(),
+            colors: colors,
+            locations: [0, 1]
+        )!
         context.saveGState()
-        context.translateBy(x: iconSize.width / 2 + slot.offsetX,
-                            y: iconSize.height - slot.topY - MenuBarFanCardSlot.size.height / 2)
+        context.clip()
+        context.drawLinearGradient(
+            gradient,
+            start: CGPoint(x: 0, y: size),
+            end: CGPoint(x: size, y: 0),
+            options: []
+        )
+        context.restoreGState()
+    }
+
+    private static func drawAppIconCards(_ context: CGContext, size: CGFloat) {
+        let layoutScale = size * 0.60 / iconSize.width
+        let layoutSize = CGSize(width: iconSize.width * layoutScale, height: iconSize.height * layoutScale)
+        let layoutFrame = CGRect(
+            x: (size - layoutSize.width) / 2,
+            y: (size - layoutSize.height) / 2 - size * 0.01,
+            width: layoutSize.width,
+            height: layoutSize.height
+        )
+        let fills = [
+            NSColor(calibratedWhite: 0.78, alpha: 1),
+            NSColor(calibratedWhite: 0.92, alpha: 1),
+            NSColor(calibratedRed: 0.035, green: 0.52, blue: 0.98, alpha: 1),
+        ]
+
+        for (slot, fill) in zip(appIconCardSlots, fills) {
+            let topCenter = CGPoint(
+                x: layoutFrame.minX + (iconSize.width / 2 + slot.offsetX) * layoutScale,
+                y: layoutFrame.maxY - slot.topY * layoutScale
+            )
+            drawCard(
+                context,
+                slot: slot,
+                topCenter: topCenter,
+                size: CGSize(
+                    width: MenuBarFanCardSlot.size.width * layoutScale,
+                    height: MenuBarFanCardSlot.size.height * layoutScale
+                ),
+                cornerRadius: MenuBarFanCardSlot.cornerRadius * layoutScale,
+                fillColor: fill,
+                strokeColor: NSColor.black.withAlphaComponent(0.14),
+                strokeWidth: max(1, size * 0.004)
+            )
+        }
+    }
+
+    private static func drawCard(
+        _ context: CGContext,
+        slot: MenuBarFanCardSlot,
+        topCenter: CGPoint,
+        size: CGSize,
+        cornerRadius: CGFloat,
+        fillColor: NSColor,
+        strokeColor: NSColor,
+        strokeWidth: CGFloat
+    ) {
+        context.saveGState()
+        context.translateBy(x: topCenter.x, y: topCenter.y)
         context.rotate(by: slot.rotation * .pi / 180)
         context.scaleBy(x: slot.scale, y: slot.scale)
-        let rect = CGRect(x: -MenuBarFanCardSlot.size.width / 2,
-                          y: -MenuBarFanCardSlot.size.height / 2,
-                          width: MenuBarFanCardSlot.size.width,
-                          height: MenuBarFanCardSlot.size.height)
+        let rect = CGRect(x: -size.width / 2, y: -size.height, width: size.width, height: size.height)
         let path = CGPath(roundedRect: rect,
-                          cornerWidth: MenuBarFanCardSlot.cornerRadius,
-                          cornerHeight: MenuBarFanCardSlot.cornerRadius,
+                          cornerWidth: cornerRadius,
+                          cornerHeight: cornerRadius,
                           transform: nil)
         context.addPath(path)
-        context.setFillColor(NSColor.black.withAlphaComponent(slot.opacity).cgColor)
+        context.setFillColor(fillColor.cgColor)
         context.fillPath()
         context.addPath(path)
-        context.setStrokeColor(NSColor.black.withAlphaComponent(0.88).cgColor)
-        context.setLineWidth(MenuBarFanCardSlot.strokeWidth)
+        context.setStrokeColor(strokeColor.cgColor)
+        context.setLineWidth(strokeWidth)
         context.strokePath()
         context.restoreGState()
     }
