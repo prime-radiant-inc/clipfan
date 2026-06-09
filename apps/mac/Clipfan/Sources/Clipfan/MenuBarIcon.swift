@@ -48,6 +48,10 @@ enum ClipfanMenuBarIconArtwork {
         }
     }
 
+    static func coreGraphicsRotation(for slot: MenuBarFanCardSlot) -> CGFloat {
+        -slot.rotation
+    }
+
     private static func makeImage(
         size: NSSize = iconSize,
         isTemplate: Bool = true,
@@ -157,7 +161,7 @@ enum ClipfanMenuBarIconArtwork {
     ) {
         context.saveGState()
         context.translateBy(x: topCenter.x, y: topCenter.y)
-        context.rotate(by: slot.rotation * .pi / 180)
+        context.rotate(by: coreGraphicsRotation(for: slot) * .pi / 180)
         context.scaleBy(x: slot.scale, y: slot.scale)
         let rect = CGRect(x: -size.width / 2, y: -size.height, width: size.width, height: size.height)
         let path = CGPath(roundedRect: rect,

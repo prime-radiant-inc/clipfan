@@ -14,6 +14,12 @@ final class MenuBarCopyAnimationTests: XCTestCase {
         XCTAssertEqual(ClipfanMenuBarIconArtwork.appIconCardSlots, MenuBarFanCardSlot.steady)
     }
 
+    func testAppIconArtworkFlipsRotationForCoreGraphicsCoordinates() {
+        XCTAssertEqual(ClipfanMenuBarIconArtwork.coreGraphicsRotation(for: .back), -MenuBarFanCardSlot.back.rotation)
+        XCTAssertEqual(ClipfanMenuBarIconArtwork.coreGraphicsRotation(for: .middle), -MenuBarFanCardSlot.middle.rotation)
+        XCTAssertEqual(ClipfanMenuBarIconArtwork.coreGraphicsRotation(for: .front), -MenuBarFanCardSlot.front.rotation)
+    }
+
     func testAppIconArtworkIsNonTemplateImage() {
         let image = ClipfanMenuBarIconArtwork.appIconImage(size: 128)
 
