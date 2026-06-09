@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0] - 2026-06-09
+
+### Removed
+
+- Removed the disabled peer HTTP sync runtime, including the `/v1/clip` receive route, peer HTTP push client, daemon fanout path, peer HTTP release gates, and Swift peer-version probing/update-offer UI.
+
+### Changed
+
+- `clipfan copy` and the SSH gateway now apply clipboard updates to the local daemon through the signed loopback `/v1/current` endpoint.
+- Fleet sync is SSH-stream-only, and config v2 writes are now treated as baseline release behavior instead of a generated transport gate.
+- Current docs and release-gate scripts now describe the SSH sync architecture rather than the removed peer HTTP implementation.
+
 ## [0.4.3] - 2026-06-07
 
 ### Fixed
