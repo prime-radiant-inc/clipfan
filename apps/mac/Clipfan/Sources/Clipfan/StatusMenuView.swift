@@ -1,6 +1,39 @@
 import KeyboardShortcuts
 import SwiftUI
 
+/// Top-level commands shown before the fleet status rows.
+enum StatusMenuCommand: CaseIterable, Identifiable {
+    case openClipboard
+    case settings
+    case quit
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .openClipboard: return "Open Clipboard"
+        case .settings:      return "Settings…"
+        case .quit:          return "Quit"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .openClipboard: return "doc.on.clipboard"
+        case .settings:      return "gearshape"
+        case .quit:          return "power"
+        }
+    }
+
+    func shortcut(toggleShortcutLabel: String) -> String {
+        switch self {
+        case .openClipboard: return toggleShortcutLabel
+        case .settings:      return "⌘,"
+        case .quit:          return "⌘Q"
+        }
+    }
+}
+
 /// The menubar popover (MenuBarExtra .window style) — a small custom panel so the
 /// fleet can show colored health dots and bidirectional sync times, matching the
 /// Settings → Fleet cards. The native .menu style can't render colored dots.
@@ -10,24 +43,12 @@ struct StatusMenuView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            menuButton("Open Clipboard", systemImage: "doc.on.clipboard", shortcut: toggleShortcutLabel) {
-                CommandPanelController.shared.show()
-            }
-            menuButton("Settings…", systemImage: "gearshape", shortcut: "⌘,") {
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: "settings")
-            }
-            menuButton("About clipfan…", systemImage: "info.circle", shortcut: "") {
-                NSApp.activate(ignoringOtherApps: true)
-                SettingsRoute.shared.tab = .about
-                openWindow(id: "settings")
-            }
-            menuButton("Check for Updates…", systemImage: "arrow.triangle.2.circlepath", shortcut: "") {
-                NSApp.activate(ignoringOtherApps: true)
-                Updater.shared.checkForUpdates()
-            }
-            menuButton("Quit", systemImage: "power", shortcut: "⌘Q") {
-                NSApp.terminate(nil)
+            ForEach(StatusMenuCommand.allCases) { command in
+                menuButton(command.title,
+                           systemImage: command.systemImage,
+                           shortcut: command.shortcut(toggleShortcutLabel: toggleShortcutLabel)) {
+                    perform(command)
+                }
             }
 
             Divider()
@@ -41,6 +62,18 @@ struct StatusMenuView: View {
     /// The current global toggle shortcut as a display string, or "" if unset.
     private var toggleShortcutLabel: String {
         KeyboardShortcuts.getShortcut(for: .toggleClipboard).map { "\($0)" } ?? ""
+    }
+
+    private func perform(_ command: StatusMenuCommand) {
+        switch command {
+        case .openClipboard:
+            CommandPanelController.shared.show()
+        case .settings:
+            NSApp.activate(ignoringOtherApps: true)
+            openWindow(id: "settings")
+        case .quit:
+            NSApp.terminate(nil)
+        }
     }
 
     // MARK: fleet

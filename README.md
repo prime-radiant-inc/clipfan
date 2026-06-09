@@ -9,10 +9,12 @@ state.
 
 ## How it works
 
-A daemon runs on every host. Peers discover each other (Tailscale `tailscale
-status` by default; a static peer list as a fallback). When a host's clipboard
-changes, its daemon broadcasts the content to every peer over HTTP. Each
-receiving daemon:
+A daemon runs on every host. The daemon polls the local OS clipboard, exposes a
+signed loopback HTTP API for the app and CLI, and syncs peer clipboard updates
+over authenticated SSH streams. The Mac app is the control surface: it installs
+the local daemon, provisions peers over SSH, and keeps the fleet view current.
+
+When a host receives a clipboard update, its daemon:
 
 - Writes text to the local OS clipboard (a no-op on a headless host with no
   display server — there's nothing to write to, and that's fine).
@@ -25,8 +27,8 @@ receiving daemon:
 - Records the clip in a local, searchable history (see the menubar app).
 
 Conflict policy: last-write-wins by monotonic timestamp. There is no central
-server. The Mac acts as a relay hub, so peers that can't see each other directly
-(one on the LAN, one on the tailnet) still converge through it.
+server. The Mac acts as the relay hub, so peers that can't see each other
+directly can still converge through it.
 
 ## Install
 
@@ -55,9 +57,9 @@ Building from a source clone instead? See
    Turn on *Launch at login* in **Settings → General** to start it automatically.
 2. **Add the rest of your fleet.** Open the menubar icon →
    **Settings… → Fleet → Add peer…**. If Tailscale is running, pick hosts from
-   the tailnet list; otherwise type a host + SSH user. The app scp's the
-   right-arch binary and a config carrying this Mac's `shared_key`, runs the
-   installer over SSH, and adds the host to your local peer list. Check the
+   the tailnet list; otherwise type a host + SSH user. The app stages the
+   right-arch binary, installs the service over SSH, and adds the host to your
+   local peer list. Check the
    **tmux copy integration** box for hosts you use inside tmux.
 
 To update an existing peer, open **Settings… → Fleet** and click the update
@@ -68,8 +70,7 @@ restarts the launchd/systemd user service without rewriting the peer's
 not require peer updates; daemon-affecting releases carry a bundled daemon
 version stamped from `DAEMON_VERSION`.
 
-You can also install a host by hand — copy this Mac's `shared_key` into the new
-host's `~/.config/clipfan/config.json` and run the installer there. See
+You can also install a host by hand from a source clone. See
 [docs/development/building-from-source.md](docs/development/building-from-source.md).
 
 ## Daily use
@@ -125,7 +126,7 @@ copy.
 
 ```json
 {
-  "listen": ":7853",
+  "listen": "127.0.0.1:7853",
   "shared_key": "base64-32-bytes-shared-across-fleet",
   "discovery": "static",
   "static_peers": ["mac-host", "paradise-park", "flower-garden.local"],
@@ -134,9 +135,8 @@ copy.
 }
 ```
 
-The `shared_key` must be identical on every host. It's generated automatically
-on first launch — copy it to the other hosts after the first daemon starts. It
-is host-local state and never belongs in a dotfiles repo.
+The app writes and updates this file for normal use. `shared_key` is host-local
+state and never belongs in a dotfiles repo.
 
 `static_peers` is the explicit Clipfan fleet allowlist. `discovery: "static"`
 uses it as the hostname list. `discovery: "tailscale"` shells out to
@@ -145,93 +145,13 @@ are listed in `static_peers`. Empty `static_peers` with Tailscale discovery
 returns only the local host and does no non-self sync.
 `max_history` caps the clipboard history (default 200).
 
-## Security model
+## Security
 
-clipfan is designed for a fleet of hosts you already trust with one shared
-clipboard. The `shared_key` is the fleet credential: any host that has it can
-send clipboard updates and participate as a trusted peer, and any local process
-that has it can use the signed local API. Do not copy it to a host you would
-not trust with your clipboard.
-
-What clipfan protects:
-
-- **Clipboard payload confidentiality on the wire.** Peer clipboard bytes are
-  encrypted with AES-GCM using a key derived from `shared_key` before they are
-  carried over the authenticated SSH sync stream.
-- **Request integrity and replay resistance.** Signed requests bind the method,
-  request URI, timestamp, nonce, and body. Stale timestamps and repeated request
-  nonces are rejected. Mixed-version fleets fail closed; upgrade all peers
-  together.
-- **Recipient binding.** Peer clip envelopes include the intended recipient in
-  the encrypted payload, so a captured clip payload for one peer is rejected if
-  replayed to another peer.
-- **Local control endpoints.** History, config, restore, and peer-status
-  endpoints require a valid signature and are loopback-only. Successful local
-  control responses are also signed and bound to the request nonce, so GUI
-  clients can reject a spoofed loopback listener that does not know
-  `shared_key`. The unauthenticated health endpoint returns only `ok`.
-- **Signed diagnostics.** `/v1/version` requires a valid signed request, returns
-  a signed response, and exposes only the daemon version string.
-- **Local file permissions.** Config, state, history, and image storage are kept
-  under the current user's XDG config/state directories. clipfan creates and
-  repairs those directories as `0700` and the files as `0600`.
-- **User service scope.** The Linux service is a `systemd --user` unit and the
-  macOS service is a LaunchAgent. The daemon is not intended to run as root.
-- **Concealed pasteboard items.** Password-manager-style concealed or transient
-  pasteboard items are not synced or recorded.
-- **Peer timestamp bounds.** Sync envelopes are rejected if their clipboard
-  timestamp is more than two minutes ahead of the receiver's clock. This
-  prevents a trusted peer from poisoning local ordering state with an arbitrary
-  future clip.
-- **Release-time tooling.** CI builds Sparkle's `generate_appcast` from the
-  pinned Sparkle revision in this repo, then checks out that exact revision
-  before using the appcast signing key. Sparkle release notes are extracted from
-  `CHANGELOG.md` and embedded in the signed appcast.
-
-What clipfan does **not** protect against:
-
-- **A compromised trusted peer.** A host with the `shared_key` is inside the
-  trust boundary. It can send clipboard contents and disrupt sync. HMAC and
-  encryption protect against outsiders; they do not make an untrusted key holder
-  safe.
-- **The same Unix user on the same host.** A process running as the same user can
-  read the config, state, history, image files, and process environment. clipfan
-  does not try to sandbox the user's own processes from each other.
-- **Root or physical access.** A root user, device owner, or someone with
-  physical access to an unlocked desktop can read or change clipboard state.
-- **Internet exposure.** The daemon listens on `:7853` by default because peer
-  sync needs a network-reachable listener. Do not expose that port to the public
-  internet. Use a trusted LAN, a tailnet, firewall rules, or explicit static
-  peers.
-- **Traffic metadata.** Payload bytes are encrypted, but HTTP metadata such as
-  hostnames, peer addresses, timing, and message sizes can still be visible to
-  the network path unless you run over an encrypted underlay such as Tailscale.
-- **Large local clips.** The macOS app caps how much history text it searches and
-  renders at once, but clipfan still stores clipboard history up to your
-  configured history limit. A same-user process can still create large local
-  clips and consume local disk or memory.
-
-Multi-user Linux notes:
-
-- Other Unix users should not be able to read clipfan config, history, state, or
-  image files when the XDG directories are owned by the clipfan user and the
-  permissions above are intact. If a backup job, shared home directory, unusual
-  ACL, or admin policy makes those files readable to other users, that is outside
-  clipfan's guarantees.
-- Other Unix users may be able to connect to the TCP listener, but they still
-  need `shared_key` to read or change clipboard state. Without the key, the only
-  intended unauthenticated endpoint is `/v1/health`.
-- tmux integration verifies that the tmux socket directory is not a symlink, is
-  owned by the clipfan user, and is not accessible by group or other users
-  (normally `/tmp/tmux-$UID` mode `0700`). Discovered socket files must also be
-  owned by the clipfan user and not group/world-writable before clipfan calls
-  `tmux -S <socket> load-buffer -`.
-- Local daemon identity is authenticated with signed responses, but the local
-  HTTP API still uses separate loopback HTTP requests. That protects against a
-  different local Unix user who cannot read `shared_key`; it is not a sandbox
-  against the same user, root, or a host configuration that exposes the key.
-- Deleting a history item or clearing unpinned history also removes image files
-  that are no longer referenced by remaining history entries.
+clipfan is for hosts you already trust with one shared clipboard. Clipboard
+payloads are encrypted inside the SSH sync stream, local control endpoints are
+signed and loopback-only, and generated configs bind the daemon HTTP API to
+`127.0.0.1:7853`. Read [SECURITY.md](SECURITY.md) for the full trust model and
+non-goals.
 
 ## Troubleshooting
 
@@ -272,8 +192,10 @@ see at a glance whether your fleet is in sync. Click a peer to jump to its detai
 - **Fleet** — every peer as a card (health, address, sync direction), plus
   **Add peer…** (see [Getting started](#getting-started)).
 - **General** — *Launch at login*, the history limit, the global shortcut, and
-  daemon health. Developer bits (config path, daemon log, restart) live in a
-  collapsed **Developer** section.
+  **Check for Updates…**.
+- **Diagnostics** — daemon health, setup recovery, config path, daemon log, and
+  restart controls.
+- **About** — app and daemon versions plus a GitHub link.
 
 The app signs its `localhost:7853/v1/peers` loopback poll, so it needs no Local
 Network privacy grant.
@@ -301,11 +223,9 @@ If your fleet is entirely Tailscale-routed, launchd works fine.
 
 ### Topology
 
-There's no relay between non-Mac peers. If host A reaches the Mac and host B
-reaches the Mac but A and B can't see each other, an update originating at A
-reaches the Mac (and from there B, via the Mac's relay) but A→B direct does not.
-Mac-originated updates reach everyone. For a hub-and-spoke fleet (the Mac is the
-primary source) this is the right shape.
+The Mac is the relay hub. If host A reaches the Mac and host B reaches the Mac
+but A and B can't see each other directly, updates can still converge through
+the Mac. If the Mac is down, non-Mac peers do not relay through one another.
 
 ### Linux Ctrl-V image paste
 
@@ -330,6 +250,7 @@ x11-bridge, no sudo on the remote.
 - [docs/development/building-from-source.md](docs/development/building-from-source.md)
   — build the daemon and the menubar app from a source clone.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — common failures and fixes.
+- [SECURITY.md](SECURITY.md) — trust boundary, protections, and non-goals.
 - `docs/ARCHITECTURE.md` — module layout, wire format, HTTP API, recirculation
   prevention, the image-on-receive flow, clipboard history, and the tmux
   copy-capture path.

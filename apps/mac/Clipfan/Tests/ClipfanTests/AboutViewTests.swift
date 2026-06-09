@@ -2,6 +2,14 @@ import XCTest
 @testable import Clipfan
 
 final class AboutViewTests: XCTestCase {
+    func testAboutLinksToGitHub() {
+        XCTAssertEqual(aboutGitHubURL.absoluteString, "https://github.com/prime-radiant-inc/clipfan")
+    }
+
+    func testAboutUsesBundledAppIconName() {
+        XCTAssertEqual(aboutAppIconResourceName, "AppIcon")
+    }
+
     func testVersionSummaryWithBoth() {
         XCTAssertEqual(aboutVersionSummary(appVersion: "0.3.29", daemonVersion: "0.3.29"),
                        "App 0.3.29 · Daemon 0.3.29")

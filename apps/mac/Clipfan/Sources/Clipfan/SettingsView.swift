@@ -3,7 +3,7 @@ import ServiceManagement
 import SwiftUI
 
 /// Drives which Settings pane is shown so menu/AppKit call sites can open Settings
-/// to a specific tab — the menubar "About clipfan…" lands directly on the About pane.
+/// to a specific tab.
 @MainActor
 final class SettingsRoute: ObservableObject {
     static let shared = SettingsRoute()
@@ -278,6 +278,22 @@ struct SafeModeWarningPanel: View {
 }
 
 
+enum GeneralSettingsAction {
+    case checkForUpdates
+
+    var title: String {
+        switch self {
+        case .checkForUpdates: return "Check for Updates…"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .checkForUpdates: return "arrow.triangle.2.circlepath"
+        }
+    }
+}
+
 struct GeneralTab: View {
     @EnvironmentObject var daemon: DaemonClient
     @StateObject private var loginItem = LoginItemManager.shared
@@ -318,6 +334,15 @@ struct GeneralTab: View {
                     Task { await daemon.setMaxHistory(n) }
                 }
                 KeyboardShortcuts.Recorder("Global shortcut", name: .toggleClipboard)
+            }
+
+            Section("Updates") {
+                Button {
+                    Updater.shared.checkForUpdates()
+                } label: {
+                    Label(GeneralSettingsAction.checkForUpdates.title,
+                          systemImage: GeneralSettingsAction.checkForUpdates.systemImage)
+                }
             }
         }
         .formStyle(.grouped)
