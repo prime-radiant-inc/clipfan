@@ -41,6 +41,7 @@ final class CommandPanelController: NSObject, NSWindowDelegate {
             defer: true
         )
         panel.title = "Clipboard"
+        panel.identifier = ApplicationActivationController.commandPanelWindowIdentifier
         panel.titleVisibility = .visible
         panel.titlebarAppearsTransparent = false
         panel.isMovableByWindowBackground = true
@@ -76,6 +77,7 @@ final class CommandPanelController: NSObject, NSWindowDelegate {
     func hide() {
         dismissOnResignKey = false
         panel?.orderOut(nil)
+        ApplicationActivationController.shared.update()
     }
 
     private func position(_ panel: NSPanel) {

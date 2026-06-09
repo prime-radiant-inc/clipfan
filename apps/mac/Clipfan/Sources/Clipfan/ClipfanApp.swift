@@ -84,6 +84,7 @@ private struct MenuBarLabel: View {
 /// is being run for the first time and must install + onboard.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ApplicationActivationController.shared.start()
         Task { @MainActor in
             await DaemonClient.shared.refresh()
             let binaryInstalled = Bootstrap.binaryInstalled
@@ -125,5 +126,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             await DaemonClient.shared.refresh()
         }
+    }
+}
+
+@MainActor
+final class ApplicationActivationController {
+    static let shared = ApplicationActivationController()
+    static let commandPanelWindowIdentifier = NSUserInterfaceItemIdentifier("clipfan.command-panel")
+
+    private var observers: [NSObjectProtocol] = []
+
+    private init() {}
+
+    static func activationPolicy(hasVisibleClipfanWindow: Bool) -> NSApplication.ActivationPolicy {
+        hasVisibleClipfanWindow ? .regular : .accessory
+    }
+
+    func start() {
+        guard observers.isEmpty else { return }
+
+        [
+            NSWindow.didBecomeKeyNotification,
+            NSWindow.didResignKeyNotification,
+            NSWindow.didBecomeMainNotification,
+            NSWindow.didResignMainNotification,
+            NSWindow.didMiniaturizeNotification,
+            NSWindow.didDeminiaturizeNotification,
+            NSWindow.willCloseNotification,
+        ].forEach { name in
+            observers.append(NotificationCenter.default.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.update()
+                }
+            })
+        }
+
+        update()
+    }
+
+    func update() {
+        NSApp.setActivationPolicy(Self.activationPolicy(
+            hasVisibleClipfanWindow: Self.hasVisibleClipfanWindow(in: NSApp.windows)
+        ))
+    }
+
+    static func hasVisibleClipfanWindow(in windows: [NSWindow]) -> Bool {
+        windows.contains(where: isVisibleClipfanWindow)
+    }
+
+    static func isVisibleClipfanWindow(visible: Bool,
+                                       miniaturized: Bool,
+                                       panel: Bool,
+                                       identifier: NSUserInterfaceItemIdentifier?) -> Bool {
+        guard visible, !miniaturized else { return false }
+        return !panel || identifier == commandPanelWindowIdentifier
+    }
+
+    private static func isVisibleClipfanWindow(_ window: NSWindow) -> Bool {
+        isVisibleClipfanWindow(
+            visible: window.isVisible,
+            miniaturized: window.isMiniaturized,
+            panel: window is NSPanel,
+            identifier: window.identifier
+        )
     }
 }

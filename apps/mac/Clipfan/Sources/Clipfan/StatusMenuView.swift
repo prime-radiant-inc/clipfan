@@ -17,20 +17,32 @@ enum StatusMenuCommand: CaseIterable, Identifiable {
         }
     }
 
-    var systemImage: String {
-        switch self {
-        case .openClipboard: return "doc.on.clipboard"
-        case .settings:      return "gearshape"
-        case .quit:          return "power"
-        }
-    }
-
     func shortcut(toggleShortcutLabel: String) -> String {
         switch self {
         case .openClipboard: return toggleShortcutLabel
         case .settings:      return "⌘,"
         case .quit:          return "⌘Q"
         }
+    }
+}
+
+struct StatusMenuCommandRow: Equatable {
+    let command: StatusMenuCommand
+    let title: String
+    let shortcut: String
+}
+
+extension StatusMenuCommandRow: Identifiable {
+    var id: StatusMenuCommand { command }
+}
+
+func statusMenuCommandRows(toggleShortcutLabel: String) -> [StatusMenuCommandRow] {
+    StatusMenuCommand.allCases.map { command in
+        StatusMenuCommandRow(
+            command: command,
+            title: command.title,
+            shortcut: command.shortcut(toggleShortcutLabel: toggleShortcutLabel)
+        )
     }
 }
 
@@ -43,11 +55,9 @@ struct StatusMenuView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(StatusMenuCommand.allCases) { command in
-                menuButton(command.title,
-                           systemImage: command.systemImage,
-                           shortcut: command.shortcut(toggleShortcutLabel: toggleShortcutLabel)) {
-                    perform(command)
+            ForEach(statusMenuCommandRows(toggleShortcutLabel: toggleShortcutLabel)) { row in
+                menuButton(row.title, shortcut: row.shortcut) {
+                    perform(row.command)
                 }
             }
 
@@ -103,14 +113,9 @@ struct StatusMenuView: View {
 
     // MARK: row helpers
 
-    private func menuButton(_ title: String, systemImage: String, shortcut: String,
-                            action: @escaping () -> Void) -> some View {
+    private func menuButton(_ title: String, shortcut: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 8) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
                 Text(title).font(.system(size: 13))
                     .lineLimit(1)
                 Spacer()

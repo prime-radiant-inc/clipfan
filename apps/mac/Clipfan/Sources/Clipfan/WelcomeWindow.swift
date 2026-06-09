@@ -54,5 +54,6 @@ final class WelcomeWindowController: NSObject, NSWindowDelegate {
 
     func close() {
         window?.orderOut(nil)
+        ApplicationActivationController.shared.update()
     }
 }
