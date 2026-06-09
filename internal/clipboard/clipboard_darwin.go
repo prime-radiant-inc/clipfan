@@ -30,7 +30,7 @@ func (b *macBackend) Read() (Content, error) {
 		c.Concealed = concealedFn()
 		return c, nil
 	}
-	out, err := exec.Command("pbpaste").Output()
+	out, err := pasteboardCommand("pbpaste").Output()
 	if err != nil {
 		return Content{}, err
 	}
@@ -74,9 +74,36 @@ func concealed() bool {
 }
 
 func (macBackend) WriteText(text []byte) error {
-	cmd := exec.Command("pbcopy")
+	cmd := pasteboardCommand("pbcopy")
 	cmd.Stdin = bytes.NewReader(text)
 	return cmd.Run()
+}
+
+func pasteboardCommand(name string, args ...string) *exec.Cmd {
+	cmd := exec.Command(name, args...)
+	cmd.Env = utf8PasteboardEnv(os.Environ())
+	return cmd
+}
+
+func utf8PasteboardEnv(env []string) []string {
+	out := make([]string, 0, len(env)+3)
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			out = append(out, entry)
+			continue
+		}
+		switch key {
+		case "LANG", "LC_ALL", "LC_CTYPE":
+			continue
+		default:
+			out = append(out, entry)
+		}
+	}
+	// pbcopy/pbpaste decode text according to locale. launchd jobs often lack a
+	// UTF-8 locale, which makes Unicode clipboard bytes round-trip as Mac Roman.
+	out = append(out, "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8", "LC_CTYPE=UTF-8")
+	return out
 }
 
 // WriteImage shells out to the bundled clipfan-pasteboard-helper Swift

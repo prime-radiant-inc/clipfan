@@ -7,6 +7,30 @@ import (
 	"time"
 )
 
+func TestPasteboardCommandForcesUTF8Locale(t *testing.T) {
+	env := utf8PasteboardEnv([]string{
+		"PATH=/usr/bin:/bin",
+		"LANG=C",
+		"LC_ALL=C",
+		"LC_CTYPE=C",
+		"CLIPFAN_TEST=preserved",
+	})
+	got := envValues(env)
+
+	if got["LANG"] != "en_US.UTF-8" {
+		t.Fatalf("LANG = %q, want en_US.UTF-8", got["LANG"])
+	}
+	if got["LC_ALL"] != "en_US.UTF-8" {
+		t.Fatalf("LC_ALL = %q, want en_US.UTF-8", got["LC_ALL"])
+	}
+	if got["LC_CTYPE"] != "UTF-8" {
+		t.Fatalf("LC_CTYPE = %q, want UTF-8", got["LC_CTYPE"])
+	}
+	if got["CLIPFAN_TEST"] != "preserved" {
+		t.Fatalf("CLIPFAN_TEST = %q, want preserved", got["CLIPFAN_TEST"])
+	}
+}
+
 // TestApplyConcealmentCachesByHash proves the concealment probe (which forks
 // the Swift helper) only runs when the clipboard text actually changes, not on
 // every poll. It drives the real cache decision used by Read via a counting
@@ -54,4 +78,17 @@ func TestApplyConcealmentCachesByHash(t *testing.T) {
 	if third.Concealed {
 		t.Fatalf("changed read: expected Concealed=false from probe")
 	}
+}
+
+func envValues(env []string) map[string]string {
+	out := make(map[string]string, len(env))
+	for _, entry := range env {
+		for i, ch := range entry {
+			if ch == '=' {
+				out[entry[:i]] = entry[i+1:]
+				break
+			}
+		}
+	}
+	return out
 }
