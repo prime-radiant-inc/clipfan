@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.1] - 2026-06-10
+
+### Added
+
+- Animated the menu bar icon so new local clipboard writes fan a card into the stack.
+
+### Changed
+
+- Removed row icons from the menu bar dropdown.
+- Open Clipfan windows now participate in the macOS app switcher.
+- Aligned the app icon, About screen icon, and menu bar card stack artwork.
+
+### Fixed
+
+- Prevented mesh-heal from scanning virtual/private bridge address piles by filtering Docker, bridge, VM, and tunnel interfaces before roster-read advertises LAN candidates.
+- Mesh-heal now fails closed when a host reports an oversized LAN candidate list, keeping the primary address instead of keyscanning hundreds of self-reported candidates.
+
 ## [1.0.0] - 2026-06-09
 
 ### Removed
