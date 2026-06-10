@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.4] - 2026-06-10
+
+### Fixed
+
+- Restored subtle menu bar card faces so dark mode and the copy animation read as a stacked hand without regressing to a solid square.
+
 ## [1.0.3] - 2026-06-10
 
 ### Fixed
