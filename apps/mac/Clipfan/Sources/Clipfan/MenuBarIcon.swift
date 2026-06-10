@@ -27,6 +27,7 @@ struct MenuBarCopyAnimationTracker {
 
 enum ClipfanMenuBarIconArtwork {
     private static let iconSize = NSSize(width: 22, height: 18)
+    private static let menuBarFillOpacity: CGFloat = 0.42
     static let appIconCardSlots = MenuBarFanCardSlot.steady
 
     static func stackImage() -> NSImage {
@@ -60,6 +61,9 @@ enum ClipfanMenuBarIconArtwork {
                 cornerHeight: MenuBarFanCardSlot.cornerRadius,
                 transform: nil
             )
+            context.addPath(path)
+            context.setFillColor(NSColor.black.withAlphaComponent(menuBarFillOpacity).cgColor)
+            context.fillPath()
             context.addPath(path)
             context.setStrokeColor(NSColor.black.withAlphaComponent(0.88).cgColor)
             context.setLineWidth(MenuBarFanCardSlot.strokeWidth)
@@ -103,7 +107,7 @@ enum ClipfanMenuBarIconArtwork {
             topCenter: topCenter,
             size: MenuBarFanCardSlot.size,
             cornerRadius: MenuBarFanCardSlot.cornerRadius,
-            fillColor: .clear,
+            fillColor: NSColor.black.withAlphaComponent(slot.opacity * menuBarFillOpacity),
             strokeColor: NSColor.black.withAlphaComponent(slot.opacity),
             strokeWidth: MenuBarFanCardSlot.strokeWidth
         )
