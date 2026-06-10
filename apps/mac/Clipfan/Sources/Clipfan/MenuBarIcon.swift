@@ -35,9 +35,35 @@ enum ClipfanMenuBarIconArtwork {
         }
     }
 
+    static func steadyLabelImage() -> NSImage {
+        stackImage()
+    }
+
     static func frontCardImage() -> NSImage {
         makeImage { context in
             drawMenuBarCard(context, slot: .front)
+        }
+    }
+
+    static func animatedCardImage() -> NSImage {
+        makeImage(size: MenuBarFanCardSlot.size) { context in
+            let strokeInset = MenuBarFanCardSlot.strokeWidth / 2
+            let rect = CGRect(
+                x: strokeInset,
+                y: strokeInset,
+                width: MenuBarFanCardSlot.size.width - MenuBarFanCardSlot.strokeWidth,
+                height: MenuBarFanCardSlot.size.height - MenuBarFanCardSlot.strokeWidth
+            )
+            let path = CGPath(
+                roundedRect: rect,
+                cornerWidth: MenuBarFanCardSlot.cornerRadius,
+                cornerHeight: MenuBarFanCardSlot.cornerRadius,
+                transform: nil
+            )
+            context.addPath(path)
+            context.setStrokeColor(NSColor.black.withAlphaComponent(0.88).cgColor)
+            context.setLineWidth(MenuBarFanCardSlot.strokeWidth)
+            context.strokePath()
         }
     }
 
@@ -77,8 +103,8 @@ enum ClipfanMenuBarIconArtwork {
             topCenter: topCenter,
             size: MenuBarFanCardSlot.size,
             cornerRadius: MenuBarFanCardSlot.cornerRadius,
-            fillColor: NSColor.black.withAlphaComponent(slot.opacity),
-            strokeColor: NSColor.black.withAlphaComponent(0.88),
+            fillColor: .clear,
+            strokeColor: NSColor.black.withAlphaComponent(slot.opacity),
             strokeWidth: MenuBarFanCardSlot.strokeWidth
         )
     }
@@ -245,11 +271,8 @@ struct ClipfanMenuBarIcon: View {
 
 private struct ClipfanMenuBarStaticIcon: View {
     var body: some View {
-        ZStack {
-            ForEach(Array(MenuBarFanCardSlot.steady.enumerated()), id: \.offset) { _, slot in
-                MenuBarFanCardView(slot: slot)
-            }
-        }
+        Image(nsImage: ClipfanMenuBarIconArtwork.steadyLabelImage())
+            .renderingMode(.template)
     }
 }
 
@@ -281,12 +304,9 @@ private struct MenuBarFanCardView: View {
     let slot: MenuBarFanCardSlot
 
     var body: some View {
-        RoundedRectangle(cornerRadius: MenuBarFanCardSlot.cornerRadius, style: .continuous)
-            .fill(.primary.opacity(slot.opacity))
-            .overlay(
-                RoundedRectangle(cornerRadius: MenuBarFanCardSlot.cornerRadius, style: .continuous)
-                    .stroke(.primary.opacity(0.88), lineWidth: MenuBarFanCardSlot.strokeWidth)
-            )
+        Image(nsImage: ClipfanMenuBarIconArtwork.animatedCardImage())
+            .renderingMode(.template)
+            .opacity(slot.opacity)
             .frame(width: MenuBarFanCardSlot.size.width, height: MenuBarFanCardSlot.size.height)
             .scaleEffect(slot.scale, anchor: UnitPoint(x: 0.5, y: 0))
             .rotationEffect(.degrees(slot.rotation), anchor: UnitPoint(x: 0.5, y: 0))
