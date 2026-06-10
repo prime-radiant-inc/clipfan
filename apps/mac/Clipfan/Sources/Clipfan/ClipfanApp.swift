@@ -85,6 +85,7 @@ private struct MenuBarLabel: View {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         ApplicationActivationController.shared.start()
+        Updater.shared.recommendUpdateAtStartup()
         Task { @MainActor in
             await DaemonClient.shared.refresh()
             let binaryInstalled = Bootstrap.binaryInstalled

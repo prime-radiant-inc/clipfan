@@ -1,61 +1,18 @@
 import KeyboardShortcuts
 import SwiftUI
 
-/// Top-level commands shown before the fleet status rows.
-enum StatusMenuCommand: CaseIterable, Identifiable {
-    case openClipboard
-    case settings
-    case quit
-
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .openClipboard: return "Open Clipboard"
-        case .settings:      return "Settings…"
-        case .quit:          return "Quit"
-        }
-    }
-
-    func shortcut(toggleShortcutLabel: String) -> String {
-        switch self {
-        case .openClipboard: return toggleShortcutLabel
-        case .settings:      return "⌘,"
-        case .quit:          return "⌘Q"
-        }
-    }
-}
-
-struct StatusMenuCommandRow: Equatable {
-    let command: StatusMenuCommand
-    let title: String
-    let shortcut: String
-}
-
-extension StatusMenuCommandRow: Identifiable {
-    var id: StatusMenuCommand { command }
-}
-
-func statusMenuCommandRows(toggleShortcutLabel: String) -> [StatusMenuCommandRow] {
-    StatusMenuCommand.allCases.map { command in
-        StatusMenuCommandRow(
-            command: command,
-            title: command.title,
-            shortcut: command.shortcut(toggleShortcutLabel: toggleShortcutLabel)
-        )
-    }
-}
-
 /// The menubar popover (MenuBarExtra .window style) — a small custom panel so the
 /// fleet can show colored health dots and bidirectional sync times, matching the
 /// Settings → Fleet cards. The native .menu style can't render colored dots.
 struct StatusMenuView: View {
     @EnvironmentObject var daemon: DaemonClient
     @Environment(\.openWindow) var openWindow
+    @ObservedObject private var updater = Updater.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(statusMenuCommandRows(toggleShortcutLabel: toggleShortcutLabel)) { row in
+            ForEach(statusMenuCommandRows(toggleShortcutLabel: toggleShortcutLabel,
+                                          appUpdateAvailable: updater.isUpdateAvailable)) { row in
                 menuButton(row.title, shortcut: row.shortcut) {
                     perform(row.command)
                 }
@@ -78,6 +35,8 @@ struct StatusMenuView: View {
         switch command {
         case .openClipboard:
             CommandPanelController.shared.show()
+        case .installUpdate:
+            Updater.shared.presentAvailableUpdate()
         case .settings:
             NSApp.activate(ignoringOtherApps: true)
             openWindow(id: "settings")
