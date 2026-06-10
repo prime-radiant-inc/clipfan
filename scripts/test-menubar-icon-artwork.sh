@@ -97,6 +97,18 @@ func alphaAt(_ image: NSImage, x: CGFloat, y: CGFloat, scale: Int = 8) -> Double
     return rep.colorAt(x: Int(x * CGFloat(scale)), y: Int(y * CGFloat(scale)))!.alphaComponent
 }
 
+func requireClose(_ actual: CGFloat, _ expected: CGFloat, accuracy: CGFloat, _ message: String) {
+    require(abs(actual - expected) <= accuracy, "\(message): expected \(expected), got \(actual)")
+}
+
+func frame(_ frames: [MenuBarFanCardFrame], id: MenuBarFanCardFrame.ID) -> MenuBarFanCardFrame {
+    guard let frame = frames.first(where: { $0.id == id }) else {
+        fputs("missing animation frame for \(id)\n", stderr)
+        exit(1)
+    }
+    return frame
+}
+
 struct PixelToneStats {
     let bright: Int
     let dark: Int
@@ -173,6 +185,36 @@ struct MenuBarIconContract {
         let darkStats = renderedToneStats(colorScheme: .dark)
         require(darkStats.visible > 0, "dark mode menu bar label must render visible artwork")
         require(darkStats.bright > darkStats.visible * 8 / 10, "dark mode menu bar label must render light template artwork")
+
+        let startFrames = MenuBarFanInsertTimeline.frames(progress: 0)
+        let earlyFrames = MenuBarFanInsertTimeline.frames(progress: 0.10)
+        let midFrames = MenuBarFanInsertTimeline.frames(progress: 0.50)
+        let endFrames = MenuBarFanInsertTimeline.frames(progress: 1)
+        require(startFrames.count == 4, "copy animation must render four cards")
+
+        let incomingStart = frame(startFrames, id: .incoming).slot
+        let incomingEarly = frame(earlyFrames, id: .incoming).slot
+        let incomingMid = frame(midFrames, id: .incoming).slot
+        let incomingEnd = frame(endFrames, id: .incoming).slot
+        require(incomingStart.offsetX > MenuBarFanCardSlot.front.offsetX, "incoming card must start to the right of the stack")
+        require(incomingEarly.offsetX < incomingStart.offsetX, "incoming card must start sliding before existing cards move")
+        require(incomingMid.offsetX < incomingEarly.offsetX, "incoming card must keep sliding through the hand")
+        requireClose(incomingEnd.offsetX, MenuBarFanCardSlot.front.offsetX, accuracy: 0.01, "incoming card must finish in the front slot")
+
+        let oldFrontEarly = frame(earlyFrames, id: .oldFront).slot
+        requireClose(oldFrontEarly.offsetX, MenuBarFanCardSlot.front.offsetX, accuracy: 0.01, "old front card must not move at the same time as incoming card")
+
+        let oldFrontMid = frame(midFrames, id: .oldFront).slot
+        require(oldFrontMid.offsetX < MenuBarFanCardSlot.front.offsetX, "old front card must move toward the middle after incoming starts")
+        let oldFrontEnd = frame(endFrames, id: .oldFront).slot
+        requireClose(oldFrontEnd.offsetX, MenuBarFanCardSlot.middle.offsetX, accuracy: 0.01, "old front card must finish in the middle slot")
+
+        let oldMiddleEnd = frame(endFrames, id: .oldMiddle).slot
+        requireClose(oldMiddleEnd.offsetX, MenuBarFanCardSlot.back.offsetX, accuracy: 0.01, "old middle card must finish in the back slot")
+
+        let oldBackMid = frame(midFrames, id: .oldBack).slot
+        let oldBackEnd = frame(endFrames, id: .oldBack).slot
+        require(oldBackEnd.offsetX < oldBackMid.offsetX, "old back card must exit left at the end of the animation")
     }
 }
 SWIFT

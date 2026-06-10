@@ -225,10 +225,6 @@ struct MenuBarFanInsertTiming {
     var dismissDelayNanoseconds: UInt64 {
         UInt64((duration + 0.08) * 1_000_000_000)
     }
-
-    func animation(delay: Double) -> Animation {
-        .timingCurve(0.24, 0.86, 0.2, 1, duration: max(0.12, duration - delay)).delay(delay)
-    }
 }
 
 struct MenuBarFanCardSlot: Hashable {
@@ -254,15 +250,82 @@ struct MenuBarFanCardSlot: Hashable {
     static let steady = [back, middle, front]
 }
 
+enum MenuBarFanCardIdentity: Hashable {
+    case oldBack
+    case oldMiddle
+    case oldFront
+    case incoming
+}
+
+struct MenuBarFanCardFrame: Identifiable, Hashable {
+    typealias ID = MenuBarFanCardIdentity
+
+    let id: MenuBarFanCardIdentity
+    let slot: MenuBarFanCardSlot
+}
+
+enum MenuBarFanInsertTimeline {
+    static func frames(progress: CGFloat, timing: MenuBarFanInsertTiming = .quickMenuBar) -> [MenuBarFanCardFrame] {
+        let clampedProgress = min(max(progress, 0), 1)
+        return [
+            MenuBarFanCardFrame(
+                id: .oldBack,
+                slot: slot(from: .back, to: .discarded, progress: clampedProgress, delay: timing.backDelay, timing: timing)
+            ),
+            MenuBarFanCardFrame(
+                id: .oldMiddle,
+                slot: slot(from: .middle, to: .back, progress: clampedProgress, delay: timing.middleDelay, timing: timing)
+            ),
+            MenuBarFanCardFrame(
+                id: .oldFront,
+                slot: slot(from: .front, to: .middle, progress: clampedProgress, delay: timing.frontDelay, timing: timing)
+            ),
+            MenuBarFanCardFrame(
+                id: .incoming,
+                slot: slot(from: .incoming, to: .front, progress: clampedProgress, delay: 0, timing: timing)
+            ),
+        ]
+    }
+
+    private static func slot(
+        from start: MenuBarFanCardSlot,
+        to end: MenuBarFanCardSlot,
+        progress: CGFloat,
+        delay: Double,
+        timing: MenuBarFanInsertTiming
+    ) -> MenuBarFanCardSlot {
+        let startProgress = CGFloat(delay / timing.duration)
+        let localProgress = min(max((progress - startProgress) / (1 - startProgress), 0), 1)
+        let easedProgress = smoothstep(localProgress)
+        return MenuBarFanCardSlot(
+            offsetX: interpolate(start.offsetX, end.offsetX, easedProgress),
+            topY: interpolate(start.topY, end.topY, easedProgress),
+            rotation: interpolate(start.rotation, end.rotation, easedProgress),
+            opacity: Double(interpolate(CGFloat(start.opacity), CGFloat(end.opacity), easedProgress)),
+            scale: interpolate(start.scale, end.scale, easedProgress),
+            zIndex: Double(interpolate(CGFloat(start.zIndex), CGFloat(end.zIndex), easedProgress))
+        )
+    }
+
+    private static func smoothstep(_ value: CGFloat) -> CGFloat {
+        value * value * (3 - 2 * value)
+    }
+
+    private static func interpolate(_ start: CGFloat, _ end: CGFloat, _ progress: CGFloat) -> CGFloat {
+        start + (end - start) * progress
+    }
+}
+
 struct ClipfanMenuBarIcon: View {
     let isAnimatingCopy: Bool
     var animationGeneration = 0
     var timing = MenuBarFanInsertTiming.quickMenuBar
+    var animationProgress: CGFloat?
 
     var body: some View {
         ZStack {
             if isAnimatingCopy {
-                ClipfanMenuBarFanInsertIcon(timing: timing)
+                ClipfanMenuBarFanInsertIcon(timing: timing, animationProgress: animationProgress)
                     .id(animationGeneration)
             } else {
                 ClipfanMenuBarStaticIcon()
@@ -282,23 +345,27 @@ private struct ClipfanMenuBarStaticIcon: View {
 
 private struct ClipfanMenuBarFanInsertIcon: View {
     let timing: MenuBarFanInsertTiming
-    @State private var inserted = false
+    var animationProgress: CGFloat?
+    @State private var startDate = Date()
 
     var body: some View {
-        ZStack {
-            MenuBarFanCardView(slot: inserted ? .discarded : .back)
-                .animation(timing.animation(delay: timing.backDelay), value: inserted)
-            MenuBarFanCardView(slot: inserted ? .back : .middle)
-                .animation(timing.animation(delay: timing.middleDelay), value: inserted)
-            MenuBarFanCardView(slot: inserted ? .middle : .front)
-                .animation(timing.animation(delay: timing.frontDelay), value: inserted)
-            MenuBarFanCardView(slot: inserted ? .front : .incoming)
-                .animation(timing.animation(delay: 0), value: inserted)
+        if let animationProgress {
+            cardStack(progress: animationProgress)
+        } else {
+            TimelineView(.periodic(from: startDate, by: 1.0 / 60.0)) { context in
+                let progress = CGFloat(context.date.timeIntervalSince(startDate) / timing.duration)
+                cardStack(progress: progress)
+            }
+            .onAppear {
+                startDate = Date()
+            }
         }
-        .onAppear {
-            inserted = false
-            DispatchQueue.main.async {
-                inserted = true
+    }
+
+    private func cardStack(progress: CGFloat) -> some View {
+        ZStack {
+            ForEach(MenuBarFanInsertTimeline.frames(progress: progress, timing: timing)) { frame in
+                MenuBarFanCardView(slot: frame.slot)
             }
         }
     }
