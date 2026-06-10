@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.5] - 2026-06-10
+
+### Added
+
+- The menu bar now shows **Install Update…** when Sparkle finds a new app release, and startup probes recommend available app updates through Sparkle's standard installer.
+
+### Fixed
+
+- Fixed the menu bar copy animation so new cards slide into the stack in the same staged fan motion as the prototype.
+
 ## [1.0.4] - 2026-06-10
 
 ### Fixed
