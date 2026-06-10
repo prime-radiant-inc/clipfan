@@ -139,12 +139,8 @@ func uid() string {
 }
 
 // TestLoadBufferAllUsesLoadBuffer characterizes how the daemon writes received
-// clips into tmux: via `load-buffer` reading from stdin. (tmux treats
-// load-buffer and set-buffer as the same operation differing only in data
-// source, so this is documentation of the chosen mechanism, not a loop guard.
-// Loop-safety for the tmux hook bridge lives in the daemon's seen-set: see
-// TestImagePathWritebackDedupedHeadless.) A fake `tmux` on PATH records the
-// subcommand actually invoked.
+// clips into tmux: via `load-buffer` reading from stdin. A fake `tmux` on PATH
+// records the subcommand actually invoked.
 func TestLoadBufferAllUsesLoadBuffer(t *testing.T) {
 	tmp := shortTempDir(t)
 	t.Setenv("TMUX_TMPDIR", tmp)

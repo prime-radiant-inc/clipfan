@@ -209,38 +209,17 @@ copies through `clipfan copy`, which applies them through the signed loopback
 current endpoint on the local daemon (and emits OSC 52 to the client tty as a
 fallback).
 
-tmux exposes a copy through more than one path, so the snippet covers all of
-them:
+The snippet covers copy-mode yanks only: `y`, `Enter`, and `MouseDragEnd1Pane`,
+bound in *both* the `copy-mode-vi` and `copy-mode` (emacs) tables, because the
+active table depends on the resolved `mode-keys` and a default binding in the
+other table would otherwise copy only to the tmux buffer.
 
-- **Copy-mode yanks** — `y`, `Enter`, and `MouseDragEnd1Pane`, bound in *both*
-  the `copy-mode-vi` and `copy-mode` (emacs) tables, because the active table
-  depends on the resolved `mode-keys` and a default binding in the other table
-  would otherwise copy only to the tmux buffer.
-- **Paste-buffer writes** — full-screen TUIs that capture the mouse (e.g. Claude
-  Code) run their own selection and write it straight into the tmux paste buffer,
-  bypassing copy-mode. The `after-set-buffer` and `after-load-buffer` hooks fire
-  on those writes and pipe the buffer through `clipfan copy`.
-
-### Why both buffer hooks, and why it doesn't loop
-
-Different tools use different commands to set the buffer — Claude Code uses
-`load-buffer`, others use `set-buffer` — so the snippet hooks both. tmux's own
-docs describe `load-buffer` and `set-buffer` as the same operation differing only
-in data source (a file/stdin vs an inline argument), so the *verb* is not a
-reliable signal for "who wrote this."
-
-That matters because the daemon itself writes every received clip into the tmux
-buffer (via `tmux.LoadBufferAll`, which uses `load-buffer`) so `prefix-]` mirrors
-the OS clipboard. Naively, the `after-load-buffer` hook would then fire on the
-daemon's own writeback and re-broadcast it — an echo loop. The guard is content
-identity, not the verb: when the daemon applies a received clip it records it as
-the `currentClip` (see Recirculation prevention). When the hook re-submits the
-same bytes through `clipfan copy` under a *fresh* clip-ID, `onReceive` consults
-`isEcho`, recognises the content as what it just wrote, and drops it — clip-ID
-dedup alone cannot, because the re-submission carries a new ID. For an image the
-buffer holds the on-disk path, which the `IsImageStorePath` guard drops on its
-own. `daemon/hookloop_test.go` and the clip-ID echo tests
-(`daemon/clipid_test.go`) cover these paths.
+The snippet intentionally does not install global `after-set-buffer` or
+`after-load-buffer` hooks. The daemon itself writes every received clip into the
+tmux buffer (via `tmux.LoadBufferAll`, which uses `load-buffer`) so `prefix-]`
+mirrors the OS clipboard. Treating every tmux buffer write as a new local copy
+can re-submit daemon writebacks, stale buffers from another tmux socket, or
+temporary test data as fresh fleet updates.
 
 ## Persistence
 

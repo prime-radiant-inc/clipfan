@@ -370,7 +370,7 @@ struct AddPeerSheet: View {
             Toggle(isOn: $withTmux) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Set up tmux copy integration")
-                    Text("Edits ~/.tmux.conf so copies inside tmux (incl. Claude Code) sync to the fleet.")
+                    Text("Edits ~/.tmux.conf so tmux copy-mode yanks sync to the fleet.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

@@ -656,10 +656,9 @@ func (d *Daemon) onReceive(c clipboard.Content, origin string) {
 		return
 	}
 
-	// Content we just wrote to our own clipboard coming back — e.g. the tmux
-	// after-load-buffer hook re-submitting received text via `clipfan copy` under
-	// a fresh clip-ID. Clip-ID dedup can't catch a re-originated ID, so suppress
-	// by content here the same way pollOnce does.
+	// Content we just wrote to our own clipboard coming back through `clipfan copy`
+	// under a fresh clip-ID. Clip-ID dedup can't catch a re-originated ID, so
+	// suppress by content here the same way pollOnce does.
 	if d.isEcho(c) {
 		return
 	}

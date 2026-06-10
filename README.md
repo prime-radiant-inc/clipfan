@@ -1,11 +1,10 @@
 # clipfan
 
 One clipboard across a fleet of macOS + Linux hosts. Copy on any machine —
-your Mac, a Linux box over SSH, inside tmux, inside Claude Code — and it lands
-everywhere: the Mac pasteboard, every remote's OS clipboard, and every running
-tmux paste buffer. Built so remote image paste into Claude Code and Codex CLI
-"just works" without OSC 52 support, without Xvfb, and without per-SSH session
-state.
+your Mac, a Linux box over SSH, or tmux copy-mode — and it lands everywhere:
+the Mac pasteboard, every remote's OS clipboard, and every running tmux paste
+buffer. Built so remote image paste into Claude Code and Codex CLI "just works"
+without OSC 52 support, without Xvfb, and without per-SSH session state.
 
 ## How it works
 
@@ -96,25 +95,19 @@ does. The installer writes the snippet to `~/.config/clipfan/tmux.conf` and adds
 re-running won't duplicate it). Reload with `tmux source-file ~/.tmux.conf` or
 restart tmux.
 
-The snippet captures every way a copy happens in tmux:
+The snippet captures tmux copy-mode yanks: `y`, `Enter`, and mouse-drag, bound
+in both the vi and emacs copy-mode tables, pipe the selection through
+`clipfan copy`.
 
-- **Copy-mode yanks** — `y`, `Enter`, and mouse-drag, bound in both the vi and
-  emacs copy-mode tables, pipe the selection through `clipfan copy`.
-- **Full-screen TUIs that grab the mouse** (e.g. Claude Code) do their own
-  selection and push it straight into the tmux paste buffer, bypassing
-  copy-mode. `after-set-buffer` and `after-load-buffer` hooks catch those and
-  pipe them through `clipfan copy` too.
-
-Each path also emits OSC 52 to the client tty as a fallback, so a terminal
+That path also emits OSC 52 to the client tty as a fallback, so a terminal
 connected from a non-clipfan host (Blink on a phone, kitty on a laptop without
 clipfan) still grabs the text. Apple Terminal ignores OSC 52 — the daemon path
 is what makes it work there.
 
-Loop-safety is structural: when the daemon writes a *received* clip into the
-tmux buffer, it remembers that content as the current clip, so the hook-fired
-re-copy — which arrives under a fresh clip-ID — is recognised as its own write
-and dropped, rather than bouncing around the fleet. See `docs/ARCHITECTURE.md`
-for the detail.
+The snippet intentionally does not install global tmux buffer hooks. Received
+clips already get written to tmux for `prefix-]`, and treating every tmux buffer
+change as a new local copy can turn daemon writebacks or unrelated tmux servers
+into duplicate fleet updates.
 
 The snippet lives in clipfan (`dist/tmux.conf.snippet`) and is the single source
 of truth; dotfiles should `source-file` the installed path rather than keep a

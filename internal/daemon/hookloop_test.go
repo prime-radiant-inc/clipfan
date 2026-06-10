@@ -12,20 +12,19 @@ import (
 // reads return nothing and writes are no-ops. This is the case where the
 // OS-clipboard readback in onReceive cannot register the written-back path, so
 // the explicit textPayload registration is the only thing preventing a loop
-// when a tmux after-load-buffer hook re-submits the buffer content.
+// when clipfan copy re-submits the buffer content.
 type headlessFake struct{}
 
 func (headlessFake) Read() (clipboard.Content, error) { return clipboard.Content{}, nil }
 func (headlessFake) WriteText([]byte) error           { return nil }
 func (headlessFake) WriteImage([]byte, string) error  { return nil }
 
-// TestImagePathWritebackDedupedHeadless reproduces the hook-bridge loop: on a
-// headless host, receiving an image loads its on-disk PATH into the tmux buffer.
-// A tmux after-load-buffer hook re-submits that path as a text clip. Because the
-// path's hash differs from the image's hash, it must be registered explicitly
-// when loaded, or it would be re-broadcast — an echo loop. With a headless
-// backend the OS-clipboard readback is empty, so only the explicit registration
-// guards the loop.
+// TestImagePathWritebackDedupedHeadless covers a re-submit loop: on a headless
+// host, receiving an image loads its on-disk PATH into the tmux buffer. If that
+// path is re-submitted as a text clip, its hash differs from the image's hash,
+// so it must be registered explicitly when loaded or it would be re-broadcast.
+// With a headless backend the OS-clipboard readback is empty, so only the
+// explicit registration guards the loop.
 func TestImagePathWritebackDedupedHeadless(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -51,9 +50,9 @@ func TestImagePathWritebackDedupedHeadless(t *testing.T) {
 	path := entries[0].ImagePath
 
 	before := len(sshPublishSnapshot(sshRuntime))
-	// Exactly what an after-load-buffer hook would submit: the loaded path text,
-	// stamped with a fresh ID (clipfan copy mints one). The IsImageStorePath
-	// guard — not ID dedup — must drop it.
+	// Exactly what a buffer re-submit would include: the loaded path text, stamped
+	// with a fresh ID (clipfan copy mints one). The IsImageStorePath guard — not
+	// ID dedup — must drop it.
 	pathClip := clipboard.New(clipboard.KindText, []byte(path), fixedTime.Add(time.Second))
 	pathClip.ID = "hook-resubmit"
 	d.onReceive(pathClip, "self")

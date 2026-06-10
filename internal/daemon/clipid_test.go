@@ -148,9 +148,9 @@ func TestPollDoesNotRebroadcastSameLocalClip(t *testing.T) {
 	}
 }
 
-// Bug B: received text re-submitted with a FRESH id (the tmux after-load-buffer
-// hook bridge) must be recognised as an echo of what we just wrote and dropped —
-// not re-applied or relayed.
+// Bug B: received text re-submitted through clipfan copy with a FRESH id must be
+// recognised as an echo of what we just wrote and dropped — not re-applied or
+// relayed.
 func TestReceiveSuppressesReoriginatedText(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -162,7 +162,7 @@ func TestReceiveSuppressesReoriginatedText(t *testing.T) {
 	waitForPublishes(t, push, 1)
 	relayed := len(sshPublishSnapshot(push))
 
-	// The hook re-POSTs identical bytes with a new id and a slightly later TS.
+	// The re-submission POSTs identical bytes with a new id and a slightly later TS.
 	resub := clipboard.New(clipboard.KindText, []byte("hello from tmux"), fixedTime.Add(time.Millisecond))
 	resub.ID = "id-2-fresh"
 	d.onReceive(resub, "self")

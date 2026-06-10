@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.1] - 2026-06-10
+## [1.0.2] - 2026-06-10
 
 ### Added
 
@@ -14,8 +14,15 @@
 
 ### Fixed
 
+- Removed the global tmux buffer hooks from the installed tmux integration so daemon writebacks, unrelated tmux sockets, and stale paste buffers cannot re-submit as fresh local copies.
 - Prevented mesh-heal from scanning virtual/private bridge address piles by filtering Docker, bridge, VM, and tunnel interfaces before roster-read advertises LAN candidates.
 - Mesh-heal now fails closed when a host reports an oversized LAN candidate list, keeping the primary address instead of keyscanning hundreds of self-reported candidates.
+
+## [1.0.1] - 2026-06-10
+
+### Changed
+
+- Tagged but not published; replaced by v1.0.2 before release after the tmux buffer hook issue was found.
 
 ## [1.0.0] - 2026-06-09
 

@@ -94,9 +94,8 @@ if [[ "$goos" == "linux" ]]; then
     fi
 fi
 
-# tmux integration: install the copy snippet and source it from ~/.tmux.conf.
-# This makes copies made anywhere in tmux (copy-mode yanks, and full-screen TUIs
-# like Claude Code that push selections into the paste buffer) flow into clipfan.
+# tmux integration: install the copy-mode snippet and source it from ~/.tmux.conf.
+# This makes tmux copy-mode yanks flow into clipfan.
 if [[ -f "$here/tmux.conf.snippet" ]] && want_tmux; then
     tmux_cfg="${XDG_CONFIG_HOME:-$HOME/.config}/clipfan/tmux.conf"
     mkdir -p "$(dirname "$tmux_cfg")"
