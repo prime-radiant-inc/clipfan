@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.6] - 2026-06-10
+
+### Fixed
+
+- Fixed a copy-triggered menu bar lockup by replacing the status item `TimelineView` animation with a bounded sequence of pre-rendered frames.
+
 ## [1.0.5] - 2026-06-10
 
 ### Added
