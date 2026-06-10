@@ -28,6 +28,7 @@ struct MenuBarCopyAnimationTracker {
 enum ClipfanMenuBarIconArtwork {
     private static let iconSize = NSSize(width: 22, height: 18)
     private static let menuBarFillOpacity: CGFloat = 0.42
+    private static let quickFanInsertLabelImages = makeFanInsertLabelImages(timing: .quickMenuBar)
     static let appIconCardSlots = MenuBarFanCardSlot.steady
 
     static func stackImage() -> NSImage {
@@ -43,6 +44,21 @@ enum ClipfanMenuBarIconArtwork {
     static func frontCardImage() -> NSImage {
         makeImage { context in
             drawMenuBarCard(context, slot: .front)
+        }
+    }
+
+    static func fanInsertLabelImages(timing: MenuBarFanInsertTiming = .quickMenuBar) -> [NSImage] {
+        if timing == .quickMenuBar {
+            return quickFanInsertLabelImages
+        }
+        return makeFanInsertLabelImages(timing: timing)
+    }
+
+    static func fanInsertLabelImage(progress: CGFloat, timing: MenuBarFanInsertTiming = .quickMenuBar) -> NSImage {
+        makeImage { context in
+            MenuBarFanInsertTimeline.frames(progress: progress, timing: timing)
+                .sorted { $0.slot.zIndex < $1.slot.zIndex }
+                .forEach { drawMenuBarCard(context, slot: $0.slot) }
         }
     }
 
@@ -94,6 +110,13 @@ enum ClipfanMenuBarIconArtwork {
         }
         image.isTemplate = isTemplate
         return image
+    }
+
+    private static func makeFanInsertLabelImages(timing: MenuBarFanInsertTiming) -> [NSImage] {
+        (0..<timing.frameCount).map { index in
+            let progress = CGFloat(index) / CGFloat(timing.frameCount - 1)
+            return fanInsertLabelImage(progress: progress, timing: timing)
+        }
     }
 
     private static func drawMenuBarCard(_ context: CGContext, slot: MenuBarFanCardSlot) {
@@ -209,21 +232,27 @@ enum ClipfanMenuBarIconArtwork {
     }
 }
 
-struct MenuBarFanInsertTiming {
+struct MenuBarFanInsertTiming: Equatable {
     let duration: Double
     let frontDelay: Double
     let middleDelay: Double
     let backDelay: Double
+    let frameCount: Int
 
     static let quickMenuBar = MenuBarFanInsertTiming(
         duration: 0.82,
         frontDelay: 0.13,
         middleDelay: 0.26,
-        backDelay: 0.43
+        backDelay: 0.43,
+        frameCount: 16
     )
 
     var dismissDelayNanoseconds: UInt64 {
         UInt64((duration + 0.08) * 1_000_000_000)
+    }
+
+    var frameIntervalNanoseconds: UInt64 {
+        UInt64((duration / Double(frameCount - 1)) * 1_000_000_000)
     }
 }
 
@@ -318,70 +347,27 @@ enum MenuBarFanInsertTimeline {
 
 struct ClipfanMenuBarIcon: View {
     let isAnimatingCopy: Bool
-    var animationGeneration = 0
     var timing = MenuBarFanInsertTiming.quickMenuBar
     var animationProgress: CGFloat?
+    var animationFrameIndex: Int?
 
     var body: some View {
-        ZStack {
-            if isAnimatingCopy {
-                ClipfanMenuBarFanInsertIcon(timing: timing, animationProgress: animationProgress)
-                    .id(animationGeneration)
-            } else {
-                ClipfanMenuBarStaticIcon()
-            }
-        }
+        Image(nsImage: labelImage)
+            .renderingMode(.template)
         .frame(width: 22, height: 18)
         .accessibilityLabel("Clipfan")
     }
-}
 
-private struct ClipfanMenuBarStaticIcon: View {
-    var body: some View {
-        Image(nsImage: ClipfanMenuBarIconArtwork.steadyLabelImage())
-            .renderingMode(.template)
-    }
-}
-
-private struct ClipfanMenuBarFanInsertIcon: View {
-    let timing: MenuBarFanInsertTiming
-    var animationProgress: CGFloat?
-    @State private var startDate = Date()
-
-    var body: some View {
+    private var labelImage: NSImage {
         if let animationProgress {
-            cardStack(progress: animationProgress)
-        } else {
-            TimelineView(.periodic(from: startDate, by: 1.0 / 60.0)) { context in
-                let progress = CGFloat(context.date.timeIntervalSince(startDate) / timing.duration)
-                cardStack(progress: progress)
-            }
-            .onAppear {
-                startDate = Date()
-            }
+            return ClipfanMenuBarIconArtwork.fanInsertLabelImage(progress: animationProgress, timing: timing)
         }
-    }
-
-    private func cardStack(progress: CGFloat) -> some View {
-        ZStack {
-            ForEach(MenuBarFanInsertTimeline.frames(progress: progress, timing: timing)) { frame in
-                MenuBarFanCardView(slot: frame.slot)
-            }
+        guard isAnimatingCopy else {
+            return ClipfanMenuBarIconArtwork.steadyLabelImage()
         }
-    }
-}
 
-private struct MenuBarFanCardView: View {
-    let slot: MenuBarFanCardSlot
-
-    var body: some View {
-        Image(nsImage: ClipfanMenuBarIconArtwork.animatedCardImage())
-            .renderingMode(.template)
-            .opacity(slot.opacity)
-            .frame(width: MenuBarFanCardSlot.size.width, height: MenuBarFanCardSlot.size.height)
-            .scaleEffect(slot.scale, anchor: UnitPoint(x: 0.5, y: 0))
-            .rotationEffect(.degrees(slot.rotation), anchor: UnitPoint(x: 0.5, y: 0))
-            .position(x: 11 + slot.offsetX, y: slot.topY + MenuBarFanCardSlot.size.height / 2)
-            .zIndex(slot.zIndex)
+        let images = ClipfanMenuBarIconArtwork.fanInsertLabelImages(timing: timing)
+        let index = min(max(animationFrameIndex ?? 0, 0), images.count - 1)
+        return images[index]
     }
 }

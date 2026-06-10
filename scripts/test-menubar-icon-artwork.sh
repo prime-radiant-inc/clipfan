@@ -186,6 +186,14 @@ struct MenuBarIconContract {
         require(darkStats.visible > 0, "dark mode menu bar label must render visible artwork")
         require(darkStats.bright > darkStats.visible * 8 / 10, "dark mode menu bar label must render light template artwork")
 
+        let animationImages = ClipfanMenuBarIconArtwork.fanInsertLabelImages(timing: .quickMenuBar)
+        require(animationImages.count >= 10, "copy animation must have enough pre-rendered frames to read as motion")
+        require(animationImages.count <= 18, "copy animation must keep status item updates bounded")
+        for image in animationImages {
+            require(image.isTemplate, "copy animation frame must be a template image")
+            require(image.size == NSSize(width: 22, height: 18), "copy animation frame has wrong size: \(image.size)")
+        }
+
         let startFrames = MenuBarFanInsertTimeline.frames(progress: 0)
         let earlyFrames = MenuBarFanInsertTimeline.frames(progress: 0.10)
         let midFrames = MenuBarFanInsertTimeline.frames(progress: 0.50)
@@ -225,3 +233,8 @@ swiftc -parse-as-library \
   -o "$tmp/menubar_icon_contract"
 
 "$tmp/menubar_icon_contract"
+
+if rg -q "TimelineView" "$repo/apps/mac/Clipfan/Sources/Clipfan/MenuBarIcon.swift"; then
+  echo "menu bar copy animation must not drive the status item from TimelineView" >&2
+  exit 1
+fi

@@ -40,7 +40,7 @@ private struct MenuBarLabel: View {
     @Environment(\.openWindow) private var openWindow
     @EnvironmentObject private var daemon: DaemonClient
     @State private var tracker = MenuBarCopyAnimationTracker()
-    @State private var isAnimatingCopy = false
+    @State private var animationFrameIndex: Int?
     @State private var animationGeneration = 0
 
     private var latestHistoryID: String? {
@@ -48,7 +48,10 @@ private struct MenuBarLabel: View {
     }
 
     var body: some View {
-        ClipfanMenuBarIcon(isAnimatingCopy: isAnimatingCopy, animationGeneration: animationGeneration)
+        ClipfanMenuBarIcon(
+            isAnimatingCopy: animationFrameIndex != nil,
+            animationFrameIndex: animationFrameIndex
+        )
             .task { WindowOpener.shared.openWindow = openWindow }
             .onAppear {
                 if daemon.historyLoaded {
@@ -69,13 +72,19 @@ private struct MenuBarLabel: View {
     private func triggerCopyAnimation() {
         animationGeneration += 1
         let generation = animationGeneration
-        isAnimatingCopy = true
-        Task {
-            try? await Task.sleep(nanoseconds: MenuBarFanInsertTiming.quickMenuBar.dismissDelayNanoseconds)
-            await MainActor.run {
+
+        Task { @MainActor in
+            let timing = MenuBarFanInsertTiming.quickMenuBar
+            for index in 0..<timing.frameCount {
                 guard generation == animationGeneration else { return }
-                isAnimatingCopy = false
+                animationFrameIndex = index
+                if index < timing.frameCount - 1 {
+                    try? await Task.sleep(nanoseconds: timing.frameIntervalNanoseconds)
+                }
             }
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            guard generation == animationGeneration else { return }
+            animationFrameIndex = nil
         }
     }
 }
