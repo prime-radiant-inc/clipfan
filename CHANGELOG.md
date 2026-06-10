@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.3] - 2026-06-10
+
+### Fixed
+
+- Fixed the menu bar icon rendering as a black square by switching the compact status glyph to outline template artwork with enough negative space.
+
 ## [1.0.2] - 2026-06-10
 
 ### Added
