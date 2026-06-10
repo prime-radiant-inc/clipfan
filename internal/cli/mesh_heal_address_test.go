@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -16,6 +17,18 @@ func TestHostAddressCandidatesOrdersPrimaryFirstAndDedups(t *testing.T) {
 		LocalAddresses: []string{"10.0.0.1", "192.168.1.5", "192.168.1.5", ""},
 	})
 	want := []string{"10.0.0.1", "192.168.1.5"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("candidates = %v, want %v", got, want)
+	}
+}
+
+func TestHostAddressCandidatesDropsOversizedLANCandidateList(t *testing.T) {
+	var local []string
+	for i := 0; i < maxMeshLANAddressCandidates+1; i++ {
+		local = append(local, "10.0."+strconv.Itoa(i)+".1")
+	}
+	got := hostAddressCandidates("100.64.0.5", RosterReadReport{LocalAddresses: local})
+	want := []string{"100.64.0.5"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidates = %v, want %v", got, want)
 	}

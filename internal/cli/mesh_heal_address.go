@@ -13,19 +13,29 @@ import (
 // (e.g. a Tailscale CGNAT address from a different tailnet) fails fast.
 const meshKeyscanTimeoutSeconds = 5
 
+// maxMeshLANAddressCandidates bounds peer-provided LAN candidates. A host with
+// more addresses than this is almost certainly reporting virtual bridge networks;
+// fail closed to the primary address instead of probing a private address pile.
+const maxMeshLANAddressCandidates = 8
+
 // hostAddressCandidates orders a host's addresses for cross-tailnet fallback: the
 // resolved primary address first — so a working Tailscale address is preferred —
 // then the host's reported LAN candidates. Deduped; the primary is never repeated.
 func hostAddressCandidates(primary string, report RosterReadReport) []string {
 	out := []string{primary}
 	seen := map[string]bool{primary: true}
+	local := []string{}
 	for _, addr := range report.LocalAddresses {
 		if addr == "" || seen[addr] {
 			continue
 		}
 		seen[addr] = true
-		out = append(out, addr)
+		local = append(local, addr)
 	}
+	if len(local) > maxMeshLANAddressCandidates {
+		return out
+	}
+	out = append(out, local...)
 	return out
 }
 
