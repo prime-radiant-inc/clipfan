@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Large clips (up to the 64 MiB stream payload limit) now sync: the daemon's `/v1/current` apply endpoint accepts bodies up to the stream frame limit instead of silently truncating at 1 MiB and failing signature verification with a 401.
+- A clip a peer cannot apply no longer kills the sync stream or poisons the reconnect loop: the gateway answers with a `rejected` ack and keeps serving, and the sending daemon drops the rejected clip from its pending queue instead of resending it on every reconnect.
+- The gateway now tolerates transient local-daemon poll failures (up to ~10 s) instead of tearing down the stream on the first error.
+- Clips larger than the stream payload limit are skipped at publish time with a logged warning instead of wedging the per-peer send queue.
+- The daemon now logs the stderr of its ssh sync processes, so remote gateway errors (previously discarded) are visible in the daemon log.
+
 ## [1.0.6] - 2026-06-10
 
 ### Fixed
