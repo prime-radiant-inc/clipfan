@@ -690,10 +690,16 @@ func (m *sshSyncManager) handleSSHStreamAck(session *sshPeerSession, inflight ma
 		return false
 	}
 	delete(inflight, ack.Seq)
-	if !qualifyingSSHStreamAck(ack, state) {
+	if qualifyingSSHStreamAck(ack, state) {
+		m.clearPendingAndMarkAckedIfSessionCurrent(session, state, time.Now().UTC())
 		return true
 	}
-	m.clearPendingAndMarkAckedIfSessionCurrent(session, state, time.Now().UTC())
+	if ack.Status == "rejected" && ack.ID == state.content.ID {
+		// A rejection is final for this clip: resending identical bytes can never
+		// succeed, and leaving it pending re-poisons every reconnect. Drop it.
+		slog.Warn("peer rejected clip; dropping from pending", "peer", session.peer.id, "clip", ack.ID, "reason", ack.Reason)
+		m.clearPendingIfSessionCurrent(session, state)
+	}
 	return true
 }
 

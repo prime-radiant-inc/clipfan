@@ -564,6 +564,39 @@ func TestSSHSyncManagerNonQualifyingAckDoesNotClearPendingState(t *testing.T) {
 	}
 }
 
+func TestSSHSyncManagerRejectedAckDropsPendingState(t *testing.T) {
+	manager := &sshSyncManager{pending: map[string]sshOutboundState{}, sessions: map[string]*sshPeerSession{}}
+	session := &sshPeerSession{peer: sshSyncPeer{id: "linux-b"}}
+	manager.sessions["linux-b"] = session
+	state := sshOutboundState{content: clipboard.Content{ID: "clip-poison"}}
+	inflight := map[uint64]sshOutboundState{1: state}
+	manager.rememberPending("linux-b", state)
+
+	removed := manager.handleSSHStreamAck(session, inflight, transport.SSHStreamAckResult{Seq: 1, ID: "clip-poison", Status: "rejected", Reason: "local_apply_failed"})
+
+	if !removed {
+		t.Fatal("rejected ack did not remove inflight state")
+	}
+	if _, ok := manager.pending["linux-b"]; ok {
+		t.Fatal("rejected ack left poison clip in pending; it would be resent on every reconnect")
+	}
+}
+
+func TestSSHSyncManagerRejectedAckForReplacedPendingKeepsNewerState(t *testing.T) {
+	manager := &sshSyncManager{pending: map[string]sshOutboundState{}, sessions: map[string]*sshPeerSession{}}
+	session := &sshPeerSession{peer: sshSyncPeer{id: "linux-b"}}
+	manager.sessions["linux-b"] = session
+	oldState := sshOutboundState{content: clipboard.Content{ID: "clip-old"}}
+	inflight := map[uint64]sshOutboundState{1: oldState}
+	manager.rememberPending("linux-b", sshOutboundState{content: clipboard.Content{ID: "clip-new"}})
+
+	manager.handleSSHStreamAck(session, inflight, transport.SSHStreamAckResult{Seq: 1, ID: "clip-old", Status: "rejected", Reason: "local_apply_failed"})
+
+	if got := manager.pending["linux-b"].content.ID; got != "clip-new" {
+		t.Fatalf("rejection of an old clip cleared newer pending state = %q, want clip-new", got)
+	}
+}
+
 func TestSSHSyncManagerStaleReplacedSessionAckDoesNotClearPendingState(t *testing.T) {
 	cfg := sshSyncManagerTestConfig()
 	auth, err := transport.NewAuth(cfg.SharedKey)
