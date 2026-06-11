@@ -178,6 +178,10 @@ func (m *sshSyncManager) startPeerLocked(ctx context.Context, peer sshSyncPeer) 
 }
 
 func (m *sshSyncManager) Publish(ctx context.Context, content clipboard.Content, origin string, skipOrigin string) {
+	if len(content.Bytes) > transport.MaxSSHStreamPayloadBytes {
+		slog.Warn("clip exceeds ssh stream payload limit; not syncing to peers", "clip", content.ID, "bytes", len(content.Bytes), "limit", transport.MaxSSHStreamPayloadBytes)
+		return
+	}
 	state := sshOutboundState{content: content, origin: origin}
 	m.mu.Lock()
 	defer m.mu.Unlock()

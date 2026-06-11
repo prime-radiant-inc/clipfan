@@ -917,6 +917,28 @@ func (s *fakeSSHProcessStarter) waitForStart(t *testing.T) fakeSSHProcessStart {
 	}
 }
 
+func TestSSHSyncManagerPublishSkipsOversizedClip(t *testing.T) {
+	manager := &sshSyncManager{
+		peers:    []sshSyncPeer{{id: "linux-b"}},
+		pending:  map[string]sshOutboundState{},
+		sessions: map[string]*sshPeerSession{},
+	}
+	session := &sshPeerSession{peer: sshSyncPeer{id: "linux-b"}, send: make(chan sshOutboundState, 1)}
+	manager.sessions["linux-b"] = session
+
+	big := clipboard.Content{ID: "clip-huge", Bytes: make([]byte, transport.MaxSSHStreamPayloadBytes+1)}
+	manager.Publish(context.Background(), big, "m4", "")
+
+	if _, ok := manager.pending["linux-b"]; ok {
+		t.Fatal("oversized clip was queued as pending; it can never be written to the stream")
+	}
+	select {
+	case state := <-session.send:
+		t.Fatalf("oversized clip enqueued to session send: %q", state.content.ID)
+	default:
+	}
+}
+
 type fakeSSHProcess struct {
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
