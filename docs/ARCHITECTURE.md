@@ -6,24 +6,32 @@
 - Every remote's tmux paste-buffer (`prefix-]`) mirrors the Mac clipboard.
 - Image paste into Claude Code and Codex CLI on a remote works without OSC 52, Xvfb, or per-SSH session state.
 - Survives mosh-from-multiple-Macs.
-- Transport pluggable (Tailscale today, static peer list as a fallback, room for mDNS later).
+- Discovery pluggable (Tailscale status today, static peer list as a fallback, room for mDNS later); transport is the authenticated SSH sync stream.
 - XDG-conformant on every platform, including macOS.
 
 ## Module layout
 
 ```
 cmd/
-  clipfan/             daemon entrypoint (also dispatches `copy`/`paste` subcommands)
+  clipfan/             daemon entrypoint; also dispatches the `copy`/`paste`,
+                       SSH gateway/provisioning, mesh-heal, and admin subcommands
   clipfan-shim/        xclip / wl-paste replacement on Linux remotes
+  generate-ssh-release-gates/  build tool that generates the SSH release-gate constants
 internal/
-  cli/                 `clipfan copy` / `clipfan paste` subcommands (+ OSC 52 emit)
+  cli/                 `clipfan copy` / `clipfan paste` (+ OSC 52 emit), plus the SSH
+                       gateway, provisioning, mesh-heal, and fleet-admin subcommands
   clipboard/           per-platform OS clipboard read/write
-    clipboard.go       Content { Kind=text|image, Bytes, Hash, TS } + Backend interface
+    clipboard.go       Content { ID, Kind=text|image, Bytes, Hash, TS, Concealed } + Backend interface
     clipboard_darwin.go  pbpaste/pngpaste read; pbcopy + pasteboard helper write
     clipboard_linux.go   wraps xclip / wl-clipboard binaries; headless fallback
     selection.go         chooseBackend: wayland/xclip/headless from $DISPLAY, $WAYLAND_DISPLAY, PATH
   config/              JSON config under $XDG_CONFIG_HOME/clipfan/config.json
   discovery/           interface { Peers() []Peer }; impls: tailscale, static
+  localdaemon/         local daemon discovery, startup, and recovery helpers
+  releaseflags/        build-time release gates (config v2, SSH runtime/transport)
+  sshprovision/        SSH peer provisioning: known_hosts / authorized_keys management,
+                       command runners, pairing plans
+  storagecheck/        storage preflight probes and repair (`storage-preflight`)
   store/               XDG state dir
     store.go           images/<sha>.png write + history-aware image GC
     state.go           state.json + current.txt (the shim's view of the clipboard)
@@ -31,11 +39,13 @@ internal/
   transport/           signed local HTTP APIs + SSH sync stream framing
     server.go          GET/POST /v1/current, GET /v1/peers, GET /v1/fleet, GET /v1/version,
                        GET /v1/health, history/config endpoints
-    client.go          signed loopback client used by app, CLI, and SSH gateway
+    client.go          signed loopback client used by the CLI and SSH gateway
+                       (the menubar app builds its own signed requests in Swift)
     envelope.go        encrypted clip payload carried by SSH stream state frames
     auth.go            shared-key request HMAC (SHA-256)
     crypto.go          AES-GCM clip body encryption
   tmux/                load-buffer-all: enumerate /tmp/tmux-$UID/* and call tmux -S sock load-buffer -
+  version/             the daemon's build version (stamped by dist/build-all.sh)
   daemon/              wires everything together: poll local clipboard, broadcast on change, write on receive
     daemon.go          poll / onReceive / SSH publish + peer-status tracking;
                        currentClip + isEcho for our-own-write echo suppression
@@ -70,8 +80,9 @@ is derived from `shared_key`, and `nonce` is the base64 nonce needed to decrypt
 that body. `concealed` marks password-manager or transient pasteboard items so
 receivers drop them without writing clipboard, state, history, or relay output.
 `recipient` is the daemon identity the SSH stream payload is intended for. It is
-inside the encrypted clip envelope so stream handlers can reject payloads that do
-not match the local identity after short-name normalization (`.local` and FQDN
+a plaintext envelope field, carried over the authenticated SSH stream and checked
+when the envelope is opened, so stream handlers reject payloads that do not
+match the local identity after short-name normalization (`.local` and FQDN
 forms normalize to the same short host). Suffix aliases are not accepted at this
 security boundary. A clip payload captured for one peer therefore fails closed
 when replayed to another peer, even when both peers share the same `shared_key`.
@@ -85,21 +96,26 @@ current encrypted clip envelope or an explicit null reason; ack/error frames
 report per-frame status.
 
 Every signed request carries `X-Clipfan-Ts`, `X-Clipfan-Nonce`, and
-`X-Clipfan-Sig`. The signature is
-`hex(hmac-sha256(shared_key, method + "\n" + request_uri + "\n" + timestamp +
-"\n" + nonce + "\n" + body))`, where `request_uri` includes the query string.
-The server rejects missing or bad signatures, stale timestamps, and replayed
-request nonces. There is no legacy body-only HMAC compatibility path, so
-mixed-version fleets fail closed.
+`X-Clipfan-Sig`, and current clients also send
+`X-Clipfan-Auth-Version: clipfan-v1/request-hmac`. The versioned signature is
+`hex(hmac-sha256(k, method + "\n" + request_uri + "\n" + timestamp + "\n" +
+nonce + "\n" + "auth_version=" + v + "\n" + body))`, where `k` is an HMAC key
+derived from `shared_key` and bound to the auth version, and `request_uri`
+includes the query string. Requests without the header sign the same canonical
+string minus the `auth_version` line with the raw shared key; config-v2
+daemons require the versioned form on local endpoints. The server rejects
+missing or bad signatures, stale timestamps, and replayed request nonces.
+There is no body-only HMAC compatibility path, so mixed-version fleets fail
+closed.
 
 ## Local HTTP API
 
-The daemon listens on `:7853` by default and serves these endpoints:
+The daemon listens on `127.0.0.1:7853` by default and serves these endpoints:
 
 | Method & path        | Auth          | Purpose |
 |----------------------|---------------|---------|
 | `GET /v1/current`    | signed request, loopback only | Return the latest visible current clipboard payload for the local SSH gateway. |
-| `POST /v1/current`   | signed request, loopback only | Apply a local current clipboard payload from `clipfan copy` or the SSH gateway. Returns `204 No Content`. |
+| `POST /v1/current`   | signed request, loopback only | Apply a local current clipboard payload from `clipfan copy` or the SSH gateway. Returns a signed `200` with `{"status":"ok"}`. |
 | `GET /v1/peers`      | signed request, loopback only | Return `{ "origin": "<this host>", "peers": [PeerState, ...] }` for the menubar app. |
 | `GET /v1/fleet`      | signed request, loopback only | Return the app's aggregated SSH fleet view. |
 | `GET /v1/version`    | signed request | Return `{ "version": "<daemon version>" }` for signed diagnostics and local callers. |
@@ -109,7 +125,16 @@ The daemon listens on `:7853` by default and serves these endpoints:
 | `POST /v1/history/pin` | signed request, loopback only | Pin or unpin a history entry. |
 | `DELETE /v1/history` | signed request, loopback only | Delete one entry, or all unpinned entries. |
 | `POST /v1/config`    | signed request, loopback only | Update local daemon configuration currently exposed through the app, such as `max_history`. |
-| `GET/PUT/DELETE/PATCH /v1/config/ssh/...` | signed request, loopback only | Read and update SSH peer config from the app. |
+| `GET/PUT/DELETE /v1/config/ssh/peers/{peer_id}` (+ `PATCH .../proof`, `POST .../transition`, `POST .../disable`) | signed request, loopback only | Read and update SSH peer config from the app. |
+| `DELETE /v1/config/peers/{host_id}` | signed request, loopback only | Remove a host from the local peer list. |
+
+In listener safe mode (an explicit non-loopback `listen`), the daemon serves a
+reduced surface instead: `GET /v1/health`, `GET /v1/status`, `GET /v1/peers`
+(the safe-mode payload the app's poll detects safe mode from),
+`GET /v1/ssh/logs`, `GET`/`PATCH /v1/config/listener` (the repair endpoint
+behind the app's "Move daemon listener to loopback" button), and
+`GET /v1/version`; other routes answer `409` with
+`public_listen_requires_confirmation` until the listener is repaired.
 
 `PeerState` carries hostname, port, SSH runtime state, endpoint diagnostics, and
 last receive timestamp. The menubar app polls the local endpoints over loopback
@@ -130,13 +155,14 @@ type Discoverer interface {
 }
 ```
 
-`static_peers` is the explicit Clipfan fleet allowlist. `static.Discoverer`
+`static_peers` is the explicit clipfan fleet allowlist. `static.Discoverer`
 reads it directly as the hostname list. `tailscale.Discoverer` shells out to
-`tailscale status --json`, but filters online tailnet peers through the same
-short-name allowlist before SSH publish. An empty `static_peers` list in
-Tailscale mode returns only the local host and produces no non-self sync. The
-active discoverer is chosen by the config's `discovery` field; the default is
-`tailscale`.
+`tailscale status --json` and filters online tailnet peers through the same
+short-name allowlist. An empty `static_peers` list in Tailscale mode returns
+only the local host. Discovery feeds the peers/fleet snapshot the app reads;
+the SSH publish roster comes from the provisioned SSH peer config, not from
+discovery. The active discoverer is chosen by the config's `discovery` field;
+the default is `tailscale`.
 
 ## Recirculation prevention
 
@@ -167,19 +193,22 @@ looping the mesh, with a third content-based guard beneath them:
   image-store paths (`store.IsImageStorePath`) is never broadcast as text and
   never written over a real image, on either the poll or the receive path.
 
-The Mac is the hub: a received clip is published over SSH to every configured
-peer except its origin, so peers that can't see each other directly still
-converge through the Mac. Clip-ID dedup, not origin filtering, is what keeps
-publish loops from applying the same logical clip twice.
+Every host republishes a received clip over SSH to its configured peers except
+the clip's origin; the Mac typically acts as the hub, so peers that can't see
+each other directly still converge through it. Clip-ID dedup, not origin
+filtering, is what keeps publish loops from applying the same logical clip
+twice.
 
 ## Image flow on receive (the load-bearing trick)
 
 When an image arrives at a host:
 
 1. Clip-ID dedup against the seen set — skip if already applied.
-2. Write the PNG bytes to `$XDG_STATE_HOME/clipfan/images/<sha256>.png` and
-   record metadata in `state.json` (kind=image, the image path).
-3. Set the OS clipboard:
+2. Write the PNG bytes to `$XDG_STATE_HOME/clipfan/images/<sha256>.png`, then
+   record `state.json` (kind=image, the image path) and `current.txt` (the
+   file's absolute path — the text representation the shim serves) together.
+3. Append the clip to the local history.
+4. Set the OS clipboard:
    - macOS: shell out to the bundled `clipfan-pasteboard-helper`, which writes a
      single `NSPasteboardItem` carrying BOTH the PNG bytes (`public.png`) and the
      file path as text (`public.utf8-plain-text`). Cmd-V in Preview/Keynote/Slack
@@ -189,9 +218,8 @@ When an image arrives at a host:
      clipboard (`xclip` has no clean multi-target write). On a headless host the
      backend is the no-op headless fallback (no `$DISPLAY`/`$WAYLAND_DISPLAY`), so
      this step does nothing — but the path still reaches tmux and the shim.
-4. Set `current.txt` to the text representation (the file's absolute path for an
-   image), which is what the shim serves.
-5. Call `tmux load-buffer <path>` on every tmux socket.
+5. Load the path string into every tmux socket's paste buffer
+   (`tmux -S <sock> load-buffer -` reading the path as the buffer content).
 
 After this, the remote user pastes via either Cmd-V (terminal → bracketed paste →
 Codex/Claude Code sees a file path and attaches it) or `prefix-]` (tmux pastes
@@ -209,10 +237,11 @@ copies through `clipfan copy`, which applies them through the signed loopback
 current endpoint on the local daemon (and emits OSC 52 to the client tty as a
 fallback).
 
-The snippet covers copy-mode yanks only: `y`, `Enter`, and `MouseDragEnd1Pane`,
-bound in *both* the `copy-mode-vi` and `copy-mode` (emacs) tables, because the
-active table depends on the resolved `mode-keys` and a default binding in the
-other table would otherwise copy only to the tmux buffer.
+The snippet covers copy-mode yanks only — `y`, `Enter`, and `MouseDragEnd1Pane`
+in the `copy-mode-vi` table; `M-w` and `MouseDragEnd1Pane` in the `copy-mode`
+(emacs) table — bound in both tables because the active one depends on the
+resolved `mode-keys`, and an unbound table would otherwise copy only to the
+tmux buffer.
 
 The snippet intentionally does not install global `after-set-buffer` or
 `after-load-buffer` hooks. The daemon itself writes every received clip into the
@@ -241,11 +270,12 @@ retention bound.
 ## Clipboard history
 
 Each daemon records the clips that pass through its own clipboard into a
-newest-first history. Because the Mac is the relay hub, its history naturally
+newest-first history. Because the Mac typically acts as the relay hub, its history naturally
 sees nearly every clip on the fleet, each tagged with the host it originated on.
 History is local per-host; no new sync protocol is introduced — the daemon
-appends to history at the same two points it already persists the current clip
-(a clip copied locally, and a clip received from SSH sync).
+appends to history at the three points a clip becomes current: a clip copied
+locally, a clip received from SSH sync, and a history restore (which floats
+the existing entry).
 
 ### Data model
 
@@ -331,3 +361,7 @@ unauthenticated for liveness checks.
 - Selection-clipboard (Linux primary selection). Only the regular clipboard.
 - Rich types beyond text + PNG (no RTF, no PDF, no file lists).
 - Conflict resolution beyond last-write-wins.
+
+---
+<!-- doc-audit:last-reviewed -->
+_Last reviewed: 2026-06-10 · commit `5ed989c` · verified against code (5 claims deferred to review)._

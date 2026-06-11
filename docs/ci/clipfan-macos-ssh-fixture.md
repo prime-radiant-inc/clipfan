@@ -96,3 +96,7 @@ credentials.
 Once a milestone depends on real macOS OpenSSH behavior,
 `macos_ssh_fixture_unavailable` is a release-blocking failure until the
 repository release maintainer restores a green fixture-available gate.
+
+---
+<!-- doc-audit:last-reviewed -->
+_Last reviewed: 2026-06-10 · commit `5ed989c` · verified against code (13 claims deferred to review)._

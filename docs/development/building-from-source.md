@@ -5,7 +5,7 @@ this repo. Most users should install the prebuilt menubar app instead — see th
 [README](../../README.md#install).
 
 clipfan has two pieces: a **daemon** that runs on every host (macOS + Linux), and
-a **menubar app** on the Mac that gives you the clipboard history panel and a
+a **menubar app** on the Mac that gives you the clipboard panel and a
 one-click installer for adding more hosts.
 
 ## Prerequisites
@@ -93,3 +93,7 @@ new host's `~/.config/clipfan/config.json` and run `./install.sh` there.
 go test ./...                                   # daemon, CLI, shim
 cd apps/mac/Clipfan && swift test               # menubar app
 ```
+
+---
+<!-- doc-audit:last-reviewed -->
+_Last reviewed: 2026-06-10 · commit `5ed989c` · verified against code (3 claims deferred to review)._

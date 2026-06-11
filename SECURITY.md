@@ -18,16 +18,19 @@ Do not copy it to a host you would not trust with your clipboard.
   request URI, timestamp, nonce, and body. Stale timestamps and repeated request
   nonces are rejected. Mixed-version fleets fail closed; upgrade all peers
   together.
-- **Recipient binding.** Peer clip envelopes include the intended recipient in
-  the encrypted payload, so a captured clip payload for one peer is rejected if
-  replayed to another peer.
+- **Recipient binding.** Peer clip envelopes carry the intended recipient as an
+  envelope field checked on receive (after short-name normalization), so a
+  captured clip payload for one peer is rejected if replayed to another peer.
+  The field travels inside the authenticated SSH stream but is not
+  cryptographically bound to the encrypted clip body.
 - **Local control endpoints.** History, config, restore, and peer-status
   endpoints require a valid signature and are loopback-only. Successful local
   control responses are also signed and bound to the request nonce, so GUI
   clients can reject a spoofed loopback listener that does not know
   `shared_key`. The unauthenticated health endpoint returns only `ok`.
-- **Signed diagnostics.** `/v1/version` requires a valid signed request, returns
-  a signed response, and exposes only the daemon version string.
+- **Signed diagnostics.** `/v1/version` requires a valid signed request and
+  returns a signed response exposing the daemon version string (plus safe-mode
+  and config-revision fields when the listener is in safe mode).
 - **Local file permissions.** Config, state, history, and image storage are kept
   under the current user's XDG config/state directories. clipfan creates and
   repairs those directories as `0700` and the files as `0600`.
@@ -82,7 +85,7 @@ Do not copy it to a host you would not trust with your clipboard.
 - tmux integration verifies that the tmux socket directory is not a symlink, is
   owned by the clipfan user, and is not accessible by group or other users
   (normally `/tmp/tmux-$UID` mode `0700`). Discovered socket files must also be
-  owned by the clipfan user and not group/world-writable before clipfan calls
+  owned by the clipfan user and not world-writable before clipfan calls
   `tmux -S <socket> load-buffer -`.
 - Local daemon identity is authenticated with signed responses, but the local
   HTTP API still uses separate loopback HTTP requests. That protects against a
@@ -90,3 +93,7 @@ Do not copy it to a host you would not trust with your clipboard.
   against the same user, root, or a host configuration that exposes the key.
 - Deleting a history item or clearing unpinned history also removes image files
   that are no longer referenced by remaining history entries.
+
+---
+<!-- doc-audit:last-reviewed -->
+_Last reviewed: 2026-06-10 · commit `5ed989c` · verified against code (8 claims deferred to review)._

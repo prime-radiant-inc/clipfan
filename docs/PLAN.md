@@ -1,6 +1,6 @@
 # clipfan implementation plan
 
-> Historical build log. This records the phased order in which the daemon was
+> Historical build log (written 2026-05-28). This records the phased order in which the daemon was
 > originally built (each phase ending in a working binary). It is kept for
 > reference; for how the system works today see ARCHITECTURE.md, and for planned
 > work see ROADMAP.md.

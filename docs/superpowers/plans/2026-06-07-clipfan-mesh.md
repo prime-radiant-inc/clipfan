@@ -1,5 +1,9 @@
 # clipfan Mesh Implementation Plan
 
+> **Superseded where they conflict:** the code-verified mechanics live in
+> [`../2026-06-07-mesh-machinery-notes.md`](../2026-06-07-mesh-machinery-notes.md);
+> where this plan and the notes disagree, build to the notes.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **This plan is SEQUENTIAL** — the foundations gate everything else; do not blind-fan-out.
 
 **Goal:** Make any provisioning operation heal the whole fleet into a full mesh, drive it from a Go CLI command runnable on any host, and show the resulting mesh state in the macOS app.

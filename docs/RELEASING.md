@@ -7,13 +7,10 @@ to GitHub Releases with a Sparkle auto-update appcast by
 ## One-time setup: repository secrets
 
 The workflow needs these secrets on `prime-radiant-inc/clipfan`
-(Settings → Secrets and variables → Actions). They are the same credentials
-used by `prime-radiant-inc/clearance` (same Apple Developer account and Sparkle
-key), so the values can be copied from there.
-
-All seven are configured on `prime-radiant-inc/clipfan` (verify with
-`gh secret list`). They are the same credentials as `clearance` (same Apple
-Developer account and Sparkle key).
+(Settings → Secrets and variables → Actions). All seven are configured (verify
+with `gh secret list`); they are the same credentials used by
+`prime-radiant-inc/clearance` (same Apple Developer account and Sparkle key),
+so values can be copied from there when rotating.
 
 | Secret | What it is |
 |--------|-----------|
@@ -71,14 +68,15 @@ git push origin v0.3.0
 ```
 
 The workflow then:
-1. cross-compiles the daemon and pasteboard helpers (`dist/build-all.sh`,
+1. verifies the SSH release gates (`scripts/test-ssh-release-gates.sh`),
+2. cross-compiles the daemon and pasteboard helpers (`dist/build-all.sh`,
    daemon version stamped from `DAEMON_VERSION`) and verifies the full release
    payload set,
-2. builds `Clipfan.app` via xcodegen + xcodebuild,
-3. Developer ID-signs the app, the embedded Sparkle framework, and the bundled
+3. builds `Clipfan.app` via xcodegen + xcodebuild,
+4. Developer ID-signs the app, the embedded Sparkle framework, and the bundled
    macOS daemon binaries (hardened runtime),
-4. notarizes + staples,
-5. publishes the `.zip`, `.dmg`, and `appcast.xml` to the GitHub Release, using
+5. notarizes + staples,
+6. publishes the `.zip`, `.dmg`, and `appcast.xml` to the GitHub Release, using
    the changelog section as release notes.
 
 Installed copies pick up the update from
@@ -117,3 +115,7 @@ test -x dist/clipfan-pasteboard-helper-darwin-amd64
 test -x dist/clipfan-pasteboard-helper-darwin-arm64
 cd apps/mac/Clipfan && bash build-app.sh
 ```
+
+---
+<!-- doc-audit:last-reviewed -->
+_Last reviewed: 2026-06-10 · commit `5ed989c` · verified against code (7 claims deferred to review)._

@@ -26,14 +26,16 @@ When a host receives a clipboard update, its daemon:
 - Records the clip in a local, searchable history (see the menubar app).
 
 Conflict policy: last-write-wins by monotonic timestamp. There is no central
-server. The Mac acts as the relay hub, so peers that can't see each other
-directly can still converge through it.
+server. Every daemon relays a received clip onward to its configured peers
+(except the clip's origin), so hosts that can't see each other directly still
+converge through a host that sees both — typically the Mac, which holds an
+edge to every peer it installs.
 
 ## Install
 
 clipfan has two pieces: a **daemon** that runs on every host (macOS + Linux),
-and a **menubar app** on the Mac that gives you the clipboard history panel and
-a one-click installer for adding more hosts. Start on your Mac with the menubar
+and a **menubar app** on the Mac that gives you the clipboard panel and a
+one-click installer for adding more hosts. Start on your Mac with the menubar
 app — it bundles the daemon and installs everything for you.
 
 1. Get `Clipfan.app` and move it to `/Applications` (or run it from wherever you
@@ -54,7 +56,7 @@ Building from a source clone instead? See
 
 1. **Set up this Mac.** Launching the app (above) installs and starts the daemon.
    Turn on *Launch at login* in **Settings → General** to start it automatically.
-2. **Add the rest of your fleet.** Open the menubar icon →
+2. **Add the rest of your fleet.** Open the menu bar icon →
    **Settings… → Fleet → Add peer…**. If Tailscale is running, pick hosts from
    the tailnet list; otherwise type a host + SSH user. The app stages the
    right-arch binary, installs the service over SSH, and adds the host to your
@@ -77,7 +79,7 @@ You can also install a host by hand from a source clone. See
 - **Copy anywhere, paste anywhere.** Copy on one host and it lands on the others.
   On a remote you can paste the synced item with **⌘V** from your Mac terminal or
   **prefix-]** in tmux.
-- **Clipboard history panel — ⇧⌘V.** A keyboard-driven panel (Spotlight/Raycast
+- **Clipboard panel — ⇧⌘V.** A keyboard-driven panel (Spotlight/Raycast
   style) of your recent clips, local to each host. Type to search, **↑ / ↓** to
   move, **⏎** to put the selected clip on your clipboard and sync it to the fleet.
   See [Menubar app](#menubar-app-macos) for the full controls.
@@ -95,9 +97,9 @@ does. The installer writes the snippet to `~/.config/clipfan/tmux.conf` and adds
 re-running won't duplicate it). Reload with `tmux source-file ~/.tmux.conf` or
 restart tmux.
 
-The snippet captures tmux copy-mode yanks: `y`, `Enter`, and mouse-drag, bound
-in both the vi and emacs copy-mode tables, pipe the selection through
-`clipfan copy`.
+The snippet captures tmux copy-mode yanks — `y`, `Enter`, and mouse-drag in the
+vi table; `M-w` and mouse-drag in the emacs table — and pipes the selection
+through `clipfan copy`.
 
 That path also emits OSC 52 to the client tty as a fallback, so a terminal
 connected from a non-clipfan host (Blink on a phone, kitty on a laptop without
@@ -131,12 +133,12 @@ copy.
 The app writes and updates this file for normal use. `shared_key` is host-local
 state and never belongs in a dotfiles repo.
 
-`static_peers` is the explicit Clipfan fleet allowlist. `discovery: "static"`
-uses it as the hostname list. `discovery: "tailscale"` shells out to
-`tailscale status --json`, but only syncs with online hosts whose short names
-are listed in `static_peers`. Empty `static_peers` with Tailscale discovery
-returns only the local host and does no non-self sync.
-`max_history` caps the clipboard history (default 200).
+`static_peers` is the explicit clipfan fleet allowlist. `discovery: "static"`
+uses it as the hostname list; `discovery: "tailscale"` shells out to
+`tailscale status --json` and filters online tailnet hosts through the same
+allowlist (with empty `static_peers` it lists only the local host). Discovery
+feeds the peer and fleet views; clip sync itself runs over the SSH peers the
+app provisions. `max_history` caps the clipboard history (default 200).
 
 ## Security
 
@@ -175,10 +177,12 @@ manager pastes (concealed or transient clips) are never synced or recorded.
 
 ### Menubar dropdown
 
-Click the menubar icon for **Open Clipboard**, **Settings…**, **Quit**, and a
+Click the menu bar icon for **Open Clipboard**, **Install Update…** (shown when
+an update is available), **Settings…**, **Quit**, and a
 **Fleet** section that shows each peer with a colored health dot (green synced /
 orange offline / gray idle) and its last **↑ send / ↓ recv** times — so you can
-see at a glance whether your fleet is in sync. Click a peer to jump to its detail.
+see at a glance whether your fleet is in sync. Click a peer to open the
+Settings window.
 
 ### Settings
 
@@ -202,8 +206,12 @@ Starting in macOS Sequoia, processes launched by launchd are gated by the
 (10.x / 172.16-31.x / 192.168.x). A foreground app gets a permission prompt;
 launchd-managed background daemons get a silent `EHOSTUNREACH` and no prompt.
 
-Until a Local Network permission entry exists for clipfan, run the daemon from
-your shell instead of via launchd:
+When the menubar app is running it helps two ways: once sends to a LAN peer
+start failing it points you to the right System Settings pane (see
+[Install](#install)), and at app launch, if no daemon answers on the loopback
+port, it shell-launches the daemon as a child, which inherits the app's Local
+Network grant. Running the daemon without the app, work around the gate by hand — run
+the daemon from your shell instead of via launchd:
 
 ```sh
 launchctl unload ~/Library/LaunchAgents/com.primeradiant.clipfan.plist
@@ -216,9 +224,13 @@ If your fleet is entirely Tailscale-routed, launchd works fine.
 
 ### Topology
 
-The Mac is the relay hub. If host A reaches the Mac and host B reaches the Mac
-but A and B can't see each other directly, updates can still converge through
-the Mac. If the Mac is down, non-Mac peers do not relay through one another.
+Sync follows the provisioned SSH edges, and any host relays received clips
+onward to its other peers — relaying is not special to the Mac. The Mac holds
+an edge to every peer it installs, so with that star topology host A and host
+B converge through the Mac even when they can't see each other. Adding a peer
+also provisions direct mesh edges between peers that can reach each other
+(mesh-heal repairs these), so such peers keep converging when the Mac is down;
+a pair with no edge and no common reachable host waits until one returns.
 
 ### Linux Ctrl-V image paste
 
@@ -244,11 +256,16 @@ x11-bridge, no sudo on the remote.
   — build the daemon and the menubar app from a source clone.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — common failures and fixes.
 - [SECURITY.md](SECURITY.md) — trust boundary, protections, and non-goals.
-- `docs/ARCHITECTURE.md` — module layout, wire format, HTTP API, recirculation
-  prevention, the image-on-receive flow, clipboard history, and the tmux
-  copy-capture path.
-- `docs/ROADMAP.md` — what's shipped and what's planned.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module layout, wire format,
+  HTTP API, recirculation prevention, the image-on-receive flow, clipboard
+  history, and the tmux copy-capture path.
+- [docs/ROADMAP.md](docs/ROADMAP.md) — what's shipped and what's planned.
+- [docs/INDEX.md](docs/INDEX.md) — the full documentation index.
 
 ## License
 
 Proprietary — Prime Radiant, Inc.
+
+---
+<!-- doc-audit:last-reviewed -->
+_Last reviewed: 2026-06-10 · commit `5ed989c` · verified against code (9 claims deferred to review)._
