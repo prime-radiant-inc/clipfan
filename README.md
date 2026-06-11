@@ -1,10 +1,11 @@
 # clipfan
 
-One clipboard across a fleet of macOS + Linux hosts. Copy on any machine —
-your Mac, a Linux box over SSH, or tmux copy-mode — and it lands everywhere:
-the Mac pasteboard, every remote's OS clipboard, and every running tmux paste
-buffer. Built so remote image paste into Claude Code and Codex CLI "just works"
-without OSC 52 support, without Xvfb, and without per-SSH session state.
+clipfan is one clipboard for every Mac and Linux machine you work on: copy on
+any of them and paste on any other, including screenshots into Claude Code and
+Codex CLI on a headless remote.
+
+The brochure, [docs/BROCHURE.md](docs/BROCHURE.md), covers what you get, the
+trust model, and who it's for.
 
 ## How it works
 

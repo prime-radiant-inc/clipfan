@@ -13,6 +13,7 @@ edit rows, never the sentinels.
 | --- | --- | --- | --- | --- |
 | `README.md` | what clipfan is, install, getting started, daily use, tmux copy integration, config, menubar app, caveats | user+adopter | evergreen | `dist/install.sh`, `dist/tmux.conf.snippet`, `dist/com.primeradiant.clipfan.plist`, `internal/config/**`, `apps/mac/Clipfan/Sources/**` |
 | `SECURITY.md` | trust boundary, protections, non-goals, multi-user Linux notes | user+adopter | evergreen | `internal/transport/auth.go`, `internal/transport/crypto.go`, `internal/transport/envelope.go`, `internal/store/**`, `internal/storagecheck/**`, `internal/tmux/**`, `internal/config/listener.go`, `internal/config/listener_repair.go` |
+| `docs/BROCHURE.md` | adopter positioning: what clipfan is, the problem it removes, live CLI demo, trust brief, fit and limitations; source of the rendered brochure site (`docs/index.html`) | adopter | evergreen | `cmd/**`, `internal/cli/**`, `dist/install.sh`, `dist/tmux.conf.snippet`, `internal/transport/**`, `internal/tmux/**`, `internal/store/**`, `apps/mac/Clipfan/Sources/**` |
 | `docs/ARCHITECTURE.md` | module layout, SSH sync payload, HTTP API, discovery, recirculation prevention, image flow, history, XDG paths, auth model | contributor | evergreen | `cmd/**`, `internal/**`, `dist/tmux.conf.snippet`, `dist/clipfan-pasteboard-helper.swift` |
 | `docs/RELEASING.md` | release pipeline: repo secrets, tagging, daemon versioning, verification, local builds | contributor | evergreen | `.github/workflows/release.yml`, `dist/build-all.sh`, `scripts/extract-release-notes.sh`, `scripts/test-ssh-release-gates.sh`, `DAEMON_VERSION`, `apps/mac/Clipfan/Info.plist` |
 | `docs/TROUBLESHOOTING.md` | daemon-down and peers-not-syncing recovery steps | user | evergreen | `dist/com.primeradiant.clipfan.plist`, `dist/clipfan.service`, `apps/mac/Clipfan/Sources/Clipfan/SettingsView.swift` |
@@ -35,8 +36,13 @@ LICENSE and catalog-info.yaml are non-markdown; docs/images/ holds a capture
 script, not docs. -->
 
 <!-- Decided gaps (confirmed 2026-06-10): no CLAUDE.md (declined at portfolio
-confirm); no brochure/marketing artifacts (internal proprietary tool — adopters
-are teammates served by README + ABOUT.md); no docs site or screenshot tutorial
-(ROADMAP polish item, no current reader); no standalone API reference
-(docs/ARCHITECTURE.md owns the loopback HTTP API; it has no external
-consumers). -->
+confirm); no docs site or screenshot tutorial (ROADMAP polish item, no current
+reader; distinct from the brochure site docs/index.html, which is the rendered
+form of BROCHURE.md); no standalone API reference (docs/ARCHITECTURE.md owns
+the loopback HTTP API; it has no external consumers).
+Reopened 2026-06-11 by Jesse: the 2026-06-10 "no brochure/marketing artifacts"
+decision — its rationale ("internal proprietary tool — adopters are teammates
+served by README + ABOUT.md") went stale once the repo was public at
+github.com/prime-radiant-inc/clipfan
+with a real adopter audience. docs/BROCHURE.md and the rendered brochure site
+were born under the marketing flow; see their index row. -->
