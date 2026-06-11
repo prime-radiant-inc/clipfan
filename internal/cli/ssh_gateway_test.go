@@ -594,3 +594,156 @@ func assertPathMissing(t *testing.T, path string) {
 		t.Fatalf("%s exists or stat failed unexpectedly: %v", path, err)
 	}
 }
+
+func TestRunSSHGatewayDefaultSyncStreamSurvivesRejectedApply(t *testing.T) {
+	configRoot := t.TempDir()
+	stateRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	t.Setenv("XDG_STATE_HOME", stateRoot)
+	sharedKey := config.NewSharedKey()
+	auth, err := transport.NewAuth(sharedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied := make(chan string, 2)
+	srv := transport.NewServer("127.0.0.1:0", auth, nil)
+	srv.SetCurrentApply(func(c clipboard.Content, origin string) error {
+		applied <- c.ID
+		if c.ID == "clip-poison" {
+			return fmt.Errorf("apply refused")
+		}
+		return nil
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.ServeListener(ctx, ln) }()
+	t.Cleanup(func() {
+		cancel()
+		<-serveErr
+	})
+	writeGatewayConfig(t, sharedKey, ln.Addr().(*net.TCPAddr).Port)
+
+	var stdin, stdout, stderr bytes.Buffer
+	initiator := transport.NewSSHSyncStream(auth, "m4", "linux-b", bytes.NewReader(nil), &stdin)
+	hello, err := transport.NewSSHStreamHello(auth, transport.SSHStreamPurposeSyncStream, "m4", "linux-b", time.Now(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := initiator.WriteHello(context.Background(), hello); err != nil {
+		t.Fatal(err)
+	}
+	poison := clipboard.New(clipboard.KindText, []byte("poison"), time.Now().UTC())
+	poison.ID = "clip-poison"
+	if err := initiator.WriteState(context.Background(), 1, poison, "m4"); err != nil {
+		t.Fatal(err)
+	}
+	good := clipboard.New(clipboard.KindText, []byte("good"), time.Now().UTC())
+	good.ID = "clip-good"
+	if err := initiator.WriteState(context.Background(), 2, good, "m4"); err != nil {
+		t.Fatal(err)
+	}
+
+	err = runSSHGateway(
+		[]string{"--authorized-peer", "m4", "--authorized-key-id", "key-123456"},
+		&stdin,
+		&stdout,
+		&stderr,
+		func(key string) string {
+			if key == "SSH_ORIGINAL_COMMAND" {
+				return sshprovision.SSHGatewaySyncStreamCommand
+			}
+			return ""
+		},
+	)
+	if err != nil {
+		t.Fatalf("runSSHGateway() error = %v; stderr=%q — rejected apply must not be fatal", err, stderr.String())
+	}
+
+	reader := transport.NewSSHSyncStream(auth, "m4", "linux-b", &stdout, io.Discard)
+	reader.SetHelloNonceCache(transport.NewSSHStreamHelloNonceCache())
+	if _, err := reader.ReadHello(context.Background(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	first, err := reader.ReadNext(context.Background(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Type != transport.SSHStreamFrameAck || first.Ack.Seq != 1 || first.Ack.Status != "rejected" || first.Ack.Reason != "local_apply_failed" {
+		t.Fatalf("first ack = %#v, want seq 1 rejected/local_apply_failed", first)
+	}
+	second, err := reader.ReadNext(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("stream did not continue past rejected apply: %v", err)
+	}
+	if second.Type != transport.SSHStreamFrameAck || second.Ack.Seq != 2 || second.Ack.ID != "clip-good" || second.Ack.Status != "applied" {
+		t.Fatalf("second ack = %#v, want seq 2 clip-good applied", second)
+	}
+}
+
+func TestRunSSHGatewayDefaultSyncStreamToleratesCurrentPollFailures(t *testing.T) {
+	configRoot := t.TempDir()
+	stateRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	t.Setenv("XDG_STATE_HOME", stateRoot)
+	sharedKey := config.NewSharedKey()
+	auth, err := transport.NewAuth(sharedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No SetCurrentFunc: every GET /v1/current returns 503, so every poll tick fails.
+	srv := transport.NewServer("127.0.0.1:0", auth, nil)
+	srv.SetCurrentApply(func(c clipboard.Content, origin string) error { return nil })
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.ServeListener(ctx, ln) }()
+	t.Cleanup(func() {
+		cancel()
+		<-serveErr
+	})
+	writeGatewayConfig(t, sharedKey, ln.Addr().(*net.TCPAddr).Port)
+
+	oldInterval := sshGatewayCurrentPollInterval
+	sshGatewayCurrentPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { sshGatewayCurrentPollInterval = oldInterval })
+
+	// stdin carries a hello, then a pause long enough for several failing poll
+	// ticks, then EOF. An io.Pipe gives us the pause.
+	pr, pw := io.Pipe()
+	initiator := transport.NewSSHSyncStream(auth, "m4", "linux-b", bytes.NewReader(nil), pw)
+	hello, err := transport.NewSSHStreamHello(auth, transport.SSHStreamPurposeSyncStream, "m4", "linux-b", time.Now(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		_ = initiator.WriteHello(context.Background(), hello)
+		time.Sleep(100 * time.Millisecond) // ~20 failing poll ticks
+		_ = pw.Close()
+	}()
+
+	var stdout, stderr bytes.Buffer
+	err = runSSHGateway(
+		[]string{"--authorized-peer", "m4", "--authorized-key-id", "key-123456"},
+		pr,
+		&stdout,
+		&stderr,
+		func(key string) string {
+			if key == "SSH_ORIGINAL_COMMAND" {
+				return sshprovision.SSHGatewaySyncStreamCommand
+			}
+			return ""
+		},
+	)
+	if err != nil {
+		t.Fatalf("runSSHGateway() error = %v — transient poll failures must not be fatal", err)
+	}
+}

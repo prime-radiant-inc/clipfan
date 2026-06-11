@@ -158,6 +158,8 @@ func runDefaultSSHGatewaySyncStream(identity SSHGatewayIdentity, stdin io.Reader
 	defer ticker.Stop()
 	var seq uint64
 	sentCurrent := map[string]struct{}{}
+	const maxConsecutiveCurrentPollFailures = 40
+	pollFailures := 0
 	for {
 		select {
 		case event := <-events:
@@ -180,8 +182,13 @@ func runDefaultSSHGatewaySyncStream(identity SSHGatewayIdentity, stdin io.Reader
 			}
 		case <-ticker.C:
 			if err := publishSSHGatewayCurrent(ctx, writeFrame, stream, client, localHost, localPort, identity.PeerID, &seq, sentCurrent); err != nil {
-				return err
+				pollFailures++
+				if pollFailures >= maxConsecutiveCurrentPollFailures {
+					return fmt.Errorf("local current poll failing persistently: %w", err)
+				}
+				continue
 			}
+			pollFailures = 0
 		}
 	}
 }
@@ -221,14 +228,11 @@ func handleSSHGatewayState(ctx context.Context, writeFrame func(func(context.Con
 	status := "applied"
 	reason := ""
 	if err := pushSSHGatewayStateToLocalDaemon(ctx, client, localHost, localPort, state.Content, state.Origin); err != nil {
-		status = "rejected"
-		reason = "local_apply_failed"
-		if writeErr := writeFrame(func(ctx context.Context) error {
-			return stream.WriteAck(ctx, state.Seq, state.Content.ID, status, reason)
-		}); writeErr != nil {
-			return writeErr
-		}
-		return err
+		// The rejected ack is the per-clip failure report; the stream itself is
+		// healthy, so a clip the local daemon refuses must not tear it down.
+		return writeFrame(func(ctx context.Context) error {
+			return stream.WriteAck(ctx, state.Seq, state.Content.ID, "rejected", "local_apply_failed")
+		})
 	}
 	return writeFrame(func(ctx context.Context) error {
 		return stream.WriteAck(ctx, state.Seq, state.Content.ID, status, reason)
