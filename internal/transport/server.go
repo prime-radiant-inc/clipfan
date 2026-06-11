@@ -582,7 +582,7 @@ func (s *Server) getCurrent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) postCurrent(w http.ResponseWriter, r *http.Request) {
-	signed := s.readSignedLocalRequiredAuthVersion(w, r, AuthVersionRequestHMAC)
+	signed := s.readSignedLocalWithRequiredAuthVersionMax(w, r, AuthVersionRequestHMAC, MaxSSHStreamFrameBytes)
 	if signed == nil {
 		return
 	}
@@ -880,11 +880,15 @@ func (s *Server) readSignedLocalRequiredAuthVersion(w http.ResponseWriter, r *ht
 }
 
 func (s *Server) readSignedLocalWithRequiredAuthVersion(w http.ResponseWriter, r *http.Request, requiredAuthVersion string) *signedPayload {
+	return s.readSignedLocalWithRequiredAuthVersionMax(w, r, requiredAuthVersion, 1<<20)
+}
+
+func (s *Server) readSignedLocalWithRequiredAuthVersionMax(w http.ResponseWriter, r *http.Request, requiredAuthVersion string, maxBody int64) *signedPayload {
 	if !isLoopbackRemote(r.RemoteAddr) {
 		http.Error(w, "loopback required", http.StatusForbidden)
 		return nil
 	}
-	return s.readSignedWithRequiredAuthVersion(w, r, 1<<20, requiredAuthVersion)
+	return s.readSignedWithRequiredAuthVersion(w, r, maxBody, requiredAuthVersion)
 }
 
 // readSigned reads the body and verifies the canonical request HMAC signature.
@@ -920,9 +924,13 @@ func (s *Server) readSignedWithRequiredAuthVersion(w http.ResponseWriter, r *htt
 		http.Error(w, "stale timestamp", http.StatusUnauthorized)
 		return nil
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return nil
+	}
+	if int64(len(body)) > maxBody {
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return nil
 	}
 	authVersion := r.Header.Get(HeaderAuthVersion)

@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -104,6 +105,36 @@ func TestCurrentApplyEndpointRequiresSignedLoopbackAndAppliesContent(t *testing.
 	srv.Handler().ServeHTTP(remoteRec, remote)
 	if remoteRec.Code != http.StatusForbidden {
 		t.Fatalf("remote current apply status = %d, want 403", remoteRec.Code)
+	}
+}
+
+func TestPostCurrentAcceptsLargeClipBody(t *testing.T) {
+	auth := testAuth(t)
+	srv := NewServer(":0", auth, func() any { return nil })
+	srv.SetRequiredLocalAuthVersion(AuthVersionRequestHMAC)
+	setFixedServerTime(srv)
+	var gotContent clipboard.Content
+	srv.SetCurrentApply(func(content clipboard.Content, origin string) error {
+		gotContent = content
+		return nil
+	})
+	big := bytes.Repeat([]byte("A"), 2<<20) // 2 MiB: over the old 1 MiB cap, far under the frame cap
+	content := clipboard.New(clipboard.KindText, big, time.Unix(1780257600, 0).UTC())
+	content.ID = "clip-large-apply"
+	body, err := json.Marshal(CurrentPayloadFromContent(content, "linux-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := signedRequestWithTimestampAndNonceAndAuthVersion(t, auth, http.MethodPost, "/v1/current", "1780257600", "current-large", body, AuthVersionRequestHMAC)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("large current apply status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	if gotContent.ID != "clip-large-apply" || len(gotContent.Bytes) != len(big) {
+		t.Fatalf("applied content = id %q, %d bytes; want clip-large-apply, %d bytes", gotContent.ID, len(gotContent.Bytes), len(big))
 	}
 }
 
