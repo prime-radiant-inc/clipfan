@@ -1,9 +1,11 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +16,40 @@ import (
 	"github.com/prime-radiant-inc/clipfan/internal/sshprovision"
 	"github.com/prime-radiant-inc/clipfan/internal/transport"
 )
+
+func TestSSHTargetFromArgsFindsUserHost(t *testing.T) {
+	args := []string{"ssh", "-F", "/dev/null", "-o", "BatchMode=yes", "-p", "22", "jesse@linux-b.example.com", "sync-stream"}
+	if got := sshTargetFromArgs(args); got != "jesse@linux-b.example.com" {
+		t.Fatalf("sshTargetFromArgs = %q, want jesse@linux-b.example.com", got)
+	}
+	if got := sshTargetFromArgs([]string{"ssh"}); got != "" {
+		t.Fatalf("sshTargetFromArgs with no target = %q, want empty", got)
+	}
+}
+
+func TestExecSSHProcessStarterLogsStderr(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	proc, err := execSSHProcessStarter{}.Start(context.Background(), sshprovision.SSHCommand{
+		Args: []string{"/bin/sh", "-c", "echo gateway-exploded >&2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = proc.Stdin().Close()
+	_ = proc.Wait()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(buf.String(), "gateway-exploded") {
+		if time.Now().After(deadline) {
+			t.Fatalf("stderr line never reached slog; log output: %q", buf.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 func TestSSHSyncPeersFromConfigSelectsReadyPersistentConnectors(t *testing.T) {
 	cfg := sshSyncManagerTestConfig()

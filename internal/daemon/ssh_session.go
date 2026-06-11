@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"log/slog"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -781,6 +783,27 @@ func (m *sshSyncManager) readPeerEvents(ctx context.Context, session *sshPeerSes
 	}
 }
 
+// sshTargetFromArgs extracts the user@host argument from an ssh argv for log
+// attribution. Returns "" when no such argument exists.
+func sshTargetFromArgs(args []string) string {
+	for _, arg := range args {
+		if strings.Contains(arg, "@") {
+			return arg
+		}
+	}
+	return ""
+}
+
+// logSSHStderr surfaces the remote gateway's stderr (its only error channel)
+// into the daemon log, one bounded line at a time.
+func logSSHStderr(r io.Reader, target string) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 4096), 4096)
+	for scanner.Scan() {
+		slog.Warn("ssh stderr", "target", target, "line", scanner.Text())
+	}
+}
+
 type execSSHProcessStarter struct{}
 
 func (execSSHProcessStarter) Start(ctx context.Context, cmd sshprovision.SSHCommand) (sshStartedProcess, error) {
@@ -797,11 +820,18 @@ func (execSSHProcessStarter) Start(ctx context.Context, cmd sshprovision.SSHComm
 		_ = stdin.Close()
 		return nil, err
 	}
+	stderr, err := process.StderrPipe()
+	if err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return nil, err
+	}
 	if err := process.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
 		return nil, err
 	}
+	go logSSHStderr(stderr, sshTargetFromArgs(cmd.Args))
 	return execSSHStartedProcess{cmd: process, stdin: stdin, stdout: stdout}, nil
 }
 
