@@ -2,6 +2,7 @@ import AppKit
 import XCTest
 @testable import Clipfan
 
+@MainActor
 final class ApplicationActivationControllerTests: XCTestCase {
     func testAccessoryWithoutVisibleClipfanWindow() {
         XCTAssertEqual(ApplicationActivationController.activationPolicy(hasVisibleClipfanWindow: false),

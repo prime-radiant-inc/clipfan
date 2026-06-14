@@ -130,6 +130,7 @@ final class DaemonClient: ObservableObject {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/sh")
         proc.arguments = ["-c", "nohup \(bin.path) >\(log) 2>&1 &"]
+        proc.environment = LocalDaemonStartup.childLaunchEnvironment()
         try? proc.run()
         proc.waitUntilExit()
     }

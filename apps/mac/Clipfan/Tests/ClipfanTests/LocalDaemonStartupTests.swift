@@ -2,6 +2,21 @@ import XCTest
 @testable import Clipfan
 
 final class LocalDaemonStartupTests: XCTestCase {
+    func testChildLaunchEnvironmentAddsClipboardToolSearchPaths() {
+        let environment = LocalDaemonStartup.childLaunchEnvironment(from: [
+            "HOME": "/Users/tester",
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        ])
+
+        let path = environment["PATH"] ?? ""
+        let components = path.split(separator: ":").map(String.init)
+        XCTAssertTrue(components.contains("/Users/tester/.local/bin"))
+        XCTAssertTrue(components.contains("/opt/homebrew/bin"))
+        XCTAssertTrue(components.contains("/usr/local/bin"))
+        XCTAssertTrue(components.contains("/usr/bin"))
+        XCTAssertEqual(environment["HOME"], "/Users/tester")
+    }
+
     func testPreV2ConfigKeepsLegacyRawKeyCompatibility() {
         let missingVersion = LocalDaemonStartup.prepare(
             configData: data(#"{"shared_key":"secret","static_peers":[]}"#),
