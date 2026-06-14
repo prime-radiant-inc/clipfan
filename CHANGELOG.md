@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.8] - 2026-06-14
+
+### Fixed
+
+- App-launched macOS daemons now get the local and Homebrew tool paths they need to detect screenshot and Preview image copies when the menu app starts the daemon itself.
+
 ## [1.0.7] - 2026-06-11
 
 ### Fixed
