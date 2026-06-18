@@ -158,8 +158,12 @@ func TestLoadBufferAllUsesLoadBuffer(t *testing.T) {
 
 	// A fake `tmux` on PATH that records its argv to a file.
 	binDir := t.TempDir()
-	argLog := tmp + "/tmux-args.log"
-	shim := "#!/bin/sh\necho \"$@\" >> " + argLog + "\n"
+	loadLog := tmp + "/load-buffer.log"
+	shim := `#!/bin/sh
+if [ "$3" = "load-buffer" ]; then
+	echo "$@" >> ` + loadLog + `
+fi
+`
 	if err := os.WriteFile(binDir+"/tmux", []byte(shim), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -169,13 +173,55 @@ func TestLoadBufferAllUsesLoadBuffer(t *testing.T) {
 		t.Fatalf("LoadBufferAll: %v", err)
 	}
 
-	out, err := os.ReadFile(argLog)
+	out, err := os.ReadFile(loadLog)
 	if err != nil {
 		t.Fatalf("fake tmux was never invoked: %v", err)
 	}
 	got := string(out)
 	if !strings.Contains(got, "load-buffer") {
 		t.Fatalf("writeback should use load-buffer; got args: %q", got)
+	}
+}
+
+func TestLoadBufferAllSkipsSocketWithClipfanBufferHook(t *testing.T) {
+	tmp := shortTempDir(t)
+	t.Setenv("TMUX_TMPDIR", tmp)
+
+	sockDir := tmp + "/tmux-" + uid()
+	if err := os.MkdirAll(sockDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", sockDir+"/default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	binDir := t.TempDir()
+	loadLog := tmp + "/load-buffer.log"
+	shim := `#!/bin/sh
+if [ "$3" = "show-hooks" ]; then
+	echo 'after-load-buffer[0] run-shell "tmux -S \"#{socket_path}\" show-buffer | /Users/jesse/.local/bin/clipfan copy"'
+	exit 0
+fi
+if [ "$3" = "load-buffer" ]; then
+	echo "$@" >> ` + loadLog + `
+	exit 0
+fi
+`
+	if err := os.WriteFile(binDir+"/tmux", []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if err := LoadBufferAll([]byte("hello")); err != nil {
+		t.Fatalf("LoadBufferAll: %v", err)
+	}
+
+	if _, err := os.Stat(loadLog); err == nil {
+		t.Fatal("LoadBufferAll wrote to a tmux socket with a clipfan copy buffer hook")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat load log: %v", err)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -25,6 +26,9 @@ func LoadBufferAll(content []byte) error {
 	}
 	var first error
 	for _, s := range socks {
+		if hasClipfanBufferHook(s) {
+			continue
+		}
 		cmd := exec.Command(tmuxBinary(), "-S", s, "load-buffer", "-")
 		cmd.Stdin = bytes.NewReader(content)
 		if err := cmd.Run(); err != nil && first == nil {
@@ -32,6 +36,16 @@ func LoadBufferAll(content []byte) error {
 		}
 	}
 	return first
+}
+
+func hasClipfanBufferHook(socket string) bool {
+	for _, hook := range []string{"after-load-buffer", "after-set-buffer"} {
+		out, err := exec.Command(tmuxBinary(), "-S", socket, "show-hooks", "-g", hook).Output()
+		if err == nil && strings.Contains(string(out), "clipfan copy") {
+			return true
+		}
+	}
+	return false
 }
 
 // Sockets returns the absolute paths of every tmux socket the current user
