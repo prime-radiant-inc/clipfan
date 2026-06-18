@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.9] - 2026-06-18
+
+### Fixed
+
+- Fixed Clipfan idle CPU regressions by removing the menu app's hidden background daemon polling and backing off the daemon clipboard poll after repeated idle reads.
+- Prevented stale tmux servers that still have old global buffer hooks from recirculating daemon writebacks through `clipfan copy`.
+- Daemon upgrade detection now compares the bundled helper bytes with the installed helper instead of trusting matching version strings, so stale same-version payloads are replaced.
+
 ## [1.0.8] - 2026-06-14
 
 ### Fixed
