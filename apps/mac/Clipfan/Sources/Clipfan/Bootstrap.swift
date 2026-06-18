@@ -94,12 +94,8 @@ enum Bootstrap {
 
     static func installedBinaryCurrent(installed: URL, bundled: URL?) -> Bool {
         guard FileManager.default.fileExists(atPath: installed.path) else { return false }
-        guard let bundled,
-              FileManager.default.fileExists(atPath: bundled.path) else { return true }
-        if let installedVersion = binaryVersion(installed),
-           let bundledVersion = binaryVersion(bundled) {
-            return installedVersion == bundledVersion
-        }
+        guard let bundled else { return true }
+        guard FileManager.default.fileExists(atPath: bundled.path) else { return true }
         return filesEqual(installed, bundled)
     }
 

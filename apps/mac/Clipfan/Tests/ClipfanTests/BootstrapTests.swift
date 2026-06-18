@@ -65,7 +65,7 @@ final class BootstrapInstallTests: XCTestCase {
         XCTAssertTrue(Bootstrap.filesEqual(installed, bundled))
     }
 
-    func testMatchingReportedDaemonVersionIsCurrentEvenWhenBinariesDiffer() throws {
+    func testMatchingReportedDaemonVersionIsOutdatedWhenBinariesDiffer() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("clipfan-bootstrap-version-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -78,7 +78,7 @@ final class BootstrapInstallTests: XCTestCase {
                                              version: "v0.3.7",
                                              marker: "bundled")
 
-        XCTAssertTrue(Bootstrap.installedBinaryCurrent(installed: installed, bundled: bundled))
+        XCTAssertFalse(Bootstrap.installedBinaryCurrent(installed: installed, bundled: bundled))
         XCTAssertFalse(Bootstrap.filesEqual(installed, bundled))
     }
 

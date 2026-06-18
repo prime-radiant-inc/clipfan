@@ -65,6 +65,12 @@ type SSHSyncRuntime interface {
 	Snapshot() map[string]SSHPeerRuntimeState
 }
 
+const (
+	clipboardPollActiveInterval = 250 * time.Millisecond
+	clipboardPollIdleInterval   = 2 * time.Second
+	clipboardPollIdleAfter      = 8
+)
+
 type Daemon struct {
 	cfg              *config.Config
 	cb               clipboard.Backend
@@ -530,8 +536,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.mu.Unlock()
 	}
 
-	tick := time.NewTicker(250 * time.Millisecond)
+	tick := time.NewTicker(clipboardPollActiveInterval)
 	defer tick.Stop()
+	idlePolls := 0
 
 	for {
 		select {
@@ -540,9 +547,22 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case err := <-serverErr:
 			return err
 		case <-tick.C:
-			d.pollOnce(ctx)
+			var next time.Duration
+			next, idlePolls = nextClipboardPollInterval(idlePolls, d.pollOnce(ctx))
+			tick.Reset(next)
 		}
 	}
+}
+
+func nextClipboardPollInterval(idlePolls int, changed bool) (time.Duration, int) {
+	if changed {
+		return clipboardPollActiveInterval, 0
+	}
+	idlePolls++
+	if idlePolls >= clipboardPollIdleAfter {
+		return clipboardPollIdleInterval, idlePolls
+	}
+	return clipboardPollActiveInterval, idlePolls
 }
 
 func (d *Daemon) startServer(ctx context.Context) (<-chan error, error) {
@@ -566,13 +586,13 @@ func (d *Daemon) startServer(ctx context.Context) (<-chan error, error) {
 	return nil, fmt.Errorf("daemon serve function is not configured")
 }
 
-func (d *Daemon) pollOnce(ctx context.Context) {
+func (d *Daemon) pollOnce(ctx context.Context) bool {
 	if d.listenerPlan.SafeMode {
-		return
+		return false
 	}
 	c, err := d.cb.Read()
 	if err != nil || len(c.Bytes) == 0 {
-		return
+		return false
 	}
 	// A clipboard text that is one of our own image-store paths is the daemon's
 	// representation of an image (written as text on backends that can't hold
@@ -581,15 +601,15 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 	// This is content-based, not hash-based, so it holds even when a trailing
 	// newline or re-read makes the path's hash miss the echo guard.
 	if c.Kind == clipboard.KindText && store.IsImageStorePath(string(c.Bytes)) {
-		return
+		return false
 	}
 	if d.isEcho(c) {
-		return
+		return false
 	}
 	c.ID = transport.NewClipID()
 	if c.ID == "" {
 		slog.Warn("could not mint clip ID; skipping broadcast")
-		return
+		return false
 	}
 	d.mu.Lock()
 	d.seen.add(c.ID)
@@ -614,9 +634,10 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 	d.mu.Unlock()
 	if c.Concealed {
 		slog.Debug("concealed local clip skipped", "id", c.ID, "kind", c.Kind)
-		return
+		return true
 	}
 	d.publishSSH(ctx, c, d.origin, "" /* skipOrigin = none */)
+	return true
 }
 
 // isEcho reports whether a freshly read clipboard content `c` is just our own

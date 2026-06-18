@@ -24,6 +24,7 @@ struct StatusMenuView: View {
         }
         .padding(8)
         .frame(width: 360)
+        .task { await daemon.refresh() }
     }
 
     /// The current global toggle shortcut as a display string, or "" if unset.

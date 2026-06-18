@@ -46,6 +46,7 @@ struct SettingsView: View {
             case .about:       AboutView()
             }
         }
+        .task { await daemon.refresh() }
     }
 }
 

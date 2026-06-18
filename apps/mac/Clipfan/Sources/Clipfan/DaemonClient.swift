@@ -29,21 +29,12 @@ final class DaemonClient: ObservableObject {
     var transportGatePolicy: SSHTransportGatePolicy = .current
 
     private let base = URL(string: "http://127.0.0.1:7853")!
-    private var timer: Timer?
 
     private init() {}
 
     func start() {
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                await self?.refresh()
-                await self?.refreshHistory()
-            }
-        }
         Task {
             await refresh()
-            await refreshHistory()
         }
     }
 
