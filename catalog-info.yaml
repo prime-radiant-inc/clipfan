@@ -5,7 +5,7 @@ metadata:
   description: "Clipboard sync daemon mirroring the macOS pasteboard to a remote tmux/SSH fleet."
   annotations:
     backstage.io/techdocs-ref: dir:.
-    prime-radiant.com/repo-map-rev: "956e42f7e82381303263fbc9f563a631e250e573"
+    prime-radiant.com/repo-map-rev: "b3107fb4a603d1a1fb89cf61790ffb69a149cce0"
   tags: [go, swift, clipboard, daemon, macos]
 spec:
   type: service
