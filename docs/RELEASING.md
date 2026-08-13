@@ -1,16 +1,20 @@
 # Releasing clipfan
 
-The menubar app is built, Developer ID-signed, notarized, stapled, and published
-to GitHub Releases with a Sparkle auto-update appcast by
-`.github/workflows/release.yml`, triggered on any `v*` tag.
+The release workflow is triggered on any `v*` tag and publishes the daemon
+payloads, universal installer, and Mac app zip. When all signing credentials are
+present it also Developer ID-signs, notarizes, staples, and publishes the DMG and
+Sparkle auto-update appcast. A `workflow_dispatch` run is build-only and skips
+signing by default.
 
 ## One-time setup: repository secrets
 
-The workflow needs these secrets on `prime-radiant-inc/clipfan`
-(Settings → Secrets and variables → Actions). All seven are configured (verify
-with `gh secret list`); they are the same credentials used by
-`prime-radiant-inc/clearance` (same Apple Developer account and Sparkle key),
-so values can be copied from there when rotating.
+Signed releases need these seven secrets on `prime-radiant-inc/clipfan`
+(Settings → Secrets and variables → Actions). Unsigned tag releases can still
+publish without them, which lets forks build the daemon and unsigned Mac app.
+The upstream repository has all seven configured (verify with `gh secret list`);
+they are the same credentials used by `prime-radiant-inc/clearance` (same Apple
+Developer account and Sparkle key), so values can be copied from there when
+rotating.
 
 | Secret | What it is |
 |--------|-----------|
@@ -73,11 +77,26 @@ The workflow then:
    daemon version stamped from `DAEMON_VERSION`) and verifies the full release
    payload set,
 3. builds `Clipfan.app` via xcodegen + xcodebuild,
-4. Developer ID-signs the app, the embedded Sparkle framework, and the bundled
-   macOS daemon binaries (hardened runtime),
-5. notarizes + staples,
-6. publishes the `.zip`, `.dmg`, and `appcast.xml` to the GitHub Release, using
-   the changelog section as release notes.
+4. when all seven signing secrets are available, Developer ID-signs the app,
+   embedded Sparkle framework, and bundled macOS daemon binaries (hardened
+   runtime), then notarizes and staples,
+5. publishes the daemon tarballs, universal installer, and app zip; signed runs
+   additionally publish the `.dmg` and `appcast.xml`, using the changelog section
+   as release notes.
+
+## Manual build-only verification
+
+Run the workflow manually to build the full unsigned payload without creating a
+GitHub Release. The version used for the app and release notes comes from
+`DAEMON_VERSION` rather than the branch name:
+
+```sh
+gh workflow run release.yml --repo prime-radiant-inc/clipfan -f skip_signing=true
+```
+
+Set `skip_signing` to `false` only when explicitly testing the signed path. A
+manual run still does not publish release assets; use a `v*` tag for an actual
+release.
 
 Installed copies pick up the update from
 `https://github.com/prime-radiant-inc/clipfan/releases/latest/download/appcast.xml`.
@@ -93,6 +112,9 @@ test -x dist/clipfan-pasteboard-helper-darwin-arm64
 TMPDIR=/tmp go test ./...
 (cd apps/mac/Clipfan && swift test)
 bash dist/test-build-all-helper.sh
+bash scripts/test-release-version.sh
+bash scripts/test-release-workflow.sh
+bash apps/mac/test-build-app.sh
 ```
 
 The helper executable checks are release-critical: the daemon depends on the
@@ -113,7 +135,7 @@ or the SwiftPM dev path that still works for day-to-day:
 bash dist/build-all.sh
 test -x dist/clipfan-pasteboard-helper-darwin-amd64
 test -x dist/clipfan-pasteboard-helper-darwin-arm64
-cd apps/mac/Clipfan && bash build-app.sh
+bash apps/mac/test-build-app.sh
 ```
 
 ---
