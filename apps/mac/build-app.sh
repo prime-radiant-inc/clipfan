@@ -37,14 +37,27 @@ cp "$out/clipfan-pasteboard-helper" "$app/Contents/MacOS/clipfan-pasteboard-help
 chmod +x "$app/Contents/MacOS/"*
 
 # Embed Sparkle.framework (binary dependency) and KeyboardShortcuts resource bundle.
-# The SwiftPM build stages Sparkle at .build/out/Products/Release/Sparkle.framework.
-sparkle_src="$swiftpkg/.build/out/Products/Release/Sparkle.framework"
+# SwiftPM uses .build/release for the convenience path and may also emit an
+# architecture-qualified .build/<triple>/release path.
+find_sparkle_framework() {
+    local candidate
+    for candidate in \
+        "$swiftpkg/.build/release/Sparkle.framework" \
+        "$swiftpkg"/.build/*/release/Sparkle.framework; do
+        if [[ -d "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    echo "error: Sparkle.framework not found in either SwiftPM release layout:" >&2
+    echo "       $swiftpkg/.build/release/Sparkle.framework" >&2
+    echo "       $swiftpkg/.build/<triple>/release/Sparkle.framework" >&2
+    return 1
+}
+
+sparkle_src=$(find_sparkle_framework) || exit 1
 kb_bundle_src="$swiftpkg/.build/release/KeyboardShortcuts_KeyboardShortcuts.bundle"
-if [[ ! -d "$sparkle_src" ]]; then
-    echo "error: Sparkle.framework not found at $sparkle_src" >&2
-    echo "       (did swift build -c release complete?)" >&2
-    exit 1
-fi
 cp -R "$sparkle_src" "$app/Contents/Frameworks/Sparkle.framework"
 rm -rf "$app/Contents/Frameworks/Sparkle.framework/Versions/B/_CodeSignature" \
        "$app/Contents/Frameworks/Sparkle.framework/Versions/B/Headers" \
