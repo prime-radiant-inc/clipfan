@@ -55,8 +55,8 @@ jobs:
 
       # -------------------------------------------------------------------
       # Signing gate — a single source of truth for "should we sign?".
-      # Sets steps.gate.outputs.sign = "true" only when every Apple secret is
-      # configured AND the caller didn't force-skip via workflow_dispatch.
+      # Sets steps.gate.outputs.sign = "true" only when every Apple + Sparkle
+      # secret is configured AND the caller didn't force-skip via dispatch.
       # -------------------------------------------------------------------
       - name: Signing gate
         id: gate
