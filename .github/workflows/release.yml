@@ -113,9 +113,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$ARTIFACTS_DIR"
-          VERSION="${GITHUB_REF_NAME#v}"
-          # On workflow_dispatch there's no tag; fall back to DAEMON_VERSION.
-          [[ "$VERSION" == "${GITHUB_REF_NAME}" ]] && VERSION="$(tr -d 'v' < DAEMON_VERSION)"
+          VERSION="$(bash scripts/release-version.sh)"
           bash scripts/extract-release-notes.sh "$VERSION" CHANGELOG.md "$ARTIFACTS_DIR/release-notes.md"
 
       # -------------------------------------------------------------------
@@ -126,8 +124,7 @@ jobs:
         id: build
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          [[ "$VERSION" == "${GITHUB_REF_NAME}" ]] && VERSION="$(tr -d 'v' < DAEMON_VERSION)"
+          VERSION="$(bash scripts/release-version.sh)"
           BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
 
           ( cd "$APP_DIR" && xcodegen generate )
@@ -276,8 +273,7 @@ jobs:
         run: |
           set -euo pipefail
           APP_PATH="${{ steps.build.outputs.app_path }}"
-          VERSION="${GITHUB_REF_NAME#v}"
-          [[ "$VERSION" == "${GITHUB_REF_NAME}" ]] && VERSION="$(tr -d 'v' < DAEMON_VERSION)"
+          VERSION="$(bash scripts/release-version.sh)"
           mkdir -p "$ARTIFACTS_DIR"
 
           APP_ZIP="$ARTIFACTS_DIR/$APP_NAME-$VERSION-macOS.zip"
@@ -326,7 +322,7 @@ jobs:
           GENERATE_APPCAST="$SPARKLE_BUILD/Build/Products/Release/generate_appcast"
           APPCAST_DIR="$RUNNER_TEMP/appcast"
           ED_KEY_FILE="$RUNNER_TEMP/sparkle-private-key"
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="$(bash scripts/release-version.sh)"
 
           mkdir -p "$APPCAST_DIR"
           cp "${{ steps.pkg.outputs.app_zip }}" "$APPCAST_DIR/"
