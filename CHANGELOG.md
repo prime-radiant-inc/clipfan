@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.10] - 2026-08-13
+
+### Added
+
+- Added cross-platform macOS and Linux release tarballs for amd64 and arm64, plus a universal installer.
+
+### Fixed
+
+- Source-built macOS apps now embed Sparkle and KeyboardShortcuts resources, and new macOS installs bootstrap self-SSH for mesh provisioning.
+- Release builds now resolve versions consistently and allow unsigned manual and fork builds while requiring all Apple and Sparkle credentials for signed artifacts.
+
 ## [1.0.9] - 2026-06-18
 
 ### Fixed
