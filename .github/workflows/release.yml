@@ -17,6 +17,12 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      skip_signing:
+        description: "Skip Apple signing, notarization, and Sparkle appcast generation"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -61,17 +67,18 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PW: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          SPARKLE_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
         run: |
           set -euo pipefail
-          skip="${{ github.event_name == 'workflow_dispatch' && inputs.skip_signing == true || 'false' }}"
+          skip="${{ github.event_name == 'workflow_dispatch' && inputs.skip_signing || false }}"
           if [[ "$skip" == "true" ]]; then
             echo "sign=false" >> "$GITHUB_OUTPUT"
             echo "Signing skipped (workflow_dispatch override)."
             exit 0
           fi
-          if [[ -n "$CERT" && -n "$CERT_PW" && -n "$SIGN_ID" && -n "$APPLE_ID" && -n "$APPLE_PW" && -n "$APPLE_TEAM" ]]; then
+          if [[ -n "$CERT" && -n "$CERT_PW" && -n "$SIGN_ID" && -n "$APPLE_ID" && -n "$APPLE_PW" && -n "$APPLE_TEAM" && -n "$SPARKLE_KEY" ]]; then
             echo "sign=true" >> "$GITHUB_OUTPUT"
-            echo "Apple signing secrets detected — will sign + notarize."
+            echo "Apple and Sparkle signing secrets detected — will sign + notarize."
           else
             echo "sign=false" >> "$GITHUB_OUTPUT"
             echo "Apple signing secrets not configured — publishing unsigned Mac app."
