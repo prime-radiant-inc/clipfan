@@ -44,6 +44,8 @@ XcodeGen or change the release workflow's Xcode build path.
 Declare a `workflow_dispatch` boolean input named `skip_signing`, defaulting to
 `true`, so manual smoke tests do not unexpectedly consume Apple credentials.
 Tag-triggered runs always retain the existing secret-driven signing gate.
+The signing gate must require the Sparkle private Ed25519 key as well as the six
+Apple credentials, because the same gate controls appcast generation.
 
 Use one consistent shell version resolution in every workflow step that needs a
 release version: strip the leading `v` from tag refs, and use `DAEMON_VERSION`
