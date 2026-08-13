@@ -29,12 +29,48 @@ swiftc -O -target "$(uname -m)-apple-macos13.0" \
 
 echo "[3/5] assemble bundle"
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
 cp "$swiftpkg/Info.plist" "$app/Contents/Info.plist"
 cp "$swiftbin" "$app/Contents/MacOS/Clipfan"
 cp "$out/clipfand" "$app/Contents/MacOS/clipfand"
 cp "$out/clipfan-pasteboard-helper" "$app/Contents/MacOS/clipfan-pasteboard-helper"
 chmod +x "$app/Contents/MacOS/"*
+
+# Embed Sparkle.framework (binary dependency) and KeyboardShortcuts resource bundle.
+# SwiftPM uses .build/release for the convenience path and may also emit an
+# architecture-qualified .build/<triple>/release path.
+find_sparkle_framework() {
+    local candidate
+    for candidate in \
+        "$swiftpkg/.build/release/Sparkle.framework" \
+        "$swiftpkg"/.build/*/release/Sparkle.framework; do
+        if [[ -d "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    echo "error: Sparkle.framework not found in either SwiftPM release layout:" >&2
+    echo "       $swiftpkg/.build/release/Sparkle.framework" >&2
+    echo "       $swiftpkg/.build/<triple>/release/Sparkle.framework" >&2
+    return 1
+}
+
+sparkle_src=$(find_sparkle_framework) || exit 1
+kb_bundle_src="$swiftpkg/.build/release/KeyboardShortcuts_KeyboardShortcuts.bundle"
+cp -R "$sparkle_src" "$app/Contents/Frameworks/Sparkle.framework"
+rm -rf "$app/Contents/Frameworks/Sparkle.framework/Versions/B/_CodeSignature" \
+       "$app/Contents/Frameworks/Sparkle.framework/Versions/B/Headers" \
+       "$app/Contents/Frameworks/Sparkle.framework/Versions/B/PrivateHeaders" \
+       "$app/Contents/Frameworks/Sparkle.framework/Versions/B/Modules"
+if [[ -d "$kb_bundle_src" ]]; then
+    cp -R "$kb_bundle_src" "$app/Contents/Resources/KeyboardShortcuts_KeyboardShortcuts.bundle"
+fi
+
+# Main binary rpath covers @loader_path (Contents/MacOS); add ../Frameworks so
+# dyld finds Sparkle.framework in the conventional macOS app layout.
+install_name_tool -add_rpath '@loader_path/../Frameworks' \
+    "$app/Contents/MacOS/Clipfan" 2>/dev/null || true
 
 echo "[4/5] ad-hoc codesign (replace with Developer ID for distribution)"
 codesign --force --deep --sign - "$app" 2>/dev/null || \

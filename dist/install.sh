@@ -153,12 +153,21 @@ case "$goos" in
                  clipfan-linux-amd64 clipfan-linux-arm64 \
                  clipfan-shim-linux-amd64 clipfan-shim-linux-arm64 \
                  clipfan-pasteboard-helper-darwin-amd64 clipfan-pasteboard-helper-darwin-arm64 \
-                 install.sh clipfan.service com.primeradiant.clipfan.plist tmux.conf.snippet; do
+                 install.sh bootstrap-self-ssh.sh clipfan.service com.primeradiant.clipfan.plist tmux.conf.snippet; do
             if [[ -e "$here/$f" ]]; then
                 install -m 0755 "$here/$f" "$share/$f"
             fi
         done
         echo "Staged share dir: $share"
+
+        # Ensure this Mac can SSH to itself (its own default key in its own
+        # authorized_keys). Mesh provisioning SSHes to every host in the pair
+        # — including this Mac — to install known_hosts before it installs any
+        # authorized_keys, so self-SSH must already work or "Add peer" fails
+        # with "Permission denied (publickey)". Best-effort, idempotent.
+        if [[ -x "$here/bootstrap-self-ssh.sh" ]]; then
+            bash "$here/bootstrap-self-ssh.sh" || true
+        fi
         ;;
     linux)
         unit_dir="$HOME/.config/systemd/user"
