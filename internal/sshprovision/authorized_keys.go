@@ -10,9 +10,9 @@ import (
 	"regexp"
 	"strings"
 	"sync/atomic"
-	"syscall"
 
 	"github.com/prime-radiant-inc/clipfan/internal/config"
+	"github.com/prime-radiant-inc/clipfan/internal/safefile"
 )
 
 const (
@@ -417,9 +417,9 @@ func withAuthorizedKeysLock(path string, fn func() error) error {
 		return err
 	}
 	lockPath := path + ".lock"
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	lockFile, err := safefile.OpenNoFollow(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		if errors.Is(err, syscall.ELOOP) {
+		if errors.Is(err, safefile.ErrSymlink) {
 			return fmt.Errorf("%w: lock is symlink: %s", ErrAuthorizedKeysUnsafe, lockPath)
 		}
 		return err
@@ -431,10 +431,10 @@ func withAuthorizedKeysLock(path string, fn func() error) error {
 	if err := lockFile.Chmod(0o600); err != nil {
 		return err
 	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+	if err := safefile.Flock(lockFile, safefile.LOCK_EX); err != nil {
 		return err
 	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	defer safefile.Unlock(lockFile)
 	return fn()
 }
 
@@ -518,12 +518,12 @@ func validateAuthorizedKeysDirInfo(path string, info os.FileInfo) error {
 }
 
 func readAuthorizedKeysFile(path string) ([]byte, bool, error) {
-	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	file, err := safefile.OpenNoFollow(path, os.O_RDONLY, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false, nil
 		}
-		if errors.Is(err, syscall.ELOOP) {
+		if errors.Is(err, safefile.ErrSymlink) {
 			return nil, false, fmt.Errorf("%w: file is symlink: %s", ErrAuthorizedKeysUnsafe, path)
 		}
 		return nil, false, err
@@ -640,15 +640,15 @@ type authorizedKeysFileIdentityInfo struct {
 }
 
 func authorizedKeysFileIdentity(info os.FileInfo) (authorizedKeysFileIdentityInfo, error) {
-	stat, ok := info.Sys().(*syscall.Stat_t)
+	device, inode, links, uid, ok := safefile.StatIdentity(info)
 	if !ok {
 		return authorizedKeysFileIdentityInfo{}, fmt.Errorf("%w: could not inspect file identity", ErrAuthorizedKeysUnsafe)
 	}
 	return authorizedKeysFileIdentityInfo{
-		device:    uint64(stat.Dev),
-		inode:     uint64(stat.Ino),
-		linkCount: uint64(stat.Nlink),
-		uid:       uint32(stat.Uid),
+		device:    device,
+		inode:     inode,
+		linkCount: links,
+		uid:       uid,
 	}, nil
 }
 

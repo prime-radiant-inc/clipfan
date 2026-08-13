@@ -41,6 +41,13 @@ func WaitForDaemonLockRelease(context.Context, string) error {
 	return nil
 }
 
+// waitForDaemonLock mirrors the Unix signature for callers in this package
+// (offline fleet reset, listener repair). The Windows instance lock is a
+// no-op, so it returns an empty lock immediately.
+func waitForDaemonLock(context.Context, string) (*daemonLock, error) {
+	return &daemonLock{}, nil
+}
+
 func (d *Daemon) normalizeRunError(err error) error {
 	if err == nil {
 		return nil
