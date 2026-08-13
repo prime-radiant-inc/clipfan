@@ -1,9 +1,22 @@
 name: Build and Release
 
+# Publishes a GitHub release on every `v*` tag. The release always includes:
+#   - Prebuilt per-(os,arch) daemon tarballs (macOS + Linux, amd64 + arm64)
+#   - A universal install.sh (curl|sh one-liner)
+#   - The Mac menubar app as a zip (unsigned if no Apple secrets are configured)
+# When the Apple Developer ID + notarization + Sparkle secrets are present the
+# same release additionally includes a signed+notarized Mac app zip + DMG and a
+# Sparkle appcast.xml for auto-update. So a fork with no Apple secrets still
+# produces a fully usable release (the Mac app just isn't notarized).
+#
+# workflow_dispatch runs the whole build without publishing, so forks can smoke
+# test the pipeline before tagging.
+
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -17,7 +30,6 @@ jobs:
       SCHEME: Clipfan
       DERIVED_DATA_PATH: ${{ github.workspace }}/build
       ARTIFACTS_DIR: ${{ github.workspace }}/dist-artifacts
-      SPARKLE_FEED_URL: https://github.com/${{ github.repository }}/releases/latest/download/appcast.xml
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -35,7 +47,115 @@ jobs:
       - name: Verify SSH Release Gates
         run: bash scripts/test-ssh-release-gates.sh
 
+      # -------------------------------------------------------------------
+      # Signing gate — a single source of truth for "should we sign?".
+      # Sets steps.gate.outputs.sign = "true" only when every Apple secret is
+      # configured AND the caller didn't force-skip via workflow_dispatch.
+      # -------------------------------------------------------------------
+      - name: Signing gate
+        id: gate
+        env:
+          CERT: ${{ secrets.DEVELOPER_ID_APPLICATION_CERT_BASE64 }}
+          CERT_PW: ${{ secrets.DEVELOPER_ID_APPLICATION_CERT_PASSWORD }}
+          SIGN_ID: ${{ secrets.DEVELOPER_ID_APPLICATION_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PW: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          skip="${{ github.event_name == 'workflow_dispatch' && inputs.skip_signing == true || 'false' }}"
+          if [[ "$skip" == "true" ]]; then
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+            echo "Signing skipped (workflow_dispatch override)."
+            exit 0
+          fi
+          if [[ -n "$CERT" && -n "$CERT_PW" && -n "$SIGN_ID" && -n "$APPLE_ID" && -n "$APPLE_PW" && -n "$APPLE_TEAM" ]]; then
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+            echo "Apple signing secrets detected — will sign + notarize."
+          else
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+            echo "Apple signing secrets not configured — publishing unsigned Mac app."
+          fi
+
+      # -------------------------------------------------------------------
+      # Daemon payloads (always). Cross-compiles every (os,arch) target and
+      # stages them in dist/ with the version stamped from DAEMON_VERSION.
+      # -------------------------------------------------------------------
+      - name: Build Daemon Payload
+        run: |
+          set -euo pipefail
+          unset CLIPFAN_BUILD_HELPER_ONLY CLIPFAN_BUILD_GO CLIPFAN_TEST_HELPER_ONLY
+          bash dist/build-all.sh
+
+      - name: Verify Release Payload
+        run: |
+          set -euo pipefail
+          unset CLIPFAN_BUILD_HELPER_ONLY CLIPFAN_BUILD_GO CLIPFAN_TEST_HELPER_ONLY
+          CLIPFAN_VERIFY_ONLY=1 bash dist/build-all.sh
+
+      - name: Package Daemon Tarballs
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACTS_DIR"
+          bash dist/make-release-tarballs.sh "$ARTIFACTS_DIR"
+
+      - name: Stage Universal Installer
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACTS_DIR"
+          # Bake the releasing repo into the published installer so the
+          # `latest/download/install.sh` URL defaults to this repo's releases.
+          sed "s|prime-radiant-inc/clipfan|${{ github.repository }}|g" \
+              scripts/install.sh > "$ARTIFACTS_DIR/install.sh"
+          chmod +x "$ARTIFACTS_DIR/install.sh"
+
+      - name: Extract Release Notes
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACTS_DIR"
+          VERSION="${GITHUB_REF_NAME#v}"
+          # On workflow_dispatch there's no tag; fall back to DAEMON_VERSION.
+          [[ "$VERSION" == "${GITHUB_REF_NAME}" ]] && VERSION="$(tr -d 'v' < DAEMON_VERSION)"
+          bash scripts/extract-release-notes.sh "$VERSION" CHANGELOG.md "$ARTIFACTS_DIR/release-notes.md"
+
+      # -------------------------------------------------------------------
+      # Mac menubar app build (always, unsigned). CODE_SIGNING_ALLOWED=NO
+      # builds the bundle without signing; signing happens in a later step.
+      # -------------------------------------------------------------------
+      - name: Build Release App
+        id: build
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          [[ "$VERSION" == "${GITHUB_REF_NAME}" ]] && VERSION="$(tr -d 'v' < DAEMON_VERSION)"
+          BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
+
+          ( cd "$APP_DIR" && xcodegen generate )
+          xcodebuild \
+            -project "$APP_DIR/Clipfan.xcodeproj" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$DERIVED_DATA_PATH" \
+            CODE_SIGNING_ALLOWED=NO \
+            clean build
+
+          APP_PATH="$DERIVED_DATA_PATH/Build/Products/Release/$APP_NAME.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Expected app bundle not found at $APP_PATH"
+            exit 1
+          fi
+
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_PATH/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_PATH/Contents/Info.plist"
+
+          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
+
+      # -------------------------------------------------------------------
+      # Mac signing + notarization (only when the gate passed).
+      # -------------------------------------------------------------------
       - name: Setup Signing Keychain
+        if: steps.gate.outputs.sign == 'true'
         env:
           DEVELOPER_ID_APPLICATION_CERT_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_CERT_BASE64 }}
           DEVELOPER_ID_APPLICATION_CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_CERT_PASSWORD }}
@@ -57,52 +177,8 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$RUNNER_TEMP" -D "${{ secrets.DEVELOPER_ID_APPLICATION_SIGNING_IDENTITY }}" -t private "$KEYCHAIN_PATH"
           echo "SIGNING_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
-      - name: Build Daemon Payload
-        run: |
-          set -euo pipefail
-          unset CLIPFAN_BUILD_HELPER_ONLY CLIPFAN_BUILD_GO CLIPFAN_TEST_HELPER_ONLY
-          # Cross-compiles the daemon and pasteboard helpers for all arches and
-          # stages dist/ (with the daemon version stamped from DAEMON_VERSION). The app
-          # embeds dist/ as Resources/dist.
-          bash dist/build-all.sh
-
-      - name: Verify Release Payload
-        run: |
-          set -euo pipefail
-          unset CLIPFAN_BUILD_HELPER_ONLY CLIPFAN_BUILD_GO CLIPFAN_TEST_HELPER_ONLY
-          CLIPFAN_VERIFY_ONLY=1 bash dist/build-all.sh
-
-      - name: Build Release App
-        id: build
-        run: |
-          set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
-
-          ( cd "$APP_DIR" && xcodegen generate )
-          xcodebuild \
-            -project "$APP_DIR/Clipfan.xcodeproj" \
-            -scheme "$SCHEME" \
-            -configuration Release \
-            -destination 'platform=macOS' \
-            -derivedDataPath "$DERIVED_DATA_PATH" \
-            CODE_SIGNING_ALLOWED=NO \
-            clean build
-
-          APP_PATH="$DERIVED_DATA_PATH/Build/Products/Release/$APP_NAME.app"
-          if [ ! -d "$APP_PATH" ]; then
-            echo "Expected app bundle not found at $APP_PATH"
-            exit 1
-          fi
-
-          # Inject the tag version (the static Info.plist also serves the SwiftPM
-          # dev build, so the authoritative version is written here for the release).
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_PATH/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_PATH/Contents/Info.plist"
-
-          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
-
       - name: Codesign App Bundle
+        if: steps.gate.outputs.sign == 'true'
         env:
           DEVELOPER_ID_APPLICATION_SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_APPLICATION_SIGNING_IDENTITY }}
         run: |
@@ -153,8 +229,9 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           spctl --assess --type execute --verbose "$APP_PATH" || true
 
-      - name: Notarize, Staple, Package
+      - name: Notarize and Staple
         id: notarize
+        if: steps.gate.outputs.sign == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -162,13 +239,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          VERSION="${GITHUB_REF_NAME#v}"
           APP_PATH="${{ steps.build.outputs.app_path }}"
-          mkdir -p "$ARTIFACTS_DIR"
-
           NOTARY_ZIP="$RUNNER_TEMP/$APP_NAME-notary.zip"
-          APP_ZIP="$ARTIFACTS_DIR/$APP_NAME-$VERSION-macOS.zip"
-          APP_DMG="$ARTIFACTS_DIR/$APP_NAME-$VERSION-macOS.dmg"
           NOTARY_SUBMIT_OUTPUT="$RUNNER_TEMP/notary-submit.json"
           NOTARY_LOG_OUTPUT="$RUNNER_TEMP/notary-log.json"
 
@@ -193,14 +265,39 @@ jobs:
           fi
 
           xcrun stapler staple "$APP_PATH"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
 
+      # -------------------------------------------------------------------
+      # Mac packaging (always). zip is always produced; dmg only when the app
+      # was signed + stapled (Gatekeeper would reject an unsigned dmg anyway).
+      # -------------------------------------------------------------------
+      - name: Package Mac App
+        id: pkg
+        run: |
+          set -euo pipefail
+          APP_PATH="${{ steps.build.outputs.app_path }}"
+          VERSION="${GITHUB_REF_NAME#v}"
+          [[ "$VERSION" == "${GITHUB_REF_NAME}" ]] && VERSION="$(tr -d 'v' < DAEMON_VERSION)"
+          mkdir -p "$ARTIFACTS_DIR"
+
+          APP_ZIP="$ARTIFACTS_DIR/$APP_NAME-$VERSION-macOS.zip"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$APP_ZIP"
-          hdiutil create -volname "$APP_NAME" -srcfolder "$APP_PATH" -ov -format UDZO "$APP_DMG"
-
           echo "app_zip=$APP_ZIP" >> "$GITHUB_OUTPUT"
-          echo "app_dmg=$APP_DMG" >> "$GITHUB_OUTPUT"
+          echo "Packaged unsigned zip: $APP_ZIP"
 
+          if [[ "${{ steps.notarize.outputs.signed }}" == "true" ]]; then
+            APP_DMG="$ARTIFACTS_DIR/$APP_NAME-$VERSION-macOS.dmg"
+            hdiutil create -volname "$APP_NAME" -srcfolder "$APP_PATH" -ov -format UDZO "$APP_DMG"
+            echo "app_dmg=$APP_DMG" >> "$GITHUB_OUTPUT"
+            echo "Packaged signed dmg: $APP_DMG"
+          fi
+
+      # -------------------------------------------------------------------
+      # Sparkle appcast (only when signed — auto-update only ships notarized
+      # builds, and the appcast needs the Sparkle ED private key to sign).
+      # -------------------------------------------------------------------
       - name: Build Sparkle Appcast Tool
+        if: steps.gate.outputs.sign == 'true'
         env:
           SPARKLE_REVISION: 6276ba2b404829d139c45ff98427cf90e2efc59b
         run: |
@@ -220,6 +317,7 @@ jobs:
             build
 
       - name: Generate Sparkle Appcast
+        if: steps.gate.outputs.sign == 'true'
         env:
           SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
         run: |
@@ -231,11 +329,10 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
 
           mkdir -p "$APPCAST_DIR"
-          cp "${{ steps.notarize.outputs.app_zip }}" "$APPCAST_DIR/"
-          ZIP_NAME="$(basename "${{ steps.notarize.outputs.app_zip }}")"
+          cp "${{ steps.pkg.outputs.app_zip }}" "$APPCAST_DIR/"
+          ZIP_NAME="$(basename "${{ steps.pkg.outputs.app_zip }}")"
           RELEASE_NOTES="$APPCAST_DIR/${ZIP_NAME%.*}.md"
           bash scripts/extract-release-notes.sh "$VERSION" CHANGELOG.md "$RELEASE_NOTES"
-          cp "$RELEASE_NOTES" "$ARTIFACTS_DIR/release-notes.md"
           printf '%s' "$SPARKLE_PRIVATE_ED_KEY" > "$ED_KEY_FILE"
 
           "$GENERATE_APPCAST" "$APPCAST_DIR" \
@@ -245,23 +342,49 @@ jobs:
 
           cp "$APPCAST_DIR/appcast.xml" "$ARTIFACTS_DIR/appcast.xml"
 
-      - name: Create GitHub Release
+      # -------------------------------------------------------------------
+      # Publish. On tag pushes we create/upload the GitHub release. On
+      # workflow_dispatch we stop here (no release published) so forks can
+      # smoke-test the pipeline without creating a bogus release.
+      # -------------------------------------------------------------------
+      - name: Create or update GitHub Release
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          RELEASE_FILES=(
-            "${{ steps.notarize.outputs.app_zip }}"
-            "${{ steps.notarize.outputs.app_dmg }}"
-            "${{ env.ARTIFACTS_DIR }}/appcast.xml"
+          FILES=(
+            "$ARTIFACTS_DIR/clipfan-darwin-amd64.tar.gz"
+            "$ARTIFACTS_DIR/clipfan-darwin-arm64.tar.gz"
+            "$ARTIFACTS_DIR/clipfan-linux-amd64.tar.gz"
+            "$ARTIFACTS_DIR/clipfan-linux-arm64.tar.gz"
+            "$ARTIFACTS_DIR/install.sh"
+            "${{ steps.pkg.outputs.app_zip }}"
           )
+          [[ -f "${{ steps.pkg.outputs.app_dmg }}" ]] && FILES+=("${{ steps.pkg.outputs.app_dmg }}")
+          [[ -f "$ARTIFACTS_DIR/appcast.xml" ]] && FILES+=("$ARTIFACTS_DIR/appcast.xml")
+
+          echo "Release assets:"
+          printf '  %s\n' "${FILES[@]}"
+
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" --notes-file "${{ env.ARTIFACTS_DIR }}/release-notes.md"
-            gh release upload "$GITHUB_REF_NAME" "${RELEASE_FILES[@]}" --clobber
+            gh release edit "$GITHUB_REF_NAME" --notes-file "$ARTIFACTS_DIR/release-notes.md"
+            gh release upload "$GITHUB_REF_NAME" "${FILES[@]}" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "${RELEASE_FILES[@]}" --notes-file "${{ env.ARTIFACTS_DIR }}/release-notes.md"
+            gh release create "$GITHUB_REF_NAME" "${FILES[@]}" \
+              --notes-file "$ARTIFACTS_DIR/release-notes.md" \
+              --title "${GITHUB_REF_NAME}"
           fi
 
+      - name: Workflow dispatch — build only (no release published)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "workflow_dispatch run: all build steps completed."
+          echo "Artifacts staged in $ARTIFACTS_DIR:"
+          ls -la "$ARTIFACTS_DIR"
+          echo
+          echo "No GitHub release created (push a 'v*' tag to publish)."
+
       - name: Cleanup Keychain
-        if: always()
+        if: always() && steps.gate.outputs.sign == 'true'
         run: security delete-keychain "$RUNNER_TEMP/build.keychain-db" || true
