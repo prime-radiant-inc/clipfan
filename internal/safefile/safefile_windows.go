@@ -4,6 +4,8 @@ package safefile
 
 import (
 	"os"
+
+	"golang.org/x/sys/windows"
 )
 
 // OpenNoFollow: Windows has no O_NOFOLLOW, so this opens normally. Symlink
@@ -12,15 +14,34 @@ func OpenNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
 	return os.OpenFile(path, flag, perm)
 }
 
-// Flock: real cross-process locking on Windows needs LockFileEx from
-// golang.org/x/sys/windows, which this pure-stdlib build does not depend on.
-// clipfan is single-process-per-host (the instance lock in internal/daemon is
-// already a no-op on Windows), so a no-op advisory lock is safe for now.
-// TODO: switch to windows.LockFileEx for real cross-process locking.
-func Flock(f *os.File, how LockFlag) error { return nil }
+// Flock uses LockFileEx over the whole file (exclusive). LOCK_NB maps to
+// LOCKFILE_FAIL_IMMEDIATELY; a contended non-blocking lock returns ErrWouldBlock.
+func Flock(f *os.File, how LockFlag) error {
+	if how&LOCK_UN != 0 {
+		return Unlock(f)
+	}
+	var flags uint32
+	if how&LOCK_EX != 0 {
+		flags |= windows.LOCKFILE_EXCLUSIVE_LOCK
+	}
+	if how&LOCK_NB != 0 {
+		flags |= windows.LOCKFILE_FAIL_IMMEDIATELY
+	}
+	var ol windows.Overlapped
+	if err := windows.LockFileEx(windows.Handle(f.Fd()), flags, 0, 0xffffffff, 0x7fffffff, &ol); err != nil {
+		if how&LOCK_NB != 0 {
+			return ErrWouldBlock
+		}
+		return err
+	}
+	return nil
+}
 
-// Unlock releases the (no-op) advisory lock.
-func Unlock(f *os.File) error { return nil }
+// Unlock releases a Windows file lock taken by Flock.
+func Unlock(f *os.File) error {
+	var ol windows.Overlapped
+	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 0xffffffff, 0x7fffffff, &ol)
+}
 
 // IsUnsupportedSync: on Windows, file.Sync errors are treated as real errors.
 func IsUnsupportedSync(err error) bool { return false }
