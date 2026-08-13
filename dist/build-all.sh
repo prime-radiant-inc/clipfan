@@ -22,6 +22,8 @@ go_payloads=(
     dist/clipfan-darwin-arm64
     dist/clipfan-linux-amd64
     dist/clipfan-linux-arm64
+    dist/clipfan-windows-amd64.exe
+    dist/clipfan-windows-arm64.exe
     dist/clipfan-shim-linux-amd64
     dist/clipfan-shim-linux-arm64
 )
@@ -36,11 +38,13 @@ remove_release_payloads() {
 }
 
 build_go_payloads() {
-    for goos in darwin linux; do
+    for goos in darwin linux windows; do
         for goarch in amd64 arm64; do
+            out="dist/clipfan-$goos-$goarch"
+            if [[ "$goos" == "windows" ]]; then out="$out.exe"; fi
             echo "[build] clipfan $goos/$goarch"
             GOOS=$goos GOARCH=$goarch go build -ldflags "$ldflags" \
-                -o "dist/clipfan-$goos-$goarch" ./cmd/clipfan
+                -o "$out" ./cmd/clipfan
             if [[ "$goos" == "linux" ]]; then
                 echo "[build] clipfan-shim $goos/$goarch"
                 GOOS=$goos GOARCH=$goarch go build -ldflags "$ldflags" \

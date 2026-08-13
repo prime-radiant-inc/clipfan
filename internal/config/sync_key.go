@@ -14,9 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"time"
 
+	"github.com/prime-radiant-inc/clipfan/internal/safefile"
 	"github.com/prime-radiant-inc/clipfan/internal/storagecheck"
 )
 
@@ -550,7 +550,7 @@ func validateSyncKeyParentDirectory(keyPath string) error {
 }
 
 func chmodSyncKeyPrivateFile(path string) error {
-	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	file, err := safefile.OpenNoFollow(path, os.O_RDONLY, 0)
 	if err != nil {
 		return ErrSyncKeyChmodFailed
 	}
@@ -570,9 +570,9 @@ func chmodSyncKeyPrivateFile(path string) error {
 
 func acquireSyncKeyCreateLock(keyPath string) (func() error, error) {
 	lockPath := keyPath + ".create.lock"
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	lockFile, err := safefile.OpenNoFollow(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		if errors.Is(err, syscall.ELOOP) {
+		if errors.Is(err, safefile.ErrSymlink) {
 			return nil, ErrSyncKeyLockUnsafe
 		}
 		return nil, ErrSyncKeyLockUnavailable
@@ -581,12 +581,12 @@ func acquireSyncKeyCreateLock(keyPath string) (func() error, error) {
 		_ = lockFile.Close()
 		return nil, ErrSyncKeyLockUnavailable
 	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+	if err := safefile.Flock(lockFile, safefile.LOCK_EX); err != nil {
 		_ = lockFile.Close()
 		return nil, ErrSyncKeyLockUnavailable
 	}
 	return func() error {
-		unlockErr := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		unlockErr := safefile.Unlock(lockFile)
 		closeErr := lockFile.Close()
 		return errors.Join(unlockErr, closeErr)
 	}, nil
@@ -627,7 +627,7 @@ func validateSyncKeyMaterialFile(path string) error {
 }
 
 func openSyncKeyMaterialFile(path string) (*os.File, error) {
-	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	file, err := safefile.OpenNoFollow(path, os.O_RDONLY, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrMissingSyncKey
 	}
@@ -829,7 +829,7 @@ func validateSyncKeyMetadata(meta SyncKeyMetadata, expectedHostID, publicKey, di
 }
 
 func readOpenSSHPublicKey(path string) (string, []byte, error) {
-	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	file, err := safefile.OpenNoFollow(path, os.O_RDONLY, 0)
 	if err != nil {
 		return "", nil, ErrSyncKeyReadFailed
 	}

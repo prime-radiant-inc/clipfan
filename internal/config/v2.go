@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"syscall"
 
 	"github.com/prime-radiant-inc/clipfan/internal/releaseflags"
+	"github.com/prime-radiant-inc/clipfan/internal/safefile"
 )
 
 var (
@@ -301,9 +301,9 @@ func withConfigFileLockMode(path string, nonBlocking bool, fn func() error) erro
 	}
 
 	lockPath := path + ".lock"
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	lockFile, err := safefile.OpenNoFollow(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		if errors.Is(err, syscall.ELOOP) {
+		if errors.Is(err, safefile.ErrSymlink) {
 			return fmt.Errorf("%w: config lock is symlink: %s", ErrConfigFileUnsafe, lockPath)
 		}
 		return err
@@ -315,17 +315,17 @@ func withConfigFileLockMode(path string, nonBlocking bool, fn func() error) erro
 	if err := lockFile.Chmod(0o600); err != nil {
 		return err
 	}
-	lockOp := syscall.LOCK_EX
+	lockOp := safefile.LOCK_EX
 	if nonBlocking {
-		lockOp |= syscall.LOCK_NB
+		lockOp |= safefile.LOCK_NB
 	}
-	if err := syscall.Flock(int(lockFile.Fd()), lockOp); err != nil {
-		if nonBlocking && (errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)) {
+	if err := safefile.Flock(lockFile, lockOp); err != nil {
+		if nonBlocking && errors.Is(err, safefile.ErrWouldBlock) {
 			return fmt.Errorf("%w: %s", ErrConfigLockHeld, lockPath)
 		}
 		return err
 	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	defer safefile.Unlock(lockFile)
 
 	return fn()
 }
@@ -362,9 +362,9 @@ func ReadRevisionStatus(path string) (RevisionStatus, error) {
 }
 
 func readConfigFileSafe(path string) ([]byte, error) {
-	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	file, err := safefile.OpenNoFollow(path, os.O_RDONLY, 0)
 	if err != nil {
-		if errors.Is(err, syscall.ELOOP) {
+		if errors.Is(err, safefile.ErrSymlink) {
 			return nil, fmt.Errorf("%w: config file is symlink: %s", ErrConfigFileUnsafe, path)
 		}
 		return nil, err
@@ -477,15 +477,15 @@ type configFileIdentityInfo struct {
 }
 
 func configFileIdentity(info os.FileInfo) (configFileIdentityInfo, error) {
-	stat, ok := info.Sys().(*syscall.Stat_t)
+	device, inode, links, uid, ok := safefile.StatIdentity(info)
 	if !ok {
 		return configFileIdentityInfo{}, fmt.Errorf("%w: could not inspect file identity", ErrConfigFileUnsafe)
 	}
 	return configFileIdentityInfo{
-		device:    uint64(stat.Dev),
-		inode:     uint64(stat.Ino),
-		linkCount: uint64(stat.Nlink),
-		uid:       uint32(stat.Uid),
+		device:    device,
+		inode:     inode,
+		linkCount: links,
+		uid:       uid,
 	}, nil
 }
 
@@ -660,5 +660,5 @@ func syncDirBestEffort(dir string) error {
 }
 
 func isUnsupportedSync(err error) bool {
-	return errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.ENOSYS)
+	return safefile.IsUnsupportedSync(err)
 }
