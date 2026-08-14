@@ -12,6 +12,7 @@ package main
 
 import (
 	_ "embed"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -36,18 +37,22 @@ func main() {
 func onReady() {
 	mStatus := systray.AddMenuItem("daemon: …", "clipfan daemon status")
 	systray.AddSeparator()
+	mAddPeer := systray.AddMenuItem("Add Peer...", "provision a new clipfan peer")
+	systray.AddSeparator()
 	mConfig := systray.AddMenuItem("Open config folder", "")
 	mRestart := systray.AddMenuItem("Restart daemon", "restart the clipfan daemon")
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit", "quit the tray app")
 
 	go pollStatus(mStatus)
-	go handleMenu(mConfig, mRestart, mQuit)
+	go handleMenu(mAddPeer, mConfig, mRestart, mQuit)
 }
 
-func handleMenu(mConfig, mRestart, mQuit *systray.MenuItem) {
+func handleMenu(mAddPeer, mConfig, mRestart, mQuit *systray.MenuItem) {
 	for {
 		select {
+		case <-mAddPeer.ClickedCh:
+			openAddPeerTerminal()
 		case <-mConfig.ClickedCh:
 			openPath(configDir())
 		case <-mRestart.ClickedCh:
@@ -94,4 +99,11 @@ func restartDaemon() {
 	// The daemon runs as a per-user Scheduled Task (dist/install.ps1).
 	_ = exec.Command("powershell", "-NoProfile", "-Command",
 		"Get-ScheduledTask clipfan | Stop-ScheduledTask; Get-ScheduledTask clipfan | Start-ScheduledTask").Start()
+}
+
+func openAddPeerTerminal() {
+	home, _ := os.UserHomeDir()
+	clipfanExe := filepath.Join(home, ".local", "bin", "clipfan.exe")
+	_ = exec.Command("powershell", "-NoProfile", "-NoExit", "-Command",
+		fmt.Sprintf("& '%s' add-peer", clipfanExe)).Start()
 }
