@@ -18,16 +18,25 @@ arch=$(uname -m)
 [[ "$arch" == "x86_64" ]] && arch=amd64
 [[ "$arch" == "arm64" ]] && garch=arm64 || garch=$arch
 
-echo "[1/5] swift build (release)"
+echo "[1/6] swift build (release)"
 ( cd "$swiftpkg" && swift build -c release )
 swiftbin="$swiftpkg/.build/release/Clipfan"
 
-echo "[2/5] go build daemon + helper"
-( cd "$repo" && GOOS=darwin GOARCH=$garch go build -ldflags '-s -w' -o "$out/clipfand" ./cmd/clipfan )
+# Stamp the daemon version from DAEMON_VERSION (same scheme as
+# dist/build-all.sh) so the bundled binary reports a real version, not "dev".
+version=""
+if [[ -f "$repo/DAEMON_VERSION" ]]; then
+    version=$(<"$repo/DAEMON_VERSION"); version=${version//$'\n'/}; version=${version//$'\r'/}
+fi
+daemon_ldflags="-s -w"
+[[ -n "$version" ]] && daemon_ldflags="$daemon_ldflags -X github.com/prime-radiant-inc/clipfan/internal/version.Version=$version"
+
+echo "[2/6] go build daemon + helper"
+( cd "$repo" && GOOS=darwin GOARCH=$garch go build -ldflags "$daemon_ldflags" -o "$out/clipfand" ./cmd/clipfan )
 swiftc -O -target "$(uname -m)-apple-macos13.0" \
     -o "$out/clipfan-pasteboard-helper" "$repo/dist/clipfan-pasteboard-helper.swift"
 
-echo "[3/5] assemble bundle"
+echo "[3/6] assemble bundle"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
 cp "$swiftpkg/Info.plist" "$app/Contents/Info.plist"
@@ -72,10 +81,35 @@ fi
 install_name_tool -add_rpath '@loader_path/../Frameworks' \
     "$app/Contents/MacOS/Clipfan" 2>/dev/null || true
 
-echo "[4/5] ad-hoc codesign (replace with Developer ID for distribution)"
+# Bundle the cross-arch dist/ payload (every daemon binary + install.sh + the
+# launchd/systemd units + tmux snippet) as Resources/dist. The app's "Add Peer"
+# flow uploads the target-arch binary from here, and resolves its provisioning
+# binary (Resources/dist/clipfan-darwin-<arch>) from here too — without this
+# payload, Add Peer fails with current_local_provisioning_binary_required.
+# dist/build-all.sh must have staged dist/; verify the key payloads exist.
+echo "[4/6] bundle dist/ payload (required for Add Peer)"
+payload_src="$repo/dist"
+required_payloads=(
+    "$payload_src/clipfan-darwin-amd64" "$payload_src/clipfan-darwin-arm64"
+    "$payload_src/clipfan-linux-amd64" "$payload_src/clipfan-linux-arm64"
+    "$payload_src/install.sh" "$payload_src/com.primeradiant.clipfan.plist"
+    "$payload_src/clipfan.service" "$payload_src/tmux.conf.snippet"
+)
+for f in "${required_payloads[@]}"; do
+    if [[ ! -r "$f" ]]; then
+        echo "error: missing payload $f" >&2
+        echo "       run 'bash dist/build-all.sh' first — the app embeds dist/" >&2
+        echo "       as Resources/dist so it can install peers of every arch." >&2
+        exit 1
+    fi
+done
+mkdir -p "$app/Contents/Resources/dist"
+cp -R "$payload_src/." "$app/Contents/Resources/dist/"
+
+echo "[5/6] ad-hoc codesign (replace with Developer ID for distribution)"
 codesign --force --deep --sign - "$app" 2>/dev/null || \
     echo "  (codesign failed — app will still run locally after a Gatekeeper prompt)"
 
-echo "[5/5] done"
+echo "[6/6] done"
 echo "Built: $app"
 echo "Install: cp -R '$app' /Applications/ && open '$app'"
