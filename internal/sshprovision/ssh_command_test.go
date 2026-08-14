@@ -320,7 +320,7 @@ func TestRegularSSHConfigCommandRejectsInvalidInput(t *testing.T) {
 		name string
 		spec SSHConfigSpec
 	}{
-		{name: "invalid user", spec: SSHConfigSpec{User: "bad user", Host: "example.com", Port: 22}},
+		{name: "invalid user", spec: SSHConfigSpec{User: "bad;user", Host: "example.com", Port: 22}},
 		{name: "invalid host", spec: SSHConfigSpec{User: "jesse", Host: "example.com;sh", Port: 22}},
 		{name: "invalid port", spec: SSHConfigSpec{User: "jesse", Host: "example.com", Port: 0}},
 	} {

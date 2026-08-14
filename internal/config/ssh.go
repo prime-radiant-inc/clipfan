@@ -70,7 +70,14 @@ type SSHProof struct {
 
 var (
 	proofKeyIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{8,64}$`)
-	sshPathPattern    = regexp.MustCompile(`^[A-Za-z0-9._/@: +\\-]+$`)
+	// sshPathPattern is the strict POSIX path charset (no spaces). Windows
+	// drive-letter paths use sshWindowsPathPattern instead: they legitimately
+	// contain a colon (drive), backslashes, and spaces ("Program Files").
+	// Selecting the charset by path shape keeps a spaced POSIX path rejected
+	// (TestRunSSHInstallAuthorizedKeyRejectsInvalidInputWithoutWriting) while
+	// Windows peer paths pass.
+	sshPathPattern        = regexp.MustCompile(`^[A-Za-z0-9._/@+-]+$`)
+	sshWindowsPathPattern = regexp.MustCompile(`^[A-Za-z0-9._/ \\:-]+$`)
 	// sshUserPattern permits a space (e.g. "will wade") and '@' (email-style
 	// names), which Windows and other systems allow in logon names. This is safe:
 	// the SSH user is only ever passed to ssh as an exec argument ("user@host"),
@@ -262,7 +269,11 @@ func ValidateSSHExecutablePath(value string) error {
 	if err := ValidateSafeAbsolutePath(value); err != nil {
 		return fmt.Errorf("invalid_ssh_path: %w", err)
 	}
-	if !sshPathPattern.MatchString(value) {
+	pattern := sshPathPattern
+	if isWindowsDrivePath(value) {
+		pattern = sshWindowsPathPattern
+	}
+	if !pattern.MatchString(value) {
 		return fmt.Errorf("invalid_ssh_path: invalid characters")
 	}
 	return nil
