@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 )
 
 var ErrSSHCommandFailed = errors.New("ssh_command_failed")
@@ -25,7 +26,16 @@ type CommandRunner interface {
 
 type ExecCommandRunner struct {
 	MaxOutputBytes int
+	// CommandTimeout bounds each command when the caller's context has no
+	// deadline. Provisioning runs one-shot ssh commands; without a bound a
+	// wedged peer (e.g. a network path that dies mid-handshake) hangs the
+	// whole flow forever and leaks the ssh child. Zero means the default.
+	CommandTimeout time.Duration
 }
+
+// defaultSSHCommandTimeout is generous for a slow relay path but finite:
+// healthy provisioning commands complete in a few seconds.
+const defaultSSHCommandTimeout = 120 * time.Second
 
 type SSHCommandError struct {
 	cause           error
@@ -70,6 +80,15 @@ func (r ExecCommandRunner) Run(ctx context.Context, command SSHCommand) (Command
 	if limit <= 0 {
 		limit = 64 * 1024
 	}
+	if _, ok := ctx.Deadline(); !ok {
+		timeout := r.CommandTimeout
+		if timeout <= 0 {
+			timeout = defaultSSHCommandTimeout
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, command.Args[0], command.Args[1:]...)
 	cmd.Env = sanitizedSSHEnv()
 	ApplyConsoleSpawnMode(cmd)
@@ -83,8 +102,12 @@ func (r ExecCommandRunner) Run(ctx context.Context, command SSHCommand) (Command
 	output := capture.Finish()
 	capture.Cleanup()
 	if err != nil {
+		cause := err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			cause = fmt.Errorf("%w (%v; peer unreachable or connection wedged)", ctxErr, err)
+		}
 		return output, SSHCommandError{
-			cause:           err,
+			cause:           cause,
 			redactedCommand: redactSSHCommandArgs(command.Args),
 			redactedStderr:  redactSSHDiagnostic(string(output.Stderr), command.Args),
 		}
