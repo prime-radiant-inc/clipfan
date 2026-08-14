@@ -93,8 +93,12 @@ func RunAddPeer(args []string, stdout io.Writer, stderr io.Writer) error {
 	localSyncKey := cfg.SSH.SyncKey
 
 	peerID := *peerHost
+	binaryName := "clipfan"
+	if len(*peerHome) >= 2 && (*peerHome)[1] == ':' {
+		binaryName = "clipfan.exe"
+	}
 	peerConfigPath := crossPeerPath(*peerHome, ".config", "clipfan", "config.json")
-	peerInstallPath := crossPeerPath(*peerHome, ".local", "bin", "clipfan")
+	peerInstallPath := crossPeerPath(*peerHome, ".local", "bin", binaryName)
 	peerKnownHosts := crossPeerPath(*peerHome, ".config", "clipfan", "ssh", "known_hosts")
 	peerSyncKey := crossPeerPath(*peerHome, ".config", "clipfan", "ssh", "sync_ed25519")
 
