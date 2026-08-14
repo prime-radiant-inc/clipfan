@@ -29,7 +29,7 @@ enum LaunchDecision: Equatable {
     }
 }
 
-enum BootstrapInstallMode {
+enum BootstrapInstallMode: Equatable {
     case setup
     case upgradeExisting
 }
@@ -68,6 +68,15 @@ func shouldPromptLocalNetwork(peers: [Peer]) -> Bool {
 /// path helpers are static; the blocking installer subprocess runs off the main
 /// actor so the Welcome window stays responsive.
 enum Bootstrap {
+    static func recoveryMode(for decision: LaunchDecision) -> BootstrapInstallMode? {
+        switch decision {
+        case .restartExisting:
+            return .upgradeExisting
+        default:
+            return nil
+        }
+    }
+
     static var daemonBinary: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".local/bin/clipfan")

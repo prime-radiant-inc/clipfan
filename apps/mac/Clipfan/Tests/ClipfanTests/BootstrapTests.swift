@@ -2,6 +2,11 @@ import XCTest
 @testable import Clipfan
 
 final class BootstrapDecisionTests: XCTestCase {
+    func testRestartExistingRepairsTheBackgroundService() {
+        XCTAssertEqual(Bootstrap.recoveryMode(for: .restartExisting), .upgradeExisting)
+        XCTAssertNil(Bootstrap.recoveryMode(for: .normal))
+    }
+
     func testHealthyDaemonLaunchesNormally() {
         XCTAssertEqual(LaunchDecision.decide(binaryInstalled: true, daemonHealthy: true, installedBinaryCurrent: true), .normal)
         // Healthy wins even if we somehow think the binary is absent.
