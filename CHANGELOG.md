@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.11] - 2026-08-13
+
+### Fixed
+
+- Fixed macOS onboarding and Add Peer setup when the per-user launchd service is missing or disabled. The installer now repairs and verifies service registration, and app startup repairs an installed but unhealthy daemon automatically.
+
 ## [1.0.10] - 2026-08-13
 
 ### Added
