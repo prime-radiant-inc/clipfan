@@ -843,4 +843,3 @@ type execSSHStartedProcess struct {
 
 func (p execSSHStartedProcess) Stdin() io.WriteCloser { return p.stdin }
 func (p execSSHStartedProcess) Stdout() io.ReadCloser { return p.stdout }
-func (p execSSHStartedProcess) Wait() error           { return p.cmd.Wait() }

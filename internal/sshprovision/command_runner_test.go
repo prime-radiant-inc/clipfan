@@ -60,7 +60,7 @@ func TestExecCommandRunnerRedactsFailureDiagnostics(t *testing.T) {
 	script := writeRunnerScript(t, "printf '%s\\n' \"$@\" >&2\nexit 7\n")
 	privateKey := "/home/jesse/.config/clipfan/ssh/sync_ed25519"
 	knownHosts := "/home/jesse/.config/clipfan/ssh/known_hosts"
-	remoteCommand := "'/home/jesse/.local/bin/clipfan' 'ssh-install-authorized-key' '--gateway-path' '/home/jesse/.local/bin/clipfan' '--public-key' '" + testEd25519Key + "'"
+	remoteCommand := "\"/home/jesse/.local/bin/clipfan\" \"ssh-install-authorized-key\" \"--gateway-path\" \"/home/jesse/.local/bin/clipfan\" \"--public-key\" \"" + testEd25519Key + "\""
 	_, err := (ExecCommandRunner{}).Run(context.Background(), SSHCommand{Args: []string{
 		script,
 		"-i", privateKey,
@@ -83,7 +83,7 @@ func TestExecCommandRunnerRedactsFailureDiagnostics(t *testing.T) {
 			t.Fatalf("formatted SSHCommandError leaked %q: %#v", leaked, commandErr)
 		}
 	}
-	for _, want := range []string{"<private_key>", "UserKnownHostsFile=<known_hosts>", "'--public-key' '<public_key>'"} {
+	for _, want := range []string{"<private_key>", "UserKnownHostsFile=<known_hosts>", "\"--public-key\" \"<public_key>\""} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("error = %q, want marker %q", message, want)
 		}

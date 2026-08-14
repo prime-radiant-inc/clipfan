@@ -68,3 +68,28 @@ func StatIdentity(info os.FileInfo) (device, inode, links uint64, uid uint32, ok
 func IsUnsupportedSync(err error) bool {
 	return errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.ENOSYS)
 }
+
+// PermsExposeToGroupOrWorld reports whether a file's POSIX mode grants group
+// or other users any access (r/w/x beyond the owner bits).
+func PermsExposeToGroupOrWorld(mode os.FileMode) bool {
+	return mode.Perm()&0o077 != 0
+}
+
+// PermsWritableByGroupOrWorld reports whether a file's POSIX mode lets group
+// or other users write it.
+func PermsWritableByGroupOrWorld(mode os.FileMode) bool {
+	return mode.Perm()&0o022 != 0
+}
+
+// SyncDir best-effort fsyncs a directory so a just-renamed entry is durable.
+func SyncDir(dir string) error {
+	file, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if err := file.Sync(); err != nil && !IsUnsupportedSync(err) {
+		return err
+	}
+	return nil
+}

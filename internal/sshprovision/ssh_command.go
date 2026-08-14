@@ -5,11 +5,38 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
+	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/prime-radiant-inc/clipfan/internal/config"
 )
+
+// sshOptionPath renders a filesystem path for use inside an ssh "-o key=value"
+// option. OpenSSH splits option values on whitespace, so a Windows profile
+// path containing a space ("C:\Users\Will Wade\...") is parsed as two
+// broken values. ssh expands "~" itself, so on Windows any path under the
+// home dir is rewritten to "~/"-relative — space-free regardless of the
+// profile name. POSIX paths pass through unchanged.
+func sshOptionPath(value string) string {
+	if runtime.GOOS != "windows" || value == "" {
+		return value
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return value
+	}
+	h := strings.TrimSuffix(strings.ReplaceAll(home, "\\", "/"), "/")
+	v := strings.ReplaceAll(value, "\\", "/")
+	if strings.EqualFold(v, h) {
+		return "~"
+	}
+	if len(v) > len(h) && strings.EqualFold(v[:len(h)], h) && v[len(h)] == '/' {
+		return "~" + v[len(h):]
+	}
+	return value
+}
 
 var ErrInvalidPinnedSSHCommand = errors.New("invalid_pinned_ssh_command")
 var ErrInvalidRegularSSHCommand = errors.New("invalid_regular_ssh_command")
@@ -144,7 +171,7 @@ func pinnedSSHGatewayCommand(spec PinnedSSHCommand, remoteCommand string) (SSHCo
 		"-o", "ConnectTimeout=5",
 		"-o", "ConnectionAttempts=1",
 		"-o", "StrictHostKeyChecking=yes",
-		"-o", "UserKnownHostsFile=" + normalized.KnownHostsPath,
+		"-o", "UserKnownHostsFile=" + sshOptionPath(normalized.KnownHostsPath),
 		"-o", "GlobalKnownHostsFile=/dev/null",
 		"-o", "ProxyCommand=none",
 		"-o", "ProxyJump=none",
@@ -175,7 +202,7 @@ func directSSHGatewayCommand(normalized PinnedSSHCommand, remoteCommand string) 
 		"-o", "ConnectTimeout=5",
 		"-o", "ConnectionAttempts=1",
 		"-o", "StrictHostKeyChecking=yes",
-		"-o", "UserKnownHostsFile=" + normalized.KnownHostsPath,
+		"-o", "UserKnownHostsFile=" + sshOptionPath(normalized.KnownHostsPath),
 		"-o", "GlobalKnownHostsFile=/dev/null",
 		"-o", "ProxyCommand=none",
 		"-o", "ProxyJump=none",
@@ -243,7 +270,7 @@ func RegularSSHInstallAuthorizedKeyCommand(spec RegularSSHInstallAuthorizedKeySp
 		"ssh",
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=yes",
-		"-o", "UserKnownHostsFile=" + normalized.KnownHostsPath,
+		"-o", "UserKnownHostsFile=" + sshOptionPath(normalized.KnownHostsPath),
 		"-o", "GlobalKnownHostsFile=/dev/null",
 		"-o", "PermitLocalCommand=no",
 		"-o", "RequestTTY=no",
@@ -427,7 +454,7 @@ func regularSSHRemoteCommand(spec regularSSHRemoteSpec) SSHCommand {
 		"ssh",
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=yes",
-		"-o", "UserKnownHostsFile=" + spec.KnownHostsPath,
+		"-o", "UserKnownHostsFile=" + sshOptionPath(spec.KnownHostsPath),
 		"-o", "GlobalKnownHostsFile=/dev/null",
 		"-o", "PermitLocalCommand=no",
 		"-o", "RequestTTY=no",
@@ -668,9 +695,25 @@ func shellQuoteCommand(args []string) string {
 
 func shellQuoteArg(arg string) string {
 	if arg == "" {
-		return "''"
+		return `""`
 	}
-	return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
+	// Double quotes, not POSIX single quotes: when the SSH target's default
+	// shell is Git Bash (clipfan's Windows hosts), single-quoted arguments
+	// are re-tokenized by the sshd shell integration and split on embedded
+	// spaces ("C:/Users/Will Wade/..." arrives as two words). Double quotes
+	// survive both Git Bash and zsh/bash. Escape the characters a double-
+	// quoted string would otherwise expand.
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(arg); i++ {
+		switch arg[i] {
+		case '\\', '"', '$', '`':
+			b.WriteByte('\\')
+		}
+		b.WriteByte(arg[i])
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 func syncKeyIDFromPublicBlob(blob []byte) string {

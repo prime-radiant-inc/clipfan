@@ -27,6 +27,61 @@ func TestManagedAuthorizedKeyLine(t *testing.T) {
 	}
 }
 
+func TestManagedAuthorizedKeyLineQuotesSpacedGatewayPath(t *testing.T) {
+	t.Parallel()
+
+	// Windows profile paths contain spaces ("C:/Users/Will Wade/..."); the
+	// forced command runs through the account's login shell, so the path
+	// must be quoted to survive as a single word.
+	entry := mustManagedAuthorizedKey(t, ManagedAuthorizedKey{
+		PeerID:      "oak-windows",
+		KeyID:       "key-123456",
+		GatewayPath: `C:/Users/Will Wade/.local/bin/clipfan.exe`,
+		PublicKey:   testEd25519Key,
+	})
+
+	wantForced := `"C:/Users/Will Wade/.local/bin/clipfan.exe" ssh-gateway --authorized-peer oak-windows --authorized-key-id key-123456`
+	if got := entry.ForcedCommand(); got != wantForced {
+		t.Fatalf("ForcedCommand() = %q, want %q", got, wantForced)
+	}
+	wantLine := `no-agent-forwarding,no-X11-forwarding,no-port-forwarding,no-pty,no-user-rc,command="` + `\"C:/Users/Will Wade/.local/bin/clipfan.exe\" ssh-gateway --authorized-peer oak-windows --authorized-key-id key-123456" ssh-ed25519 ` + testEd25519Key + ` clipfan-sync:oak-windows:key-123456`
+	if got := entry.Line(); got != wantLine {
+		t.Fatalf("Line() = %q, want %q", got, wantLine)
+	}
+
+	// The written line must parse back to the same metadata: the gateway
+	// path is recovered after unquoting.
+	metadata, managed, err := ParseManagedAuthorizedKeyMetadata(entry.Line())
+	if err != nil || !managed {
+		t.Fatalf("ParseManagedAuthorizedKeyMetadata() managed=%v err=%v", managed, err)
+	}
+	if metadata.PeerID != "oak-windows" || metadata.KeyID != "key-123456" {
+		t.Fatalf("metadata = %+v", metadata)
+	}
+
+	// Upsert must treat the quoted form as an exact match (idempotent).
+	updated, err := UpsertManagedAuthorizedKeyLine([]byte(entry.Line()), entry)
+	if err != nil {
+		t.Fatalf("UpsertManagedAuthorizedKeyLine() error = %v", err)
+	}
+	if string(updated) != entry.Line() {
+		t.Fatalf("UpsertManagedAuthorizedKeyLine() not idempotent: %q", updated)
+	}
+}
+
+func TestParseManagedAuthorizedKeyMetadataAcceptsLegacyUnquotedWindowsPath(t *testing.T) {
+	t.Parallel()
+
+	legacy := `no-agent-forwarding,no-X11-forwarding,no-port-forwarding,no-pty,no-user-rc,command="C:/Users/Will Wade/.local/bin/clipfan.exe ssh-gateway --authorized-peer oak-windows --authorized-key-id key-123456" ssh-ed25519 ` + testEd25519Key + ` clipfan-sync:oak-windows:key-123456`
+	metadata, managed, err := ParseManagedAuthorizedKeyMetadata(legacy)
+	if err != nil || !managed {
+		t.Fatalf("ParseManagedAuthorizedKeyMetadata() managed=%v err=%v", managed, err)
+	}
+	if metadata.PeerID != "oak-windows" || metadata.KeyID != "key-123456" {
+		t.Fatalf("metadata = %+v", metadata)
+	}
+}
+
 func TestNewManagedAuthorizedKeyRejectsInvalidInput(t *testing.T) {
 	t.Parallel()
 

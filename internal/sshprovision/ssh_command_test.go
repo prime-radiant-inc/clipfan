@@ -138,7 +138,7 @@ func TestPinnedSSHDirectGatewayProbeCommand(t *testing.T) {
 		"-o", "LogLevel=ERROR",
 		"-p", "22",
 		"jesse@magic-kingdom",
-		"'/home/jesse/.local/bin/clipfan' 'ssh-gateway' '--authorized-peer' 'm4' '--authorized-key-id' 'key-123456' '--direct-command' 'probe-authorized-key'",
+		"\"/home/jesse/.local/bin/clipfan\" \"ssh-gateway\" \"--authorized-peer\" \"m4\" \"--authorized-key-id\" \"key-123456\" \"--direct-command\" \"probe-authorized-key\"",
 	}
 	assertSSHCommandArgs(t, cmd.Args, want)
 }
@@ -160,8 +160,8 @@ func TestPinnedSSHDirectGatewaySyncStreamCommand(t *testing.T) {
 		t.Fatalf("PinnedSSHSyncStreamCommand() error = %v", err)
 	}
 	got := cmd.Args[len(cmd.Args)-1]
-	if !strings.Contains(got, "'ssh-gateway'") ||
-		!strings.Contains(got, "'--direct-command' 'sync-stream'") ||
+	if !strings.Contains(got, "\"ssh-gateway\"") ||
+		!strings.Contains(got, "\"--direct-command\" \"sync-stream\"") ||
 		strings.TrimSpace(got) == SSHGatewaySyncStreamCommand {
 		t.Fatalf("direct command = %q", got)
 	}
@@ -365,7 +365,7 @@ func TestRegularSSHInstallAuthorizedKeyCommand(t *testing.T) {
 		"-o", "LogLevel=ERROR",
 		"-p", "2200",
 		"jesse@example.com",
-		"'/home/jesse/.local/bin/clipfan' 'ssh-install-authorized-key' '--peer' 'linux-b' '--key-id' 'key-123456' '--gateway-path' '/home/jesse/.local/bin/clipfan' '--public-key' '" + testEd25519Key + "'",
+		"\"/home/jesse/.local/bin/clipfan\" \"ssh-install-authorized-key\" \"--peer\" \"linux-b\" \"--key-id\" \"key-123456\" \"--gateway-path\" \"/home/jesse/.local/bin/clipfan\" \"--public-key\" \"" + testEd25519Key + "\"",
 	}
 	assertSSHCommandArgs(t, cmd.Args, want)
 	assertRegularSSHCommandSafety(t, cmd.Args)
@@ -442,7 +442,7 @@ func TestRegularSSHEnsureSyncKeyCommand(t *testing.T) {
 		"-o", "LogLevel=ERROR",
 		"-p", "2200",
 		"jesse@example.com",
-		"'/home/jesse/.local/bin/clipfan' 'ssh-ensure-sync-key' '--host-id' 'linux-b' '--key-path' '/home/jesse/.config/clipfan/ssh/sync_ed25519'",
+		"\"/home/jesse/.local/bin/clipfan\" \"ssh-ensure-sync-key\" \"--host-id\" \"linux-b\" \"--key-path\" \"/home/jesse/.config/clipfan/ssh/sync_ed25519\"",
 	}
 	assertSSHCommandArgs(t, cmd.Args, want)
 	assertRegularSSHCommandSafety(t, cmd.Args)
@@ -478,7 +478,7 @@ func TestRegularSSHInstallKnownHostCommand(t *testing.T) {
 		"-o", "ClearAllForwardings=yes",
 		"-o", "LogLevel=ERROR",
 		"jesse@connector.example",
-		"'/home/jesse/.local/bin/clipfan' 'ssh-install-known-host' '--known-hosts' '/home/jesse/.config/clipfan/ssh/known_hosts' '--host' 'acceptor.example' '--port' '2200' '--key-type' 'ssh-ed25519' '--public-key' '" + testEd25519Key + "'",
+		"\"/home/jesse/.local/bin/clipfan\" \"ssh-install-known-host\" \"--known-hosts\" \"/home/jesse/.config/clipfan/ssh/known_hosts\" \"--host\" \"acceptor.example\" \"--port\" \"2200\" \"--key-type\" \"ssh-ed25519\" \"--public-key\" \"" + testEd25519Key + "\"",
 	}
 	assertSSHCommandArgs(t, cmd.Args, want)
 	assertRegularSSHCommandSafety(t, cmd.Args)
@@ -518,7 +518,7 @@ func TestRegularSSHRunProbeCommand(t *testing.T) {
 		"-o", "ClearAllForwardings=yes",
 		"-o", "LogLevel=ERROR",
 		"jesse@connector.example",
-		"'/home/jesse/.local/bin/clipfan' 'ssh-run-probe' '--user' 'jesse' '--host' 'acceptor.example' '--port' '2200' '--private-key' '/home/jesse/.config/clipfan/ssh/sync_ed25519' '--known-hosts' '/home/jesse/.config/clipfan/ssh/known_hosts' '--expect-peer' 'linux-b' '--expect-key-id' 'key-123456'",
+		"\"/home/jesse/.local/bin/clipfan\" \"ssh-run-probe\" \"--user\" \"jesse\" \"--host\" \"acceptor.example\" \"--port\" \"2200\" \"--private-key\" \"/home/jesse/.config/clipfan/ssh/sync_ed25519\" \"--known-hosts\" \"/home/jesse/.config/clipfan/ssh/known_hosts\" \"--expect-peer\" \"linux-b\" \"--expect-key-id\" \"key-123456\"",
 	}
 	assertSSHCommandArgs(t, cmd.Args, want)
 	assertRegularSSHCommandSafety(t, cmd.Args)
@@ -549,7 +549,7 @@ func TestRegularSSHRosterReadCommand(t *testing.T) {
 		"-o", "ClearAllForwardings=yes",
 		"-o", "LogLevel=ERROR",
 		"jesse@connector.example",
-		"'/home/jesse/.local/bin/clipfan' 'roster-read'",
+		"\"/home/jesse/.local/bin/clipfan\" \"roster-read\"",
 	}
 	assertSSHCommandArgs(t, cmd.Args, want)
 	assertRegularSSHCommandSafety(t, cmd.Args)
@@ -608,7 +608,7 @@ func TestRegularSSHShellCommand(t *testing.T) {
 		t.Fatalf("RegularSSHShellCommand() error = %v", err)
 	}
 	last := cmd.Args[len(cmd.Args)-1]
-	if last != "'sh' '-c' 'echo hi && exit 0'" {
+	if last != "\"sh\" \"-c\" \"echo hi && exit 0\"" {
 		t.Fatalf("remote command = %q", last)
 	}
 	if cmd.Args[len(cmd.Args)-2] != "jesse@host.example" {
@@ -668,7 +668,7 @@ func TestRegularSSHRunProbeCommandDirectGateway(t *testing.T) {
 		"-o", "ClearAllForwardings=yes",
 		"-o", "LogLevel=ERROR",
 		"jesse@connector.example",
-		"'/home/jesse/.local/bin/clipfan' 'ssh-run-probe' '--user' 'jesse' '--host' 'acceptor.example' '--port' '2200' '--gateway-path' '/home/jesse/.local/bin/clipfan' '--direct-gateway' '--known-hosts' '/home/jesse/.config/clipfan/ssh/known_hosts' '--expect-peer' 'linux-b' '--expect-key-id' 'key-123456'",
+		"\"/home/jesse/.local/bin/clipfan\" \"ssh-run-probe\" \"--user\" \"jesse\" \"--host\" \"acceptor.example\" \"--port\" \"2200\" \"--gateway-path\" \"/home/jesse/.local/bin/clipfan\" \"--direct-gateway\" \"--known-hosts\" \"/home/jesse/.config/clipfan/ssh/known_hosts\" \"--expect-peer\" \"linux-b\" \"--expect-key-id\" \"key-123456\"",
 	}
 	assertSSHCommandArgs(t, cmd.Args, want)
 	assertRegularSSHCommandSafety(t, cmd.Args)
@@ -700,7 +700,7 @@ func TestRegularSSHApplyDirectConfigCommand(t *testing.T) {
 		"-o", "ClearAllForwardings=yes",
 		"-o", "LogLevel=ERROR",
 		"jesse@connector.example",
-		"'/home/jesse/.local/bin/clipfan' 'ssh-apply-direct-config' '--payload-stdin'",
+		"\"/home/jesse/.local/bin/clipfan\" \"ssh-apply-direct-config\" \"--payload-stdin\"",
 	}
 	assertSSHCommandArgs(t, cmd.Args, want)
 	if string(cmd.Stdin) != "eyJzdGF0dXMiOiJvayJ9" {
@@ -822,7 +822,7 @@ func TestShellQuoteArg(t *testing.T) {
 	t.Parallel()
 
 	got := shellQuoteCommand([]string{"clipfan", "arg with space", "don't"})
-	want := "'clipfan' 'arg with space' 'don'\\''t'"
+	want := "\"clipfan\" \"arg with space\" \"don't\""
 	if got != want {
 		t.Fatalf("shellQuoteCommand() = %q, want %q", got, want)
 	}

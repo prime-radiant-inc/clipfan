@@ -680,8 +680,7 @@ func validateSyncKeyMaterialFileInfo(info os.FileInfo) error {
 	if identity.uid != uint32(os.Getuid()) || identity.linkCount > 1 {
 		return ErrSyncKeyIdentityMismatch
 	}
-	mode := info.Mode().Perm()
-	if mode&0o022 != 0 {
+	if safefile.PermsWritableByGroupOrWorld(info.Mode()) {
 		return ErrSyncKeyIdentityMismatch
 	}
 	return nil

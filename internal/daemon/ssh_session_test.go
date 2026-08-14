@@ -881,10 +881,10 @@ func assertDirectSyncStreamCommand(t *testing.T, cmd sshprovision.SSHCommand) {
 	}
 	remote := cmd.Args[len(cmd.Args)-1]
 	for _, want := range []string{
-		"'ssh-gateway'",
-		"'--authorized-peer' 'm4'",
-		"'--authorized-key-id' 'key-connect-123'",
-		"'--direct-command' 'sync-stream'",
+		"\"ssh-gateway\"",
+		"\"--authorized-peer\" \"m4\"",
+		"\"--authorized-key-id\" \"key-connect-123\"",
+		"\"--direct-command\" \"sync-stream\"",
 	} {
 		if !strings.Contains(remote, want) {
 			t.Fatalf("remote command = %q, want %q; args=%#v", remote, want, cmd.Args)

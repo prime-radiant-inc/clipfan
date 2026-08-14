@@ -105,8 +105,18 @@ func ensureSyncKeyParentDirectory(keyPath string) error {
 	if dir == "." || !filepath.IsAbs(dir) {
 		return fmt.Errorf("%w: invalid sync key parent: %s", config.ErrSyncKeyDirectoryUnsafe, dir)
 	}
-	current := string(os.PathSeparator)
-	for _, part := range strings.Split(strings.TrimPrefix(filepath.Clean(dir), string(os.PathSeparator)), string(os.PathSeparator)) {
+	// Walk the ancestry from the root. On Windows the root is a volume
+	// ("C:\"); a POSIX-style leading separator would corrupt the path
+	// ("\C:\Users\..."), so split the drive prefix off first.
+	var current, rest string
+	if volume := filepath.VolumeName(dir); volume != "" {
+		current = volume + string(os.PathSeparator)
+		rest = strings.TrimPrefix(strings.TrimPrefix(dir, volume), string(os.PathSeparator))
+	} else {
+		current = string(os.PathSeparator)
+		rest = strings.TrimPrefix(dir, string(os.PathSeparator))
+	}
+	for _, part := range strings.FieldsFunc(rest, func(r rune) bool { return r == os.PathSeparator || r == '/' || r == '\\' }) {
 		if part == "" {
 			continue
 		}

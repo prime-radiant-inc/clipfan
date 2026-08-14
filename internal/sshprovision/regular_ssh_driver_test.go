@@ -156,17 +156,17 @@ func (r *fakeRegularSSHRunner) Run(_ context.Context, command SSHCommand) (Comma
 	case strings.Contains(remote, "ssh-install-known-host"):
 		return CommandOutput{Stdout: []byte(`{"status":"ok","pattern":"mac-a.tailnet","key_type":"ssh-ed25519"}`)}, nil
 	case strings.Contains(remote, "ssh-ensure-sync-key"):
-		if strings.Contains(remote, "--host-id' 'mac-a'") {
+		if strings.Contains(remote, "\"--host-id\" \"mac-a\"") {
 			return CommandOutput{Stdout: []byte(`{"status":"ok","changed":true,"host_id":"mac-a","key_id":"` + testMacEd25519KeyID + `","public_key":"` + testOtherEd25519Key + `","private_key_path":"/Users/jesse/.config/clipfan/ssh/sync_ed25519"}`)}, nil
 		}
 		return CommandOutput{Stdout: []byte(`{"status":"ok","changed":true,"host_id":"linux-b","key_id":"` + testEd25519KeyID + `","public_key":"` + testEd25519Key + `","private_key_path":"/home/jesse/.config/clipfan/ssh/sync_ed25519"}`)}, nil
 	case strings.Contains(remote, "ssh-install-authorized-key"):
-		if strings.Contains(remote, "--peer' 'mac-a'") {
+		if strings.Contains(remote, "\"--peer\" \"mac-a\"") {
 			return CommandOutput{Stdout: []byte(`{"status":"ok","changed":true,"peer_id":"mac-a","key_id":"` + testMacEd25519KeyID + `"}`)}, nil
 		}
 		return CommandOutput{Stdout: []byte(`{"status":"ok","changed":true,"peer_id":"linux-b","key_id":"` + testEd25519KeyID + `"}`)}, nil
 	case strings.Contains(remote, "ssh-run-probe"):
-		if strings.Contains(remote, "--expect-peer' 'mac-a'") {
+		if strings.Contains(remote, "\"--expect-peer\" \"mac-a\"") {
 			return CommandOutput{Stdout: []byte(`{"status":"ok","peer_id":"mac-a","key_id":"` + testMacEd25519KeyID + `"}`)}, nil
 		}
 		return CommandOutput{Stdout: []byte(`{"status":"ok","peer_id":"linux-b","key_id":"` + testEd25519KeyID + `"}`)}, nil
@@ -187,7 +187,7 @@ func assertRemoteCommand(t *testing.T, command SSHCommand, target string, subcom
 		t.Fatalf("target = %q, want %q; args=%#v", command.Args[len(command.Args)-2], target, command.Args)
 	}
 	remote := command.Args[len(command.Args)-1]
-	for _, want := range []string{"'" + subcommand + "'", "'" + flag + "'", "'" + value + "'"} {
+	for _, want := range []string{"\"" + subcommand + "\"", "\"" + flag + "\"", "\"" + value + "\""} {
 		if !strings.Contains(remote, want) {
 			t.Fatalf("remote command = %q, want %q", remote, want)
 		}

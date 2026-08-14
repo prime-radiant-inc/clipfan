@@ -158,9 +158,9 @@ func TestBuildFleetPeerTargetsMapsPinnedCommand(t *testing.T) {
 	// Direct-gateway commands carry the identity inline; verify it is the LOCAL id
 	// as authorized-peer and the peer's connect key id as authorized-key-id.
 	last := tg.Command.Args[len(tg.Command.Args)-1]
-	if !strings.Contains(last, "'--authorized-peer' 'alpha'") ||
-		!strings.Contains(last, "'--authorized-key-id' 'key-abc12345'") ||
-		!strings.Contains(last, "'--direct-command' 'fleet-snapshot'") {
+	if !strings.Contains(last, "\"--authorized-peer\" \"alpha\"") ||
+		!strings.Contains(last, "\"--authorized-key-id\" \"key-abc12345\"") ||
+		!strings.Contains(last, "\"--direct-command\" \"fleet-snapshot\"") {
 		t.Fatalf("direct command = %q", last)
 	}
 }

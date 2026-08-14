@@ -517,7 +517,7 @@ func validateKnownHostsFileInfo(path string, info os.FileInfo) error {
 	if identity.linkCount > 1 {
 		return fmt.Errorf("%w: file has multiple links: %s", ErrKnownHostsUnsafe, path)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if safefile.PermsExposeToGroupOrWorld(info.Mode()) {
 		return fmt.Errorf("%w: permissions are too open: %s", ErrKnownHostsUnsafe, path)
 	}
 	return nil
@@ -558,7 +558,7 @@ func validateKnownHostsLockFile(lockPath string, file *os.File) error {
 	if openedIdentity.device != pathIdentity.device || openedIdentity.inode != pathIdentity.inode {
 		return fmt.Errorf("%w: lock changed during open: %s", ErrKnownHostsUnsafe, lockPath)
 	}
-	if pathInfo.Mode().Perm()&0o077 != 0 {
+	if safefile.PermsExposeToGroupOrWorld(pathInfo.Mode()) {
 		return fmt.Errorf("%w: lock permissions are too open: %s", ErrKnownHostsUnsafe, lockPath)
 	}
 	return nil
@@ -654,15 +654,7 @@ func syncBestEffort(file *os.File) error {
 }
 
 func syncDirBestEffort(dir string) error {
-	file, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	if err := file.Sync(); err != nil && !isUnsupportedSync(err) {
-		return err
-	}
-	return nil
+	return safefile.SyncDir(dir)
 }
 
 func isUnsupportedSync(err error) bool {

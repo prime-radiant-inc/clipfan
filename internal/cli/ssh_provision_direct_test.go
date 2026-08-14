@@ -316,9 +316,9 @@ func TestRunSSHProvisionDirectDetectsTailscaleSSHTargetAndUsesDirectGateway(t *t
 	if err != nil {
 		t.Fatalf("runSSHProvisionDirect() error = %v stderr=%q", err, stderr.String())
 	}
-	if !containsSubstring(runner.probeCommands, "'--host' 'magic-kingdom'") ||
-		!containsSubstring(runner.probeCommands, "'--direct-gateway'") ||
-		!containsSubstring(runner.probeCommands, "'--gateway-path' '/home/jesse/.local/bin/clipfan'") {
+	if !containsSubstring(runner.probeCommands, "\"--host\" \"magic-kingdom\"") ||
+		!containsSubstring(runner.probeCommands, "\"--direct-gateway\"") ||
+		!containsSubstring(runner.probeCommands, "\"--gateway-path\" \"/home/jesse/.local/bin/clipfan\"") {
 		t.Fatalf("probe commands = %#v, want direct gateway probe to magic-kingdom", runner.probeCommands)
 	}
 	if !containsString(runner.configProofModes, "m4->magic-kingdom:accept=regular_ssh:connect=tailscale_ssh") {
@@ -348,8 +348,8 @@ func TestRunSSHProvisionDirectPreservesExplicitTailscaleSSHServerMode(t *testing
 	if err != nil {
 		t.Fatalf("runSSHProvisionDirect() error = %v stderr=%q", err, stderr.String())
 	}
-	if !containsSubstring(runner.probeCommands, "'--host' 'magic-kingdom'") ||
-		!containsSubstring(runner.probeCommands, "'--direct-gateway'") {
+	if !containsSubstring(runner.probeCommands, "\"--host\" \"magic-kingdom\"") ||
+		!containsSubstring(runner.probeCommands, "\"--direct-gateway\"") {
 		t.Fatalf("probe commands = %#v, want explicit direct gateway probe to magic-kingdom", runner.probeCommands)
 	}
 	if !containsString(runner.configProofModes, "m4->magic-kingdom:accept=regular_ssh:connect=tailscale_ssh") {
@@ -909,13 +909,15 @@ func directProvisionPeerStateKey(path string, peerID string) string {
 }
 
 func remoteQuotedArgValue(command string, flag string) string {
-	needle := "'" + flag + "' '"
+	// Remote args are double-quoted (shellQuoteArg); flag and value each sit
+	// inside their own double-quoted word.
+	needle := "\"" + flag + "\" \""
 	start := strings.Index(command, needle)
 	if start < 0 {
 		return ""
 	}
 	start += len(needle)
-	end := strings.Index(command[start:], "'")
+	end := strings.Index(command[start:], "\"")
 	if end < 0 {
 		return ""
 	}

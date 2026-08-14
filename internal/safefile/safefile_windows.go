@@ -46,6 +46,19 @@ func Unlock(f *os.File) error {
 // IsUnsupportedSync: on Windows, file.Sync errors are treated as real errors.
 func IsUnsupportedSync(err error) bool { return false }
 
+// PermsExposeToGroupOrWorld / PermsWritableByGroupOrWorld: Windows file
+// security is ACL-based; the POSIX mode bits os.Stat reports on Windows do
+// not reflect access control (every writable file reads as 0666), so
+// bit-based exposure checks are meaningless there. Owner-only enforcement
+// belongs to the ACLs on the profile directory.
+func PermsExposeToGroupOrWorld(mode os.FileMode) bool    { return false }
+func PermsWritableByGroupOrWorld(mode os.FileMode) bool { return false }
+
+// SyncDir: syncing a directory handle is not a Windows operation (opening a
+// dir for sync fails with Access is denied), and NTFS journals metadata, so
+// this is a no-op.
+func SyncDir(dir string) error { return nil }
+
 // StatIdentity on Windows: os.FileInfo does not expose volume serial / file
 // index / link count, so return neutral values that satisfy clipfan's hardening
 // checks (TOCTOU equality and "owned by current user"). os.Getuid() returns -1

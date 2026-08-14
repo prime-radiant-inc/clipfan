@@ -65,8 +65,8 @@ func TestPinnedSSHDirectGatewayFleetSnapshotCommand(t *testing.T) {
 		t.Fatalf("PinnedSSHFleetSnapshotCommand() error = %v", err)
 	}
 	got := cmd.Args[len(cmd.Args)-1]
-	if !strings.Contains(got, "'ssh-gateway'") ||
-		!strings.Contains(got, "'--direct-command' 'fleet-snapshot'") ||
+	if !strings.Contains(got, "\"ssh-gateway\"") ||
+		!strings.Contains(got, "\"--direct-command\" \"fleet-snapshot\"") ||
 		strings.TrimSpace(got) == SSHGatewayFleetSnapshotCommand {
 		t.Fatalf("direct command = %q", got)
 	}

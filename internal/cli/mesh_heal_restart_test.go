@@ -63,7 +63,7 @@ func TestRestartDaemonRunsScriptOverRegularSSH(t *testing.T) {
 	if !strings.Contains(runner.lastCommand, "jesse@host.example") {
 		t.Fatalf("did not SSH to the admin host: %q", runner.lastCommand)
 	}
-	if !strings.Contains(runner.lastCommand, "clipfan.service") || !strings.Contains(runner.lastCommand, "'sh' '-c'") {
+	if !strings.Contains(runner.lastCommand, "clipfan.service") || !strings.Contains(runner.lastCommand, "\"sh\" \"-c\"") {
 		t.Fatalf("did not run the restart script via sh -c: %q", runner.lastCommand)
 	}
 }

@@ -74,7 +74,37 @@ func ValidateManagedAuthorizedKeyID(keyID string) error {
 }
 
 func (entry ManagedAuthorizedKey) ForcedCommand() string {
-	return entry.GatewayPath + " ssh-gateway --authorized-peer " + entry.PeerID + " --authorized-key-id " + entry.KeyID
+	return shellQuoteGatewayPath(entry.GatewayPath) + " ssh-gateway --authorized-peer " + entry.PeerID + " --authorized-key-id " + entry.KeyID
+}
+
+// shellQuoteGatewayPath wraps a gateway path in double quotes when it holds
+// characters a login shell would treat specially. POSIX-validated paths
+// never contain such characters; Windows drive paths legitimately do
+// ("C:/Users/Will Wade/..." has a space), and sshd executes the forced
+// command through the account's shell, so the path must arrive as one word.
+const shellSpecialChars = " \"$'`\\"
+
+func shellQuoteGatewayPath(path string) string {
+	if !strings.ContainsAny(path, shellSpecialChars) {
+		return path
+	}
+	escaped := strings.ReplaceAll(path, `"`, `\"`)
+	escaped = strings.ReplaceAll(escaped, `$`, `\$`)
+	escaped = strings.ReplaceAll(escaped, "`", "\\`")
+	return `"` + escaped + `"`
+}
+
+// shellUnquoteGatewayPath reverses shellQuoteGatewayPath for lines parsed
+// back off disk. Legacy unquoted paths are returned unchanged.
+func shellUnquoteGatewayPath(value string) string {
+	if len(value) < 2 || !strings.HasPrefix(value, `"`) || !strings.HasSuffix(value, `"`) {
+		return value
+	}
+	inner := value[1 : len(value)-1]
+	inner = strings.ReplaceAll(inner, `\"`, `"`)
+	inner = strings.ReplaceAll(inner, `\$`, `$`)
+	inner = strings.ReplaceAll(inner, "\\`", "`")
+	return inner
 }
 
 func (entry ManagedAuthorizedKey) Line() string {
@@ -229,7 +259,16 @@ func UpsertManagedAuthorizedKeyFile(homeDir string, entry ManagedAuthorizedKey) 
 		changed = true
 		return nil
 	})
-	return changed, err
+	if err != nil {
+		return changed, err
+	}
+	// Windows sshd skips ~/.ssh/authorized_keys for accounts in the
+	// administrators group (default sshd_config routes them to
+	// ProgramData); the platform hook mirrors the entry there.
+	if err := syncPlatformAuthorizedKeysStore(entry); err != nil {
+		return changed, err
+	}
+	return changed, nil
 }
 
 func VerifyManagedAuthorizedKeyFile(homeDir string, entry ManagedAuthorizedKey) error {
@@ -257,7 +296,7 @@ func VerifyManagedAuthorizedKeyFile(homeDir string, entry ManagedAuthorizedKey) 
 	if !bytes.Equal(updated, data) {
 		return fmt.Errorf("%w: %s", ErrAuthorizedKeyNotFound, entry.PeerID)
 	}
-	return nil
+	return verifyPlatformAuthorizedKeysStore(entry)
 }
 
 func ParseManagedAuthorizedKeyMetadata(line string) (ManagedAuthorizedKeyMetadata, bool, error) {
@@ -317,7 +356,7 @@ func validateManagedAuthorizedKeyLine(line string, fields []string, markerIndex 
 	if !strings.HasSuffix(command, expectedSuffix) {
 		return fmt.Errorf("%w: managed forced command metadata mismatch", ErrAuthorizedKeyConflict)
 	}
-	gatewayPath := strings.TrimSuffix(command, expectedSuffix)
+	gatewayPath := shellUnquoteGatewayPath(strings.TrimSuffix(command, expectedSuffix))
 	if err := config.ValidateSSHExecutablePath(gatewayPath); err != nil {
 		return fmt.Errorf("%w: invalid managed gateway path", ErrAuthorizedKeyConflict)
 	}
@@ -585,7 +624,7 @@ func validateAuthorizedKeysFileInfo(path string, info os.FileInfo) error {
 	if identity.linkCount > 1 {
 		return fmt.Errorf("%w: file has multiple links: %s", ErrAuthorizedKeysUnsafe, path)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if safefile.PermsExposeToGroupOrWorld(info.Mode()) {
 		return fmt.Errorf("%w: permissions are too open: %s", ErrAuthorizedKeysUnsafe, path)
 	}
 	return nil
@@ -626,7 +665,7 @@ func validateAuthorizedKeysLockFile(lockPath string, file *os.File) error {
 	if openedIdentity.device != pathIdentity.device || openedIdentity.inode != pathIdentity.inode {
 		return fmt.Errorf("%w: lock changed during open: %s", ErrAuthorizedKeysUnsafe, lockPath)
 	}
-	if pathInfo.Mode().Perm()&0o077 != 0 {
+	if safefile.PermsExposeToGroupOrWorld(pathInfo.Mode()) {
 		return fmt.Errorf("%w: lock permissions are too open: %s", ErrAuthorizedKeysUnsafe, lockPath)
 	}
 	return nil

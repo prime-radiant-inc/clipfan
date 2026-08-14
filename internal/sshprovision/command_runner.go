@@ -71,21 +71,16 @@ func (r ExecCommandRunner) Run(ctx context.Context, command SSHCommand) (Command
 		limit = 64 * 1024
 	}
 	cmd := exec.CommandContext(ctx, command.Args[0], command.Args[1:]...)
-	var stdout, stderr limitedBuffer
-	stdout.limit = limit
-	stderr.limit = limit
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Env = sanitizedSSHEnv()
+	capture := newOutputCapture(limit)
+	cmd.Stdout = capture.Stdout()
+	cmd.Stderr = capture.Stderr()
 	if command.Stdin != nil {
-		cmd.Stdin = bytes.NewReader(command.Stdin)
+		cmd.Stdin = capture.Input(command.Stdin)
 	}
 	err := cmd.Run()
-	output := CommandOutput{
-		Stdout:          stdout.Bytes(),
-		Stderr:          stderr.Bytes(),
-		StdoutTruncated: stdout.Truncated(),
-		StderrTruncated: stderr.Truncated(),
-	}
+	output := capture.Finish()
+	capture.Cleanup()
 	if err != nil {
 		return output, SSHCommandError{
 			cause:           err,
