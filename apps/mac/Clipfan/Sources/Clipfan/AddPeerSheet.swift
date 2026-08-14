@@ -357,6 +357,8 @@ struct AddPeerSheet: View {
             Text("Connect another host to this Mac over SSH. Clipfan detects macOS or Linux during setup.")
                 .font(.callout).foregroundStyle(.secondary)
 
+        ScrollView {
+        VStack(alignment: .leading, spacing: 14) {
             if tailnetAvailable {
                 tailnetSection
                 dividerLabel("or add manually")
@@ -387,8 +389,8 @@ struct AddPeerSheet: View {
                     Text("Added \(lastInstalledHost).").font(.callout)
                 }
             }
-
-            Spacer()
+        }
+        }
 
             HStack {
                 Spacer()
@@ -409,7 +411,7 @@ struct AddPeerSheet: View {
         }
         .padding(20)
         .frame(width: 620)
-        .frame(minHeight: tailnetAvailable ? 660 : 520)
+        .frame(height: tailnetAvailable ? 660 : 520)
         .task {
             localSystemHostName = addPeerLiveSystemLocalHostName()
             await daemon.refresh()
