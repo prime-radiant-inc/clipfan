@@ -13,6 +13,7 @@
 # Default output dir is dist/release. Writes one tarball per (os,arch):
 #   clipfan-darwin-amd64.tar.gz   clipfan-darwin-arm64.tar.gz
 #   clipfan-linux-amd64.tar.gz    clipfan-linux-arm64.tar.gz
+#   clipfan-windows-amd64.tar.gz  clipfan-windows-arm64.tar.gz
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -23,9 +24,10 @@ mkdir -p "$out"
 
 # Verify build-all.sh output exists before we start slicing it up.
 required=(
-    install.sh bootstrap-self-ssh.sh tmux.conf.snippet
+    install.sh install.ps1 bootstrap-self-ssh.sh tmux.conf.snippet
     clipfan-darwin-amd64 clipfan-darwin-arm64
     clipfan-linux-amd64  clipfan-linux-arm64
+    clipfan-windows-amd64.exe clipfan-windows-arm64.exe
     clipfan-pasteboard-helper-darwin-amd64 clipfan-pasteboard-helper-darwin-arm64
     clipfan-shim-linux-amd64 clipfan-shim-linux-arm64
     com.primeradiant.clipfan.plist clipfan.service
@@ -43,32 +45,41 @@ make_tarball() {
     trap 'rm -rf "$stage"' RETURN
     mkdir -p "$stage/clipfan"
 
-    # Shared payload: the installer, the tmux snippet, and this target's daemon.
-    cp "$dist/install.sh"            "$stage/clipfan/"
-    cp "$dist/tmux.conf.snippet"     "$stage/clipfan/"
-    cp "$dist/clipfan-$goos-$arch"   "$stage/clipfan/"
-    chmod +x "$stage/clipfan/install.sh" "$stage/clipfan/clipfan-$goos-$arch"
+    if [[ "$goos" == "windows" ]]; then
+        # Windows package: the daemon + the PowerShell installer. The installer
+        # registers a per-user Scheduled Task at logon (Windows services run in
+        # Session 0, which cannot access the clipboard).
+        cp "$dist/clipfan-$goos-$arch.exe" "$stage/clipfan/"
+        cp "$dist/install.ps1"             "$stage/clipfan/"
+        chmod +x "$stage/clipfan/clipfan-$goos-$arch.exe"
+    else
+        # Shared payload: the installer, the tmux snippet, and this target's daemon.
+        cp "$dist/install.sh"            "$stage/clipfan/"
+        cp "$dist/tmux.conf.snippet"     "$stage/clipfan/"
+        cp "$dist/clipfan-$goos-$arch"   "$stage/clipfan/"
+        chmod +x "$stage/clipfan/install.sh" "$stage/clipfan/clipfan-$goos-$arch"
 
-    case "$goos" in
-        darwin)
-            cp "$dist/clipfan-pasteboard-helper-$goos-$arch" "$stage/clipfan/"
-            chmod +x "$stage/clipfan/clipfan-pasteboard-helper-$goos-$arch"
-            cp "$dist/com.primeradiant.clipfan.plist" "$stage/clipfan/"
-            cp "$dist/bootstrap-self-ssh.sh" "$stage/clipfan/"
-            chmod +x "$stage/clipfan/bootstrap-self-ssh.sh"
-            ;;
-        linux)
-            cp "$dist/clipfan-shim-$goos-$arch" "$stage/clipfan/"
-            chmod +x "$stage/clipfan/clipfan-shim-$goos-$arch"
-            cp "$dist/clipfan.service" "$stage/clipfan/"
-            ;;
-    esac
+        case "$goos" in
+            darwin)
+                cp "$dist/clipfan-pasteboard-helper-$goos-$arch" "$stage/clipfan/"
+                chmod +x "$stage/clipfan/clipfan-pasteboard-helper-$goos-$arch"
+                cp "$dist/com.primeradiant.clipfan.plist" "$stage/clipfan/"
+                cp "$dist/bootstrap-self-ssh.sh" "$stage/clipfan/"
+                chmod +x "$stage/clipfan/bootstrap-self-ssh.sh"
+                ;;
+            linux)
+                cp "$dist/clipfan-shim-$goos-$arch" "$stage/clipfan/"
+                chmod +x "$stage/clipfan/clipfan-shim-$goos-$arch"
+                cp "$dist/clipfan.service" "$stage/clipfan/"
+                ;;
+        esac
+    fi
 
     tar -C "$stage" -czf "$out/clipfan-$goos-$arch.tar.gz" clipfan
     echo "built $out/clipfan-$goos-$arch.tar.gz"
 }
 
-for goos in darwin linux; do
+for goos in darwin linux windows; do
     for arch in amd64 arm64; do
         make_tarball "$goos" "$arch"
     done

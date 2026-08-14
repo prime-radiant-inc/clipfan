@@ -11,9 +11,9 @@ import (
 	"regexp"
 	"strings"
 	"sync/atomic"
-	"syscall"
 
 	"github.com/prime-radiant-inc/clipfan/internal/config"
+	"github.com/prime-radiant-inc/clipfan/internal/safefile"
 )
 
 var (
@@ -152,12 +152,12 @@ func AppendKnownHostsLinesLocked(path string, lines []string) error {
 // symlinked target) but, unlike readKnownHostsFileForUpdate, does not require
 // 0600/single-link — user-owned regular known_hosts files are commonly 0644.
 func readKnownHostsFileLenient(path string) ([]byte, error) {
-	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	file, err := safefile.OpenNoFollow(path, os.O_RDONLY, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
-		if errors.Is(err, syscall.ELOOP) {
+		if errors.Is(err, safefile.ErrSymlink) {
 			return nil, fmt.Errorf("%w: file is symlink: %s", ErrKnownHostsUnsafe, path)
 		}
 		return nil, err
@@ -386,9 +386,9 @@ func withKnownHostsLock(path string, fn func() error) error {
 		return err
 	}
 	lockPath := path + ".lock"
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	lockFile, err := safefile.OpenNoFollow(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		if errors.Is(err, syscall.ELOOP) {
+		if errors.Is(err, safefile.ErrSymlink) {
 			return fmt.Errorf("%w: lock is symlink: %s", ErrKnownHostsUnsafe, lockPath)
 		}
 		return err
@@ -400,10 +400,10 @@ func withKnownHostsLock(path string, fn func() error) error {
 	if err := lockFile.Chmod(0o600); err != nil {
 		return err
 	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+	if err := safefile.Flock(lockFile, safefile.LOCK_EX); err != nil {
 		return err
 	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	defer safefile.Unlock(lockFile)
 	return fn()
 }
 
@@ -450,12 +450,12 @@ func rejectSymlinkedKnownHostsAncestry(path string) error {
 }
 
 func readKnownHostsFileForUpdate(path string) ([]byte, bool, error) {
-	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	file, err := safefile.OpenNoFollow(path, os.O_RDONLY, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false, nil
 		}
-		if errors.Is(err, syscall.ELOOP) {
+		if errors.Is(err, safefile.ErrSymlink) {
 			return nil, false, fmt.Errorf("%w: file is symlink: %s", ErrKnownHostsUnsafe, path)
 		}
 		return nil, false, err
@@ -572,15 +572,15 @@ type knownHostsFileIdentityInfo struct {
 }
 
 func knownHostsFileIdentity(info os.FileInfo) (knownHostsFileIdentityInfo, error) {
-	stat, ok := info.Sys().(*syscall.Stat_t)
+	device, inode, links, uid, ok := safefile.StatIdentity(info)
 	if !ok {
 		return knownHostsFileIdentityInfo{}, fmt.Errorf("%w: could not inspect file identity", ErrKnownHostsUnsafe)
 	}
 	return knownHostsFileIdentityInfo{
-		device:    uint64(stat.Dev),
-		inode:     uint64(stat.Ino),
-		linkCount: uint64(stat.Nlink),
-		uid:       uint32(stat.Uid),
+		device:    device,
+		inode:     inode,
+		linkCount: links,
+		uid:       uid,
 	}, nil
 }
 
@@ -666,5 +666,5 @@ func syncDirBestEffort(dir string) error {
 }
 
 func isUnsupportedSync(err error) bool {
-	return errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.ENOSYS)
+	return safefile.IsUnsupportedSync(err)
 }

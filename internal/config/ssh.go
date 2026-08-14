@@ -70,8 +70,12 @@ type SSHProof struct {
 
 var (
 	proofKeyIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{8,64}$`)
-	sshPathPattern    = regexp.MustCompile(`^[A-Za-z0-9._/@+-]+$`)
-	sshUserPattern    = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+	sshPathPattern    = regexp.MustCompile(`^[A-Za-z0-9._/@: +\\-]+$`)
+	// sshUserPattern permits a space (e.g. "will wade") and '@' (email-style
+	// names), which Windows and other systems allow in logon names. This is safe:
+	// the SSH user is only ever passed to ssh as an exec argument ("user@host"),
+	// never interpolated into a shell string. Shell metacharacters remain rejected.
+	sshUserPattern = regexp.MustCompile(`^[A-Za-z0-9._@ -]{1,128}$`)
 )
 
 func ValidateSSHTransportConfig(cfg Config) error {
@@ -264,19 +268,35 @@ func ValidateSSHExecutablePath(value string) error {
 	return nil
 }
 
+func isAbsoluteCrossPlatform(value string) bool {
+	if strings.HasPrefix(value, "/") {
+		return true
+	}
+	return isWindowsDrivePath(value)
+}
+
+func isWindowsDrivePath(value string) bool {
+	return len(value) >= 3 &&
+		((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) &&
+		value[1] == ':' &&
+		(value[2] == '\\' || value[2] == '/')
+}
+
 func ValidateSafeAbsolutePath(value string) error {
 	if value == "" {
 		return errors.New("empty")
 	}
-	if !strings.HasPrefix(value, "/") {
+	if !isAbsoluteCrossPlatform(value) {
 		return errors.New("relative")
 	}
 	if strings.ContainsAny(value, "\x00\n\r\t") {
 		return errors.New("invalid characters")
 	}
-	cleaned := path.Clean(value)
-	if cleaned != value {
-		return errors.New("not canonical")
+	if !isWindowsDrivePath(value) {
+		cleaned := path.Clean(value)
+		if cleaned != value {
+			return errors.New("not canonical")
+		}
 	}
 	for _, part := range strings.Split(value, "/") {
 		if part == ".." {

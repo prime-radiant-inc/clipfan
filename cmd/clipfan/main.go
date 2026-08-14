@@ -109,6 +109,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 				return 1
 			}
 			return 0
+		case "add-peer":
+			if err := cli.RunAddPeer(args[1:], stdout, stderr); err != nil {
+				fmt.Fprintln(stderr, "clipfan add-peer:", err)
+				return 1
+			}
+			return 0
 		case "ssh-apply-direct-config":
 			if err := cli.RunSSHApplyDirectConfig(args[1:], stdout, stderr); err != nil {
 				fmt.Fprintln(stderr, "clipfan ssh-apply-direct-config:", err)

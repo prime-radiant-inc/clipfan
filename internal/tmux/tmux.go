@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package tmux fans clipboard content out to every running tmux server on
 // the host by calling `tmux -S <socket> load-buffer -`. The intent is that
 // after every clipboard change, prefix-] in any tmux session pastes the same
