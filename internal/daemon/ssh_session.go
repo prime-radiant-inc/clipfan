@@ -811,6 +811,7 @@ func (execSSHProcessStarter) Start(ctx context.Context, cmd sshprovision.SSHComm
 		return nil, fmt.Errorf("empty ssh command")
 	}
 	process := exec.CommandContext(ctx, cmd.Args[0], cmd.Args[1:]...)
+	sshprovision.ApplyConsoleSpawnMode(process)
 	stdin, err := process.StdinPipe()
 	if err != nil {
 		return nil, err

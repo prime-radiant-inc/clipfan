@@ -72,6 +72,7 @@ func (r ExecCommandRunner) Run(ctx context.Context, command SSHCommand) (Command
 	}
 	cmd := exec.CommandContext(ctx, command.Args[0], command.Args[1:]...)
 	cmd.Env = sanitizedSSHEnv()
+	ApplyConsoleSpawnMode(cmd)
 	capture := newOutputCapture(limit)
 	cmd.Stdout = capture.Stdout()
 	cmd.Stderr = capture.Stderr()
