@@ -71,7 +71,11 @@ type SSHProof struct {
 var (
 	proofKeyIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{8,64}$`)
 	sshPathPattern    = regexp.MustCompile(`^[A-Za-z0-9._/@+-]+$`)
-	sshUserPattern    = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+	// sshUserPattern permits a space (e.g. "will wade") and '@' (email-style
+	// names), which Windows and other systems allow in logon names. This is safe:
+	// the SSH user is only ever passed to ssh as an exec argument ("user@host"),
+	// never interpolated into a shell string. Shell metacharacters remain rejected.
+	sshUserPattern = regexp.MustCompile(`^[A-Za-z0-9._@ -]{1,128}$`)
 )
 
 func ValidateSSHTransportConfig(cfg Config) error {

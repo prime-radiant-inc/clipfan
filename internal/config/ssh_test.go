@@ -228,14 +228,14 @@ func TestValidateSSHConfigRejectsUnsafeLocalPaths(t *testing.T) {
 }
 
 func TestValidateSSHUserAndCanonicalSSHHost(t *testing.T) {
-	for _, user := range []string{"jesse", "j.sse_1", "Jesse-2"} {
+	for _, user := range []string{"jesse", "j.sse_1", "Jesse-2", "will wade", "will@example.com"} {
 		t.Run("valid user "+user, func(t *testing.T) {
 			if err := ValidateSSHUser(user); err != nil {
 				t.Fatalf("ValidateSSHUser(%q): %v", user, err)
 			}
 		})
 	}
-	for _, user := range []string{"", "-jesse", "bad user", "jesse@host", "jesse/root", "jesse:root"} {
+	for _, user := range []string{"", "-jesse", "jesse/root", "jesse:root", "jesse;rm", "jesse|cat", "je`sse", "je$sse"} {
 		t.Run("invalid user "+user, func(t *testing.T) {
 			if err := ValidateSSHUser(user); err == nil {
 				t.Fatalf("ValidateSSHUser(%q) = nil, want error", user)
