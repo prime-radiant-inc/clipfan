@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.11] - 2026-08-14
+
+### Added
+
+- Windows support: the daemon and provisioning flow run on Windows (amd64 + arm64), with per-tarball PowerShell installer and a per-user Scheduled Task for clipboard access. Windows release tarballs are published alongside macOS and Linux.
+- `clipfan add-peer` CLI (also wired into the Mac app's Add Peer sheet) provisions a single peer over regular SSH, including TOFU pin seeding and hostname-based peer IDs.
+
+### Fixed
+
+- Windows provisioning no longer hangs: ssh/ssh-keyscan children run with temp-file stdio (Win32-OpenSSH never exits on anonymous pipes), `CREATE_NO_WINDOW` spawn mode for console-less parents, and a 120s default bound on one-shot SSH commands.
+- Managed authorized-key forced commands shell-quote the gateway path, so Windows profile paths with spaces ("C:/Users/Will Wade/...") execute correctly; entries are mirrored into `administrators_authorized_keys` when Windows sshd routes admins there.
+- SSH `-o` options use `~/`-relative paths on Windows (OpenSSH splits option values on whitespace); remote commands use double-quoted, forward-slash form across all platforms.
+
 ## [1.0.10] - 2026-08-13
 
 ### Added

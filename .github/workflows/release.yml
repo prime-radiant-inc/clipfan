@@ -361,6 +361,8 @@ jobs:
             "$ARTIFACTS_DIR/clipfan-darwin-arm64.tar.gz"
             "$ARTIFACTS_DIR/clipfan-linux-amd64.tar.gz"
             "$ARTIFACTS_DIR/clipfan-linux-arm64.tar.gz"
+            "$ARTIFACTS_DIR/clipfan-windows-amd64.tar.gz"
+            "$ARTIFACTS_DIR/clipfan-windows-arm64.tar.gz"
             "$ARTIFACTS_DIR/install.sh"
             "${{ steps.pkg.outputs.app_zip }}"
           )
