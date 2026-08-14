@@ -8,7 +8,7 @@ enum LaunchDecision: Equatable {
     case normal
     /// Installed daemon is older/different than the daemon bundled in this app.
     case upgradeExisting
-    /// Binary is installed but the daemon is down — kickstart / child-launch it.
+    /// Binary is installed but the daemon is down — repair its service registration.
     case restartExisting
     /// No daemon installed — run the guided first-run install.
     case firstRunInstall
