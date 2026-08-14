@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.12] - 2026-08-14
+
+### Fixed
+
+- Fixed macOS Add Peer onboarding for already-enrolled hosts by using the remote Clipfan roster identity instead of the SSH-derived host label, avoiding `sync_key_identity_mismatch` without rotating existing sync keys.
+
 ## [1.0.11] - 2026-08-13
 
 ### Fixed
