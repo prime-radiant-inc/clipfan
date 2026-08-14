@@ -94,8 +94,13 @@ if (Test-Path $trayExe) {
     $shortcut.Description = "clipfan tray app"
     $shortcut.Save()
     Write-Host "Tray autostart shortcut: $shortcutPath"
-    # Start it now if it isn't already running.
-    if (-not (Get-Process -Name "clipfan-tray" -ErrorAction SilentlyContinue)) {
+    # Start it now if it isn't already running — but only from an interactive
+    # session. A tray app started in session 0 (e.g. the installer run over
+    # SSH, from a scheduled task, or an sshd-spawned shell) has no desktop to
+    # attach its icon to and just lingers invisibly; the Startup shortcut
+    # covers that case at next logon.
+    $mySession = (Get-Process -Id $PID).SessionId
+    if ($mySession -ne 0 -and -not (Get-Process -Name "clipfan-tray" -ErrorAction SilentlyContinue)) {
         Start-Process -FilePath $trayExe
         Write-Host "Tray app started."
     }
