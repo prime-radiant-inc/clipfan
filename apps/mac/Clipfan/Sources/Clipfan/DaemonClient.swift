@@ -60,18 +60,39 @@ final class DaemonClient: ObservableObject {
 
     @discardableResult
     func restartDaemon() -> Bool {
-        // Try launchd kickstart first; fall back to shell relaunch.
         let uid = "\(getuid())"
-        let kick = Process()
-        kick.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        kick.arguments = ["kickstart", "-k", "gui/\(uid)/com.primeradiant.clipfan"]
-        do {
-            try kick.run()
-        } catch {
-            return false
+        let plistPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/com.primeradiant.clipfan.plist").path
+        let commands = Self.launchdRestartArguments(uid: uid, plistPath: plistPath)
+
+        func runLaunchctl(_ arguments: [String]) -> Bool {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            process.arguments = arguments
+            do {
+                try process.run()
+            } catch {
+                return false
+            }
+            process.waitUntilExit()
+            return process.terminationStatus == 0
         }
-        kick.waitUntilExit()
-        return kick.terminationStatus == 0
+
+        _ = runLaunchctl(commands[0])
+        if !runLaunchctl(commands[1]) {
+            _ = runLaunchctl(commands[2])
+        }
+        return runLaunchctl(commands[3])
+    }
+
+    static func launchdRestartArguments(uid: String, plistPath: String) -> [[String]] {
+        let service = "gui/\(uid)/com.primeradiant.clipfan"
+        return [
+            ["enable", service],
+            ["bootstrap", "gui/\(uid)", plistPath],
+            ["load", plistPath],
+            ["kickstart", "-k", service]
+        ]
     }
 
     func moveDaemonListenerToLoopback() async {

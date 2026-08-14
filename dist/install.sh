@@ -136,8 +136,14 @@ case "$goos" in
             -e "s|__PATH__|$run_path|g" \
             "$here/com.primeradiant.clipfan.plist" > "$plist"
         if [[ "$NO_RESTART" -eq 0 ]]; then
+            user_uid=$(id -u)
+            service="gui/$user_uid/com.primeradiant.clipfan"
             launchctl unload "$plist" 2>/dev/null || true
-            launchctl load "$plist"
+            launchctl enable "$service" 2>/dev/null || true
+            launchctl bootstrap "gui/$user_uid" "$plist" 2>/dev/null || \
+                launchctl load "$plist" 2>/dev/null || true
+            launchctl kickstart -k "$service"
+            launchctl print "$service" >/dev/null 2>&1
             echo "Loaded launchd job: com.primeradiant.clipfan"
         else
             echo "Skipped launchd load/restart (--no-restart)"

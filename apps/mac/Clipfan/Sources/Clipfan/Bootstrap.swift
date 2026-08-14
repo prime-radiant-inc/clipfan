@@ -8,7 +8,7 @@ enum LaunchDecision: Equatable {
     case normal
     /// Installed daemon is older/different than the daemon bundled in this app.
     case upgradeExisting
-    /// Binary is installed but the daemon is down — kickstart / child-launch it.
+    /// Binary is installed but the daemon is down — repair its service registration.
     case restartExisting
     /// No daemon installed — run the guided first-run install.
     case firstRunInstall
@@ -29,7 +29,7 @@ enum LaunchDecision: Equatable {
     }
 }
 
-enum BootstrapInstallMode {
+enum BootstrapInstallMode: Equatable {
     case setup
     case upgradeExisting
 }
@@ -68,6 +68,15 @@ func shouldPromptLocalNetwork(peers: [Peer]) -> Bool {
 /// path helpers are static; the blocking installer subprocess runs off the main
 /// actor so the Welcome window stays responsive.
 enum Bootstrap {
+    static func recoveryMode(for decision: LaunchDecision) -> BootstrapInstallMode? {
+        switch decision {
+        case .restartExisting:
+            return .upgradeExisting
+        default:
+            return nil
+        }
+    }
+
     static var daemonBinary: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".local/bin/clipfan")
