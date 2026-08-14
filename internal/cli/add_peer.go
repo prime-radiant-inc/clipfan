@@ -122,14 +122,11 @@ func autoDetectTailscaleIP() string {
 }
 
 func crossPeerPath(base string, parts ...string) string {
-	sep := "/"
-	if strings.Contains(base, `\`) {
-		sep = `\`
-	}
+	base = strings.ReplaceAll(base, "\\", "/")
 	var b strings.Builder
 	b.WriteString(base)
 	for _, p := range parts {
-		b.WriteString(sep)
+		b.WriteString("/")
 		b.WriteString(p)
 	}
 	return b.String()
