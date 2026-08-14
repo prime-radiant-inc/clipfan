@@ -28,13 +28,18 @@ go_payloads=(
     dist/clipfan-shim-linux-arm64
 )
 
+tray_payloads=(
+    dist/clipfan-tray-windows-amd64.exe
+    dist/clipfan-tray-windows-arm64.exe
+)
+
 helper_payloads=(
     dist/clipfan-pasteboard-helper-darwin-amd64
     dist/clipfan-pasteboard-helper-darwin-arm64
 )
 
 remove_release_payloads() {
-    rm -f "${go_payloads[@]}" "${helper_payloads[@]}"
+    rm -f "${go_payloads[@]}" "${helper_payloads[@]}" "${tray_payloads[@]}"
 }
 
 build_go_payloads() {
@@ -49,6 +54,14 @@ build_go_payloads() {
                 echo "[build] clipfan-shim $goos/$goarch"
                 GOOS=$goos GOARCH=$goarch go build -ldflags "$ldflags" \
                     -o "dist/clipfan-shim-$goos-$goarch" ./cmd/clipfan-shim
+            fi
+            if [[ "$goos" == "windows" ]]; then
+                # System-tray app (apps/tray); windows-only build tag.
+                # -H windowsgui: GUI subsystem, no console window on launch.
+                echo "[build] clipfan-tray $goos/$goarch"
+                GOOS=$goos GOARCH=$goarch go build \
+                    -ldflags "$ldflags -H windowsgui" \
+                    -o "dist/clipfan-tray-$goos-$goarch.exe" ./apps/tray
             fi
         done
     done
@@ -77,7 +90,7 @@ verify_payload() {
 }
 
 verify_payloads() {
-    for f in "${go_payloads[@]}" "${helper_payloads[@]}"; do
+    for f in "${go_payloads[@]}" "${helper_payloads[@]}" "${tray_payloads[@]}"; do
         verify_payload "$f"
     done
 }

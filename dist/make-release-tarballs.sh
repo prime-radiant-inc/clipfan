@@ -28,6 +28,7 @@ required=(
     clipfan-darwin-amd64 clipfan-darwin-arm64
     clipfan-linux-amd64  clipfan-linux-arm64
     clipfan-windows-amd64.exe clipfan-windows-arm64.exe
+    clipfan-tray-windows-amd64.exe clipfan-tray-windows-arm64.exe
     clipfan-pasteboard-helper-darwin-amd64 clipfan-pasteboard-helper-darwin-arm64
     clipfan-shim-linux-amd64 clipfan-shim-linux-arm64
     com.primeradiant.clipfan.plist clipfan.service
@@ -46,12 +47,13 @@ make_tarball() {
     mkdir -p "$stage/clipfan"
 
     if [[ "$goos" == "windows" ]]; then
-        # Windows package: the daemon + the PowerShell installer. The installer
-        # registers a per-user Scheduled Task at logon (Windows services run in
-        # Session 0, which cannot access the clipboard).
+        # Windows package: the daemon + tray app + the PowerShell installer.
+        # The installer registers a per-user Scheduled Task at logon (Windows
+        # services run in Session 0, which cannot access the clipboard).
         cp "$dist/clipfan-$goos-$arch.exe" "$stage/clipfan/"
+        cp "$dist/clipfan-tray-$goos-$arch.exe" "$stage/clipfan/"
         cp "$dist/install.ps1"             "$stage/clipfan/"
-        chmod +x "$stage/clipfan/clipfan-$goos-$arch.exe"
+        chmod +x "$stage/clipfan/clipfan-$goos-$arch.exe" "$stage/clipfan/clipfan-tray-$goos-$arch.exe"
     else
         # Shared payload: the installer, the tmux snippet, and this target's daemon.
         cp "$dist/install.sh"            "$stage/clipfan/"
