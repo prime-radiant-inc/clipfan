@@ -554,6 +554,7 @@ actor Installer {
         let remoteObservedLocalIndex = remoteObservedLocalIndexes.first
         let localHostID = remoteObservedLocalIndex.map { hosts[$0].id } ?? configuredLocalHostID
         var trustedBootstrapHostIDs = Set<String>()
+        var bootstrappedHostIDs = Set<String>()
 
         if let localIndex = remoteObservedLocalIndex {
             guard let observer = hosts.first(where: { $0.id != hosts[localIndex].id }) else {
@@ -606,7 +607,29 @@ actor Installer {
                     hosts[index] = installedHost
                     provisionSpecs[index] = privateDirectMeshHostSpec(installedHost)
                 }
+                bootstrappedHostIDs.insert(host.id)
             }
+        }
+
+        // The bootstrap installer preserves an existing config, so the SSH label
+        // is not authoritative for a previously enrolled host.
+        for index in hosts.indices where bootstrappedHostIDs.contains(hosts[index].id) {
+            let host = hosts[index]
+            await MainActor.run {
+                onProgress(.init(step: "Probe", detail: "reading Clipfan identity on \(host.sshHost)"))
+            }
+            let canonicalID = try await readPrivateDirectMeshRemoteHostID(from: host,
+                                                                          regularKnownHosts: knownHosts,
+                                                                          runCommand: runCommand)
+            guard canonicalID != host.id else {
+                continue
+            }
+            guard !hosts.enumerated().contains(where: { $0.offset != index && $0.element.id == canonicalID }) else {
+                throw InstallError.configIO("private_direct_mesh_remote_identity_duplicate")
+            }
+            let canonicalHost = try privateDirectMeshHostReplacingID(host, id: canonicalID)
+            hosts[index] = canonicalHost
+            provisionSpecs[index] = privateDirectMeshHostSpec(canonicalHost)
         }
 
         await MainActor.run { onProgress(.init(step: "Provision", detail: "running ssh-provision-direct")) }
@@ -1155,6 +1178,21 @@ actor Installer {
         return fields.joined(separator: ",")
     }
 
+    private static func privateDirectMeshHostReplacingID(_ host: PrivateDirectMeshHost,
+                                                         id: String) throws -> PrivateDirectMeshHost {
+        try validatePrivateDirectMeshHostID(id)
+        return PrivateDirectMeshHost(id: id,
+                                     sshHost: host.sshHost,
+                                     user: host.user,
+                                     port: host.port,
+                                     installPath: host.installPath,
+                                     configPath: host.configPath,
+                                     knownHostsPath: host.knownHostsPath,
+                                     syncKeyPath: host.syncKeyPath,
+                                     callbackHostMode: host.callbackHostMode,
+                                     callbackHostFieldPresent: host.callbackHostFieldPresent)
+    }
+
     static func privateDirectMeshObservedSSHClientHostCommand() -> String {
         #"v=${SSH_CONNECTION:-$SSH_CLIENT}; v=${v%% *}; test -n "$v" || exit 44; printf '%s\n' "$v""#
     }
@@ -1182,6 +1220,40 @@ actor Installer {
             throw InstallError.configIO("invalid_remote_observed_callback_host")
         }
         return observedHost
+    }
+
+    private struct PrivateDirectMeshRosterIdentity: Decodable {
+        let origin: String?
+    }
+
+    static func privateDirectMeshRemoteHostID(fromRosterRead output: String) throws -> String {
+        guard let data = output.data(using: .utf8) else {
+            throw InstallError.configIO("private_direct_mesh_remote_identity_invalid")
+        }
+        let report: PrivateDirectMeshRosterIdentity
+        do {
+            report = try JSONDecoder().decode(PrivateDirectMeshRosterIdentity.self, from: data)
+        } catch {
+            throw InstallError.configIO("private_direct_mesh_remote_identity_invalid")
+        }
+        guard let origin = report.origin?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !origin.isEmpty else {
+            throw InstallError.configIO("private_direct_mesh_remote_identity_missing")
+        }
+        try validatePrivateDirectMeshHostID(origin)
+        return origin
+    }
+
+    private static func readPrivateDirectMeshRemoteHostID(from host: PrivateDirectMeshHost,
+                                                           regularKnownHosts: String,
+                                                           runCommand: CommandRunner) async throws -> String {
+        let args = regularSSHRemoteCommandArgs(user: host.user,
+                                               host: host.sshHost,
+                                               port: host.port,
+                                               knownHosts: regularKnownHosts,
+                                               remoteCommand: "\(shellSingleQuote(host.installPath)) roster-read")
+        let output = try await runCommand("/usr/bin/ssh", args)
+        return try privateDirectMeshRemoteHostID(fromRosterRead: output)
     }
 
     private static func privateDirectMeshHostSpecReplacingSSHHost(_ spec: String,

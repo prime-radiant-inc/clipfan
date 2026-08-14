@@ -62,6 +62,95 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertFalse(body.contains("secret"))
     }
 
+    func testPrivateDirectMeshRemoteHostIDUsesRosterOrigin() throws {
+        let output = #"{"origin":"jesses-macbook-pro","platform":"darwin","config_path":"/Users/jesse/.config/clipfan/config.json"}"#
+
+        XCTAssertEqual(try Installer.privateDirectMeshRemoteHostID(fromRosterRead: output), "jesses-macbook-pro")
+    }
+
+    func testPrivateDirectMeshRemoteHostIDRejectsMissingOrigin() {
+        XCTAssertThrowsError(try Installer.privateDirectMeshRemoteHostID(fromRosterRead: #"{"platform":"darwin"}"#)) { error in
+            XCTAssertTrue(String(describing: error).contains("private_direct_mesh_remote_identity_missing"))
+        }
+    }
+
+    func testPrivateDirectMeshRemoteHostIDRejectsMalformedRosterRead() {
+        XCTAssertThrowsError(try Installer.privateDirectMeshRemoteHostID(fromRosterRead: "not-json")) { error in
+            XCTAssertTrue(String(describing: error).contains("private_direct_mesh_remote_identity_invalid"))
+        }
+    }
+
+    func testProvisionPrivateDirectMeshUsesExistingRemoteRosterIdentity() async throws {
+        var commands: [(String, [String])] = []
+        let knownHostsRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-existing-peer-known-hosts-\(UUID().uuidString)")
+        let regularKnownHosts = knownHostsRoot.appendingPathComponent("known_hosts").path
+        defer { try? FileManager.default.removeItem(at: knownHostsRoot) }
+
+        try await Installer.provisionPrivateDirectMesh(
+            hostSpecs: [
+                "id=mac-a,ssh=mac-a.tailnet,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+                "id=ssh-derived-name,ssh=existing-mac.tailnet,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519"
+            ],
+            regularKnownHosts: regularKnownHosts,
+            trustKeyscan: true,
+            localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
+            bootstrapRemoteHost: { _, _ in },
+            runCommand: { exe, args in
+                commands.append((exe, args))
+                if exe == "/usr/bin/ssh-keyscan" {
+                    return self.keyscanFixtureOutput(args)
+                }
+                if exe == "/usr/bin/ssh", args.last?.contains("roster-read") == true {
+                    return #"{"origin":"existing-mac","platform":"darwin","peers":[]}"#
+                }
+                return #"{"status":"ok"}"#
+            },
+            readLocalHostID: { "mac-a" },
+            restartLocalDaemon: {},
+            onProgress: { _ in }
+        )
+
+        let provisionCommand = try XCTUnwrap(commands.first { $0.0 == "/Users/jesse/.local/bin/clipfan" })
+        XCTAssertTrue(provisionCommand.1.contains { $0.contains("id=existing-mac,") })
+        XCTAssertFalse(provisionCommand.1.contains { $0.contains("id=ssh-derived-name,") })
+    }
+
+    func testProvisionPrivateDirectMeshRejectsRemoteIdentityDuplicate() async throws {
+        let knownHostsRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clipfan-duplicate-peer-known-hosts-\(UUID().uuidString)")
+        let regularKnownHosts = knownHostsRoot.appendingPathComponent("known_hosts").path
+        defer { try? FileManager.default.removeItem(at: knownHostsRoot) }
+
+        do {
+            try await Installer.provisionPrivateDirectMesh(
+                hostSpecs: [
+                    "id=mac-a,ssh=mac-a.tailnet,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519",
+                    "id=ssh-derived-name,ssh=existing-mac.tailnet,user=jesse,port=22,install=/Users/jesse/.local/bin/clipfan,config=/Users/jesse/.config/clipfan/config.json,known_hosts=/Users/jesse/.config/clipfan/ssh/known_hosts,sync_key=/Users/jesse/.config/clipfan/ssh/sync_ed25519"
+                ],
+                regularKnownHosts: regularKnownHosts,
+                trustKeyscan: true,
+                localProvisioningBinary: { "/Users/jesse/.local/bin/clipfan" },
+                bootstrapRemoteHost: { _, _ in },
+                runCommand: { exe, args in
+                    if exe == "/usr/bin/ssh-keyscan" {
+                        return self.keyscanFixtureOutput(args)
+                    }
+                    if exe == "/usr/bin/ssh", args.last?.contains("roster-read") == true {
+                        return #"{"origin":"mac-a","platform":"darwin","peers":[]}"#
+                    }
+                    return #"{"status":"ok"}"#
+                },
+                readLocalHostID: { "mac-a" },
+                restartLocalDaemon: {},
+                onProgress: { _ in }
+            )
+            XCTFail("expected duplicate remote identity failure")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("private_direct_mesh_remote_identity_duplicate"))
+        }
+    }
+
     func testPrivateDirectMeshInstallCommandPreservesConfigAndRunsSetupNoRestart() {
         let command = Installer.privateDirectMeshInstallCommand(stage: "/tmp/clipfan-install.ABC123",
                                                                 configPath: "/home/jesse/Application Support/Clipfan/config.json",
@@ -1356,6 +1445,9 @@ final class InstallerFlagTests: XCTestCase {
                 if exe == "/usr/bin/ssh-keyscan" {
                     return self.keyscanFixtureOutput(args)
                 }
+                if exe == "/usr/bin/ssh", args.last?.contains("roster-read") == true {
+                    return #"{"origin":"linux-b","platform":"linux","peers":[]}"#
+                }
                 return #"{"status":"ok"}"#
             },
             readLocalHostID: { "mac-a" },
@@ -1370,7 +1462,9 @@ final class InstallerFlagTests: XCTestCase {
         XCTAssertEqual(bootstraps.first?.1, true)
         XCTAssertEqual(commands.filter { $0.0 == "/usr/bin/ssh-keyscan" }.map { $0.1.last }, ["mac-a.tailnet", "linux-b.tailnet"])
         XCTAssertEqual(commands.filter { $0.0 == "/Users/jesse/.local/bin/clipfan" }.count, 1)
-        let restartCommand = try XCTUnwrap(commands.first { exe, args in exe == "/usr/bin/ssh" && args.first != "-G" })
+        let restartCommand = try XCTUnwrap(commands.first { exe, args in
+            exe == "/usr/bin/ssh" && args.first != "-G" && args.last?.contains("roster-read") != true
+        })
         XCTAssertEqual(restartCommand.1.last, Installer.remoteRestartDaemonCommand(installPath: "/home/jesse/.local/bin/clipfan"))
         let knownHostsBody = try String(contentsOfFile: regularKnownHosts, encoding: .utf8)
         XCTAssertTrue(knownHostsBody.contains("mac-a.tailnet ssh-ed25519"))
