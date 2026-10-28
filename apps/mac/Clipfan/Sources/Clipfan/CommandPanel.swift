@@ -72,6 +72,20 @@ final class CommandPanelController: NSObject, NSWindowDelegate {
         DispatchQueue.main.async { [weak self] in
             self?.dismissOnResignKey = true
         }
+        refreshHistoryWhileVisible()
+    }
+
+    /// The app no longer polls in the background, and the hosting view (and its
+    /// `.task`) outlives each show, so fetch history on every present. A copy made
+    /// just before the shortcut can land after the first fetch because the daemon
+    /// polls the pasteboard at up to 2s when idle, so fetch once more after that.
+    private func refreshHistoryWhileVisible() {
+        Task { [weak self] in
+            await DaemonClient.shared.refreshHistory()
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard self?.isVisible == true else { return }
+            await DaemonClient.shared.refreshHistory()
+        }
     }
 
     func hide() {

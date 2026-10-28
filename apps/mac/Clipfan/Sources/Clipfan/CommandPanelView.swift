@@ -40,7 +40,6 @@ struct CommandPanelView: View {
         .overlay { hiddenShortcuts.frame(width: 0, height: 0).clipped() }
         .task {
             searchFocused = true
-            await daemon.refreshHistory()
         }
         .onChange(of: items.map(\.id)) { _ in
             selection = clampedSelection(selection, in: items)
