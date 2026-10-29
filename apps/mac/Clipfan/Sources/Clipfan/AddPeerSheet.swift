@@ -352,6 +352,37 @@ struct AddPeerSheet: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            // A large tailnet or an expanded Advanced section can outgrow the
+            // sheet, so the form scrolls while the action buttons stay pinned.
+            ScrollView {
+                formContent
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+            actionButtons
+                .padding(.horizontal, 20)
+                .padding(.vertical, 14)
+        }
+        .frame(width: 620)
+        .frame(minHeight: 420, idealHeight: tailnetAvailable ? 660 : 520)
+        .task {
+            localSystemHostName = addPeerLiveSystemLocalHostName()
+            await daemon.refresh()
+            await loadTailnet()
+        }
+        .alert("Trust SSH host keys?", isPresented: $confirmingDirectMeshKeyscanTrust) {
+            Button("Trust and add peer") {
+                install(trustKeyscanConfirmed: true)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Clipfan will pin SSH host keys returned by ssh-keyscan for the selected hosts.")
+        }
+    }
+
+    private var formContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Add a peer").font(.title3).bold()
             Text("Connect another host to this Mac over SSH. Clipfan detects macOS or Linux during setup.")
@@ -387,41 +418,25 @@ struct AddPeerSheet: View {
                     Text("Added \(lastInstalledHost).").font(.callout)
                 }
             }
+        }
+    }
 
+    private var actionButtons: some View {
+        HStack {
             Spacer()
-
-            HStack {
-                Spacer()
-                switch addPeerSheetButtons(installing: installing, installSuccess: installSuccess, hasFailure: failure != nil) {
-                case .success:
-                    Button("Add another") { resetForAnother() }
-                    Button("Done") { dismiss() }
-                        .keyboardShortcut(.defaultAction)
-                default:
-                    Button("Cancel") { dismiss() }
-                    Button(installButtonTitle) { requestInstall() }
-                        .keyboardShortcut(.return)
-                        .disabled(isAddPeerInstallDisabled(installCount: installCount,
-                                                           installing: installing,
-                                                           privateDirectMeshRequested: SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled))
-                }
+            switch addPeerSheetButtons(installing: installing, installSuccess: installSuccess, hasFailure: failure != nil) {
+            case .success:
+                Button("Add another") { resetForAnother() }
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            default:
+                Button("Cancel") { dismiss() }
+                Button(installButtonTitle) { requestInstall() }
+                    .keyboardShortcut(.return)
+                    .disabled(isAddPeerInstallDisabled(installCount: installCount,
+                                                       installing: installing,
+                                                       privateDirectMeshRequested: SSHTransportGatePolicy.current.privateDirectMeshProvisioningEnabled))
             }
-        }
-        .padding(20)
-        .frame(width: 620)
-        .frame(minHeight: tailnetAvailable ? 660 : 520)
-        .task {
-            localSystemHostName = addPeerLiveSystemLocalHostName()
-            await daemon.refresh()
-            await loadTailnet()
-        }
-        .alert("Trust SSH host keys?", isPresented: $confirmingDirectMeshKeyscanTrust) {
-            Button("Trust and add peer") {
-                install(trustKeyscanConfirmed: true)
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Clipfan will pin SSH host keys returned by ssh-keyscan for the selected hosts.")
         }
     }
 
