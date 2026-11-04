@@ -45,6 +45,11 @@ fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources/dist"
 cp Info.plist "$APP/Contents/Info.plist"
+# Stamp the same version the release workflow uses (DAEMON_VERSION), so a local
+# build doesn't report the placeholder in Info.plist and look older than every
+# published release to Sparkle.
+VERSION=$(cd ../../.. && bash scripts/release-version.sh)
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 cp "$BIN" "$APP/Contents/MacOS/Clipfan"
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/Clipfan"
 cp -R "$SPARKLE_FRAMEWORK" "$APP/Contents/Frameworks/Sparkle.framework"
