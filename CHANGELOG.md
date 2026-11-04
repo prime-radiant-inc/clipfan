@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.13] - 2026-11-04
+
+### Fixed
+
+- The command panel now refreshes clipboard history every time it opens, instead of only on the first open after launch.
+- The Add Peer sheet now scrolls, so the Add and Cancel buttons stay reachable with many tailnet machines or with Advanced expanded.
+- Locally built app bundles now report the release version instead of the `0.2.0` placeholder.
+
 ## [1.0.12] - 2026-08-14
 
 ### Fixed
